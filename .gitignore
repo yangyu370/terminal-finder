@@ -1,0 +1,12 @@
+.DS_Store
+.idea/
+*/.idea/
+
+# Rust build output
+target/
+core/target/
+
+# Xcode user-local state
+xcuserdata/
+*.xcuserstate
+DerivedData/
