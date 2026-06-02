@@ -36,6 +36,57 @@ terminal-finder/
 └── docs/
 ```
 
+### Current Repository Structure
+
+The current repository is intentionally smaller than the long-term target architecture.
+
+```text
+terminal-finder/
+├── core/                         # Rust local backend
+│   ├── src/
+│   │   ├── api/                  # HTTP/RPC routing and controllers
+│   │   ├── error.rs              # API error response mapping
+│   │   ├── main.rs               # backend process entrypoint
+│   │   └── state.rs              # shared backend state
+│   ├── Cargo.toml
+│   └── Cargo.lock
+│
+├── clients/
+│   └── MacOS/                    # first macOS client
+│       └── MacOS/
+│           ├── API/              # backend HTTP/RPC client
+│           ├── Models/           # client-side state models
+│           ├── ViewModels/       # UI state and async actions
+│           ├── Views/            # SwiftUI views and components
+│           └── Assets.xcassets/  # static visual assets
+│
+└── protocol/
+    └── README.md                 # current protocol notes
+```
+
+Keep the current structure lightweight until a feature needs more separation. Do not create the future `core/crates/*` workspace until the backend has enough real surface area to justify it.
+
+### Current Status As Of 2026-06-02
+
+The project is now past the pure connectivity baseline.
+
+Completed:
+
+- Phase 0 baseline: Rust backend, macOS client shell, `core.ping`, `/health`, protocol notes, and lightweight module split.
+- Phase 1 first slice: `workspace.listDirectory` exists in the Rust backend and is callable from the macOS client.
+- The macOS client can request a directory path and render returned entries in a simple SwiftUI list.
+- The default client directory uses the real user home path from the password database instead of the sandbox container home.
+- Backend request logging uses `tracing` with method/status/duration fields.
+- Directory listing runs through `tokio::task::spawn_blocking` so filesystem scans do not block async runtime workers.
+
+Still active:
+
+- The backend is still started manually.
+- The client is still a SwiftUI proof-of-flow, not a polished Finder-like AppKit interface.
+- Workspace state is not yet a backend resource; the client sends raw paths.
+- There is no event stream or file watcher yet.
+- File operations, terminal sessions, search, and git awareness remain deferred.
+
 ## 3. Core Technology Stack
 
 ### Rust Backend
@@ -65,12 +116,15 @@ trash             move-to-trash/recycle-bin behavior
 
 ### macOS Client
 
-Use Swift and AppKit as the first native client.
+Use Swift as the first native client.
+
+Phase 0 uses SwiftUI because the current client is only a connectivity shell. Finder-like browsing screens can still move toward AppKit controls where native behavior matters, especially sidebar/file-table interactions.
 
 Recommended stack:
 
 ```text
 Swift
+SwiftUI            early screens and simple state-driven views
 AppKit
 async/await
 URLSession
@@ -87,6 +141,16 @@ SwiftTerm
 ```
 
 The macOS client should not own core business logic. It renders backend state, sends user actions to the backend, and subscribes to backend events.
+
+Current client layering:
+
+```text
+Views        layout and user interaction
+ViewModels   UI state, async actions, API orchestration
+API          backend HTTP/RPC calls and DTOs
+Models       client-side state models
+Assets       static images, colors, icons, and app assets
+```
 
 ### Future Web Client
 
@@ -190,40 +254,55 @@ task.finished
 
 Goal: create a stable monorepo foundation and decide how clients launch/connect to the backend.
 
-Build:
+Status: completed as the initial baseline commit.
+
+Built:
 
 - Create repository structure.
-- Create Rust workspace under `core/`.
-- Create macOS AppKit project under `clients/macos/`.
+- Create Rust backend under `core/`.
+- Create macOS client under `clients/MacOS/`.
 - Add protocol docs under `protocol/`.
 - Add basic logging and error conventions.
-- Decide development launch flow.
+- Add unified root Git repository.
+- Add `core.ping` over local HTTP JSON RPC.
+- Add macOS connectivity UI.
+- Split macOS client into lightweight MVVM folders.
+- Split Rust backend into lightweight API/controller/error/state modules.
 
 Rust stack used:
 
 ```text
-cargo workspace
+cargo
 tokio
 axum
 serde
+serde_json
 tracing
 thiserror
+anyhow
 ```
 
 macOS stack used:
 
 ```text
 Swift
-AppKit
+SwiftUI
 URLSession
 ```
 
 Deliverables:
 
-- Rust backend can start locally.
-- Backend exposes `core.ping`.
-- macOS client can launch the backend or connect to an already running backend.
+- Rust backend can start locally on `127.0.0.1:3587`.
+- Backend exposes `POST /rpc` with `core.ping`.
+- Backend exposes `GET /health`.
+- macOS client can connect to an already running backend.
 - macOS client can call `core.ping` and display connection status.
+- Protocol is documented in `protocol/README.md`.
+
+Still deferred:
+
+- macOS client launching the backend automatically.
+- Production launch/port discovery flow.
 
 Do not build yet:
 
@@ -237,7 +316,65 @@ Do not build yet:
 
 Goal: prove the core product loop: macOS client asks Rust backend for a directory, then renders it in native AppKit controls.
 
-Build:
+Status: first backend-to-client directory browsing slice completed. Full Finder-like Phase 1 is still in progress.
+
+First slice:
+
+- Add `workspace.listDirectory`.
+- Backend reads a requested directory using Rust filesystem APIs.
+- Backend returns file metadata: name, path, kind, size, modified date, directory flag.
+- macOS client sends a path to the backend.
+- macOS client renders the returned entries in a simple list/table.
+- Start with a default directory such as the user's home directory, or a path input.
+
+First slice built:
+
+- Rust `workspace.listDirectory` controller.
+- Directory entry DTOs with name, path, kind, size, modified date, and directory flag.
+- Directories sorted before files.
+- Symlinked directories marked openable.
+- API errors for invalid params, missing paths, permission failures, and non-directory paths.
+- RPC logs with method, status, elapsed time, and compact response summaries.
+- Filesystem listing isolated in a blocking task.
+- Swift `BackendClient.listDirectory`.
+- Swift RPC models for directory entries and RPC errors.
+- `WorkspaceBrowserViewModel` with cancellable directory loads.
+- Simple SwiftUI path field and list rendering.
+- Default path fixed to the real user home instead of the sandbox container home.
+
+Initial request shape:
+
+```json
+{
+  "method": "workspace.listDirectory",
+  "params": {
+    "path": "/Users/mac"
+  }
+}
+```
+
+Initial response shape:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "path": "/Users/mac",
+    "entries": [
+      {
+        "name": "Desktop",
+        "path": "/Users/mac/Desktop",
+        "kind": "directory",
+        "isDirectory": true,
+        "size": null,
+        "modifiedAt": "2026-06-01T08:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+Full Phase 1 build:
 
 - Backend workspace state.
 - `workspace.getState`.
@@ -250,13 +387,19 @@ Build:
 - Double-click folder to open.
 - Double-click file to ask macOS to open with default app.
 
+Implementation note:
+
+The first slice may use SwiftUI `List` or `Table` to prove the backend-to-client data loop quickly. Move to AppKit `NSTableView` once the data shape and navigation behavior are stable.
+
 Rust stack used:
 
 ```text
 std::fs
 tokio
+tokio::task::spawn_blocking
 serde
 axum
+tracing
 ignore or walkdir, only if recursive walking is needed
 ```
 
@@ -695,10 +838,10 @@ This proves the architecture without getting trapped in terminal complexity too 
 
 ## 8. Recommended Immediate Next Steps
 
-1. Create monorepo structure.
-2. Scaffold Rust backend with `core.ping`.
-3. Scaffold macOS AppKit client.
-4. Implement backend launch/connect flow.
-5. Implement `workspace.listDirectory`.
-6. Render backend directory entries in `NSTableView`.
-7. Add placeholder terminal panel showing current backend cwd.
+1. Add backend launch and port-discovery flow from the macOS client.
+2. Add `workspace.getState` and `workspace.openDirectory` so the backend owns current workspace state instead of only listing arbitrary paths.
+3. Replace the current SwiftUI proof-of-flow with a Finder-like AppKit shell: sidebar, toolbar, and `NSTableView`.
+4. Add sidebar locations for Home, Desktop, Downloads, and Documents.
+5. Add file open/reveal actions through backend-approved commands and macOS `NSWorkspace`.
+6. Add a placeholder terminal panel bound to the current backend cwd.
+7. Add event transport planning for Phase 2 before implementing file watching.

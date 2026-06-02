@@ -13,13 +13,13 @@ final class BackendConnectionViewModel: ObservableObject {
     @Published private(set) var status: ConnectionStatus = .disconnected
     @Published private(set) var detailText = "Core is expected at http://127.0.0.1:3587"
 
-    private let backendClient: BackendClient
+    private let backendClient: any BackendClientProtocol
 
     var isConnecting: Bool {
         status == .connecting
     }
 
-    init(backendClient: BackendClient? = nil) {
+    init(backendClient: (any BackendClientProtocol)? = nil) {
         self.backendClient = backendClient ?? BackendClient()
     }
 

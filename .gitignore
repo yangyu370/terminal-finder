@@ -10,3 +10,4 @@ core/target/
 xcuserdata/
 *.xcuserstate
 DerivedData/
+.derivedData/

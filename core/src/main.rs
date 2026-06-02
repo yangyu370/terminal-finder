@@ -15,8 +15,9 @@ const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "terminal_finder_core=info,core=info,tower_http=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "terminal_finder_core=info,core=info,rpc=info,workspace=info,tower_http=info".into()
+            }),
         )
         .init();
 
@@ -24,11 +25,14 @@ async fn main() -> anyhow::Result<()> {
     let app = api::routes::router(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], 3587));
     let listener = TcpListener::bind(addr).await?;
-    info!("terminal finder core listening on http://{addr}");
+    info!(target: "core", %addr, "Terminal Finder core listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }
