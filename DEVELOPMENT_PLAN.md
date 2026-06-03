@@ -45,6 +45,7 @@ terminal-finder/
 ├── core/                         # Rust local backend
 │   ├── src/
 │   │   ├── api/                  # HTTP/RPC routing and controllers
+│   │   ├── workspace/            # workspace state, service, DTOs, and filesystem adapter
 │   │   ├── error.rs              # API error response mapping
 │   │   ├── main.rs               # backend process entrypoint
 │   │   └── state.rs              # shared backend state
@@ -56,6 +57,7 @@ terminal-finder/
 │       └── MacOS/
 │           ├── API/              # backend HTTP/RPC client
 │           ├── Models/           # client-side state models
+│           ├── Services/         # client system integrations such as backend process launch
 │           ├── ViewModels/       # UI state and async actions
 │           ├── Views/            # SwiftUI views and components
 │           └── Assets.xcassets/  # static visual assets
@@ -66,7 +68,7 @@ terminal-finder/
 
 Keep the current structure lightweight until a feature needs more separation. Do not create the future `core/crates/*` workspace until the backend has enough real surface area to justify it.
 
-### Current Status As Of 2026-06-02
+### Current Status As Of 2026-06-03
 
 The project is now past the pure connectivity baseline.
 
@@ -78,12 +80,15 @@ Completed:
 - The default client directory uses the real user home path from the password database instead of the sandbox container home.
 - Backend request logging uses `tracing` with method/status/duration fields.
 - Directory listing runs through `tokio::task::spawn_blocking` so filesystem scans do not block async runtime workers.
+- Workspace state is now owned by the backend through `workspace.getState` and `workspace.openDirectory`.
+- The macOS client checks `/health` on startup, launches the bundled Rust backend with `Process` when needed, polls health, and only then enters the main workspace UI.
+- The macOS build copies the Rust core executable into the app bundle so the client can start it without relying on a manually launched backend.
+- The macOS app sandbox is disabled for the current local-first backend model so a client-launched backend can see the same real user directories as a manually launched backend.
 
 Still active:
 
-- The backend is still started manually.
-- The client is still a SwiftUI proof-of-flow, not a polished Finder-like AppKit interface.
-- Workspace state is not yet a backend resource; the client sends raw paths.
+- The client is still only partially Finder-like; the directory table has moved toward AppKit, but sidebar, toolbar, context menus, and keyboard behavior still need refinement.
+- Backend process lifecycle is a first working path, but packaging/signing and graceful shutdown semantics should be revisited before distribution.
 - There is no event stream or file watcher yet.
 - File operations, terminal sessions, search, and git awareness remain deferred.
 
@@ -148,6 +153,7 @@ Current client layering:
 Views        layout and user interaction
 ViewModels   UI state, async actions, API orchestration
 API          backend HTTP/RPC calls and DTOs
+Services     client system integrations such as Process-based backend launch
 Models       client-side state models
 Assets       static images, colors, icons, and app assets
 ```
@@ -267,7 +273,7 @@ Built:
 - Add `core.ping` over local HTTP JSON RPC.
 - Add macOS connectivity UI.
 - Split macOS client into lightweight MVVM folders.
-- Split Rust backend into lightweight API/controller/error/state modules.
+- Split Rust backend into lightweight API/controller/workspace/error/state modules.
 
 Rust stack used:
 

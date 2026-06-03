@@ -6,6 +6,7 @@ use tracing::info;
 mod api;
 mod error;
 mod state;
+mod workspace;
 
 use state::AppState;
 

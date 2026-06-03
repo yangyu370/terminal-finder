@@ -12,12 +12,16 @@ import Foundation
 @MainActor
 final class WorkspaceBrowserViewModel: ObservableObject {
     @Published var path: String
+    @Published private(set) var workspaceState: WorkspaceState?
     @Published private(set) var listing: DirectoryListing?
     @Published private(set) var isLoading = false
     @Published private(set) var errorText: String?
+    @Published private(set) var selectedEntryPath: String?
 
     private let backendClient: any BackendClientProtocol
     private var loadTask: Task<Void, Never>?
+
+    let sidebarLocations: [WorkspaceSidebarLocation]
 
     init(
         backendClient: (any BackendClientProtocol)? = nil,
@@ -25,14 +29,64 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     ) {
         self.backendClient = backendClient ?? BackendClient()
         self.path = initialPath
+        sidebarLocations = WorkspaceBrowserViewModel.defaultSidebarLocations(homePath: initialPath)
     }
 
     deinit {
         loadTask?.cancel()
     }
 
-    func loadCurrentPath() {
-        load(path: path)
+    var currentDirectoryName: String {
+        let currentPath = workspaceState?.currentDirectory ?? listing?.path ?? path
+        let name = URL(fileURLWithPath: currentPath).lastPathComponent
+        return name.isEmpty ? currentPath : name
+    }
+
+    var entries: [DirectoryEntry] {
+        listing?.entries ?? []
+    }
+
+    func loadInitialState() {
+        loadTask?.cancel()
+        isLoading = true
+        errorText = nil
+
+        loadTask = Task { [backendClient] in
+            do {
+                let state = try await backendClient.getState()
+                let result = try await backendClient.listDirectory(path: state.currentDirectory)
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                workspaceState = state
+                path = state.currentDirectory
+                listing = result
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                errorText = error.localizedDescription
+            }
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            isLoading = false
+        }
+    }
+
+    func openCurrentPath() {
+        openDirectory(path: path)
+    }
+
+    func refresh() {
+        let targetPath = workspaceState?.currentDirectory ?? path
+        loadListing(path: targetPath)
     }
 
     func open(_ entry: DirectoryEntry) {
@@ -40,10 +94,22 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             return
         }
 
-        load(path: entry.path)
+        openDirectory(path: entry.path)
     }
 
-    private func load(path targetPath: String) {
+    func open(_ location: WorkspaceSidebarLocation) {
+        openDirectory(path: location.path)
+    }
+
+    func selectEntry(path: String?) {
+        guard selectedEntryPath != path else {
+            return
+        }
+
+        selectedEntryPath = path
+    }
+
+    private func openDirectory(path targetPath: String) {
         let trimmedPath = targetPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPath.isEmpty else {
             loadTask?.cancel()
@@ -58,7 +124,47 @@ final class WorkspaceBrowserViewModel: ObservableObject {
 
         loadTask = Task { [backendClient] in
             do {
-                let result = try await backendClient.listDirectory(path: trimmedPath)
+                let result = try await backendClient.openDirectory(path: trimmedPath)
+                let listingResult: DirectoryListing
+                if let listing = result.listing {
+                    listingResult = listing
+                } else {
+                    listingResult = try await backendClient.listDirectory(path: result.state.currentDirectory)
+                }
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                workspaceState = result.state
+                path = result.state.currentDirectory
+                listing = listingResult
+                selectedEntryPath = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                errorText = error.localizedDescription
+            }
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            isLoading = false
+        }
+    }
+
+    private func loadListing(path targetPath: String) {
+        loadTask?.cancel()
+        isLoading = true
+        errorText = nil
+
+        loadTask = Task { [backendClient] in
+            do {
+                let result = try await backendClient.listDirectory(path: targetPath)
                 guard !Task.isCancelled else {
                     return
                 }
@@ -91,5 +197,24 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         }
 
         return String(cString: homeDirectory)
+    }
+
+    private nonisolated static func defaultSidebarLocations(homePath: String) -> [WorkspaceSidebarLocation] {
+        [
+            WorkspaceSidebarLocation(title: "Home", systemImageName: "house", path: homePath),
+            WorkspaceSidebarLocation(title: "Desktop", systemImageName: "desktopcomputer", path: "\(homePath)/Desktop"),
+            WorkspaceSidebarLocation(title: "Downloads", systemImageName: "arrow.down.circle", path: "\(homePath)/Downloads"),
+            WorkspaceSidebarLocation(title: "Documents", systemImageName: "doc.text", path: "\(homePath)/Documents")
+        ]
+    }
+}
+
+struct WorkspaceSidebarLocation: Identifiable {
+    let title: String
+    let systemImageName: String
+    let path: String
+
+    var id: String {
+        path
     }
 }

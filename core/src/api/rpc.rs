@@ -83,6 +83,19 @@ async fn dispatch_rpc(state: &AppState, method: &str, params: Value) -> Result<V
             let _params = params;
             Ok(to_value(core::ping(state)).expect("core.ping response serializes"))
         }
+        "workspace.getState" => {
+            let _params = params;
+            Ok(to_value(workspace::get_state(state))
+                .expect("workspace.getState response serializes"))
+        }
+        "workspace.openDirectory" => serde_json::from_value(params)
+            .map_err(|error| ApiError::InvalidParams {
+                method: method.to_string(),
+                message: error.to_string(),
+            })
+            .map(|params| workspace::open_directory(state, params))?
+            .await
+            .map(|result| to_value(result).expect("workspace.openDirectory response serializes")),
         "workspace.listDirectory" => serde_json::from_value(params)
             .map_err(|error| ApiError::InvalidParams {
                 method: method.to_string(),
@@ -98,6 +111,8 @@ async fn dispatch_rpc(state: &AppState, method: &str, params: Value) -> Result<V
 fn response_summary(method: &str, result: &Value) -> String {
     match method {
         "core.ping" => service_summary(result),
+        "workspace.getState" => workspace_state_summary(result),
+        "workspace.openDirectory" => open_directory_summary(result),
         "workspace.listDirectory" => directory_listing_summary(result),
         _ => "ok=true".to_string(),
     }
@@ -114,6 +129,30 @@ fn service_summary(result: &Value) -> String {
         .unwrap_or("unknown");
 
     format!("service={service:?} version={version:?}")
+}
+
+fn workspace_state_summary(result: &Value) -> String {
+    let state = result.get("state").unwrap_or(result);
+    let workspace_root = state
+        .get("workspaceRoot")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let current_directory = state
+        .get("currentDirectory")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+
+    format!("workspaceRoot={workspace_root:?} currentDirectory={current_directory:?}")
+}
+
+fn open_directory_summary(result: &Value) -> String {
+    let state_summary = workspace_state_summary(result);
+    let listing_summary = result
+        .get("listing")
+        .map(directory_listing_summary)
+        .unwrap_or_else(|| "path=\"unknown\" entries=0 dirs=0 files=0".to_string());
+
+    format!("{state_summary} {listing_summary}")
 }
 
 fn directory_listing_summary(result: &Value) -> String {
