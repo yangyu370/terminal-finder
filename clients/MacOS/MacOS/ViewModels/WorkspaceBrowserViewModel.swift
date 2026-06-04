@@ -16,18 +16,22 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     @Published private(set) var listing: DirectoryListing?
     @Published private(set) var isLoading = false
     @Published private(set) var errorText: String?
+    @Published private(set) var fileOpenErrorText: String?
     @Published private(set) var selectedEntryPath: String?
 
     private let backendClient: any BackendClientProtocol
+    private let workspaceItemOpener: any WorkspaceItemOpening
     private var loadTask: Task<Void, Never>?
 
     let sidebarLocations: [WorkspaceSidebarLocation]
 
     init(
         backendClient: (any BackendClientProtocol)? = nil,
+        workspaceItemOpener: (any WorkspaceItemOpening)? = nil,
         initialPath: String = WorkspaceBrowserViewModel.defaultInitialPath()
     ) {
         self.backendClient = backendClient ?? BackendClient()
+        self.workspaceItemOpener = workspaceItemOpener ?? WorkspaceItemOpener()
         self.path = initialPath
         sidebarLocations = WorkspaceBrowserViewModel.defaultSidebarLocations(homePath: initialPath)
     }
@@ -90,15 +94,25 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     }
 
     func open(_ entry: DirectoryEntry) {
-        guard entry.isDirectory else {
+        if entry.isDirectory {
+            openDirectory(path: entry.path)
             return
         }
 
-        openDirectory(path: entry.path)
+        do {
+            try workspaceItemOpener.openFile(atPath: entry.path)
+            fileOpenErrorText = nil
+        } catch {
+            fileOpenErrorText = error.localizedDescription
+        }
     }
 
     func open(_ location: WorkspaceSidebarLocation) {
         openDirectory(path: location.path)
+    }
+
+    func dismissFileOpenError() {
+        fileOpenErrorText = nil
     }
 
     func selectEntry(path: String?) {

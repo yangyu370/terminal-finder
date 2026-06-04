@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 
+use tokio::io::{AsyncReadExt, stdin};
 use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
 use tracing::info;
 
 mod api;
@@ -27,17 +29,34 @@ async fn main() -> anyhow::Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], 3587));
     let listener = TcpListener::bind(addr).await?;
     info!(target: "core", %addr, "Terminal Finder core listening");
+    let stdin_eof_task = tokio::spawn(wait_for_stdin_eof());
 
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(shutdown_signal(stdin_eof_task))
     .await?;
 
     Ok(())
 }
 
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+async fn shutdown_signal(stdin_eof_task: JoinHandle<()>) {
+    let reason = tokio::select! {
+        _ = tokio::signal::ctrl_c() => "ctrl_c",
+        _ = stdin_eof_task => "stdin_eof",
+    };
+
+    info!(target: "core", reason, "shutdown signal received");
+}
+
+async fn wait_for_stdin_eof() {
+    let mut input = stdin();
+    let mut buffer = [0_u8; 1];
+    loop {
+        match input.read(&mut buffer).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+    }
 }

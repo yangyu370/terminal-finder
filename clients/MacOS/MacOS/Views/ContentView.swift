@@ -31,6 +31,23 @@ struct ContentView: View {
 
             browserViewModel.loadInitialState()
         }
+        .alert(
+            "Unable to Open File",
+            isPresented: Binding(
+                get: { browserViewModel.fileOpenErrorText != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        browserViewModel.dismissFileOpenError()
+                    }
+                }
+            )
+        ) {
+            Button("OK") {
+                browserViewModel.dismissFileOpenError()
+            }
+        } message: {
+            Text(browserViewModel.fileOpenErrorText ?? "macOS could not open this file.")
+        }
     }
 
     private var mainInterface: some View {

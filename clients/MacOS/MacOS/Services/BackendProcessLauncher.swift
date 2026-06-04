@@ -17,6 +17,7 @@ final class BackendProcessLauncher: BackendProcessLaunching {
     private let fileManager: FileManager
     private let sourceFilePath: String
     private var process: Process?
+    private var lifecyclePipe: Pipe?
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -29,9 +30,7 @@ final class BackendProcessLauncher: BackendProcessLaunching {
     }
 
     deinit {
-        if process?.isRunning == true {
-            process?.terminate()
-        }
+        closeLifecyclePipe()
     }
 
     func launchBackendIfNeeded() throws {
@@ -39,12 +38,17 @@ final class BackendProcessLauncher: BackendProcessLaunching {
             return
         }
 
+        closeLifecyclePipe()
+        process = nil
+
         let command = try resolveLaunchCommand()
         let backendProcess = Process()
+        let lifecyclePipe = Pipe()
         backendProcess.executableURL = command.executableURL
         backendProcess.arguments = command.arguments
         backendProcess.currentDirectoryURL = backendWorkingDirectory(fallback: command.currentDirectoryURL)
         backendProcess.environment = backendEnvironment()
+        backendProcess.standardInput = lifecyclePipe
         let outputHandle = FileHandle(forWritingAtPath: "/dev/null")
         backendProcess.standardOutput = outputHandle
         backendProcess.standardError = outputHandle
@@ -52,10 +56,14 @@ final class BackendProcessLauncher: BackendProcessLaunching {
         do {
             try backendProcess.run()
         } catch {
+            lifecyclePipe.fileHandleForReading.closeFile()
+            lifecyclePipe.fileHandleForWriting.closeFile()
             throw BackendProcessLauncherError.launchFailed(command.displayName, error)
         }
 
+        lifecyclePipe.fileHandleForReading.closeFile()
         process = backendProcess
+        self.lifecyclePipe = lifecyclePipe
     }
 
     private func resolveLaunchCommand() throws -> BackendLaunchCommand {
@@ -179,6 +187,11 @@ final class BackendProcessLauncher: BackendProcessLaunching {
         }
 
         return String(cString: homeDirectory)
+    }
+
+    private func closeLifecyclePipe() {
+        lifecyclePipe?.fileHandleForWriting.closeFile()
+        lifecyclePipe = nil
     }
 }
 
