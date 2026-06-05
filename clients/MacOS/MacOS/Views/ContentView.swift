@@ -151,6 +151,36 @@ struct ContentView: View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
                 Button {
+                    browserViewModel.goBack()
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .keyboardShortcut("[", modifiers: .command)
+                .help("Back")
+                .disabled(!browserViewModel.canGoBack)
+
+                Button {
+                    browserViewModel.goForward()
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .keyboardShortcut("]", modifiers: .command)
+                .help("Forward")
+                .disabled(!browserViewModel.canGoForward)
+
+                Button {
+                    browserViewModel.goUp()
+                } label: {
+                    Image(systemName: "arrow.up")
+                }
+                .keyboardShortcut(.upArrow, modifiers: .command)
+                .help("Enclosing Folder")
+                .disabled(!browserViewModel.canGoUp)
+
+                Divider()
+                    .frame(height: 18)
+
+                Button {
                     browserViewModel.refresh()
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -163,34 +193,48 @@ struct ContentView: View {
                     .lineLimit(1)
 
                 Spacer()
-
-                Text("\(browserViewModel.entries.count) items")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
             }
 
             HStack(spacing: 8) {
                 Image(systemName: "folder")
                     .foregroundStyle(.secondary)
 
-                TextField("Directory path", text: $browserViewModel.path)
+                TextField(
+                    "File or directory path",
+                    text: Binding(
+                        get: { browserViewModel.path },
+                        set: { browserViewModel.updatePathInput($0) }
+                    )
+                )
                     .textFieldStyle(.roundedBorder)
                     .onSubmit {
                         browserViewModel.openCurrentPath()
                     }
 
                 Button {
-                    browserViewModel.openCurrentPath()
+                    browserViewModel.openSelectedItemOrCurrentPath()
                 } label: {
                     Label("Open", systemImage: "arrow.right.circle")
                 }
-                .disabled(browserViewModel.isLoading)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Open the selected item, or open the entered path")
+                .disabled(!browserViewModel.canOpen)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(.bar)
+        .overlay {
+            Button {
+                browserViewModel.toggleHiddenFiles()
+            } label: {
+                EmptyView()
+            }
+            .keyboardShortcut(".", modifiers: [.command, .shift])
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
     }
 
     private var directoryBrowser: some View {

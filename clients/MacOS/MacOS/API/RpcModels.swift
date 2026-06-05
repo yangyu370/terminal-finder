@@ -86,6 +86,11 @@ struct OpenDirectoryResult: Decodable {
     let state: WorkspaceState
     let listing: DirectoryListing?
 
+    init(state: WorkspaceState, listing: DirectoryListing?) {
+        self.state = state
+        self.listing = listing
+    }
+
     init(from decoder: any Decoder) throws {
         let container = try? decoder.container(keyedBy: CodingKeys.self)
         if let state = try container?.decodeIfPresent(WorkspaceState.self, forKey: .state) {

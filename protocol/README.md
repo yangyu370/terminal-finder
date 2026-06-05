@@ -120,7 +120,7 @@ GET /health
 }
 ```
 
-`workspace.openDirectory` validates that `path` exists and is a directory, updates `currentDirectory`, and returns the refreshed state plus a non-recursive directory listing so clients can redraw immediately. It does not change `workspaceRoot`.
+`workspace.openDirectory` validates that `path` exists and is a directory, then returns the refreshed state plus a non-recursive directory listing so clients can redraw immediately. Opening a directory inside the canonical current `workspaceRoot` preserves that root and updates `currentDirectory`. Opening a directory outside it, opening an ancestor of it, or opening a directory after the current root can no longer be canonicalized sets both `workspaceRoot` and `currentDirectory` to the canonical target directory.
 
 ## workspace.listDirectory
 

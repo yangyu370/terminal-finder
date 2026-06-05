@@ -36,13 +36,18 @@ impl WorkspaceStore {
             .clone()
     }
 
-    pub fn set_current_directory(&self, directory: PathBuf) -> WorkspaceState {
+    pub fn set_directory_state(
+        &self,
+        workspace_root: PathBuf,
+        current_directory: PathBuf,
+    ) -> WorkspaceState {
         let mut workspace = self
             .workspace
             .write()
             .expect("workspace state lock is not poisoned");
 
-        workspace.current_directory = directory;
+        workspace.workspace_root = workspace_root;
+        workspace.current_directory = current_directory;
         workspace.clone()
     }
 }
@@ -61,14 +66,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn setting_current_directory_keeps_workspace_root() {
+    fn setting_directory_state_updates_root_and_current_directory_atomically() {
         let initial_directory = std::env::temp_dir();
         let store = WorkspaceStore::new(initial_directory.clone());
-        let next_directory = initial_directory.join("child");
+        let next_root = initial_directory.join("next");
+        let next_directory = next_root.join("child");
 
-        let workspace = store.set_current_directory(next_directory.clone());
+        let workspace = store.set_directory_state(next_root.clone(), next_directory.clone());
 
-        assert_eq!(workspace.workspace_root, initial_directory);
+        assert_eq!(workspace.workspace_root, next_root);
         assert_eq!(workspace.current_directory, next_directory);
     }
 }

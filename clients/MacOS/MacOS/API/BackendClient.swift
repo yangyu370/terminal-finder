@@ -3,7 +3,6 @@
 //  MacOS
 //
 //  Created by Wang on 2026/6/1.
-//
 import Foundation
 
 protocol BackendClientProtocol {
@@ -91,7 +90,10 @@ struct BackendClient: BackendClientProtocol {
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
             if let rpcError = try? JSONDecoder().decode(RpcErrorResponse.self, from: data) {
-                throw BackendClientError.rpcError(rpcError.error.message)
+                throw BackendClientError.rpcError(
+                    code: rpcError.error.code,
+                    message: rpcError.error.message
+                )
             }
 
             throw BackendClientError.unhealthyStatus(httpResponse.statusCode)
@@ -109,7 +111,15 @@ enum BackendClientError: LocalizedError {
     case invalidResponse
     case rejectedResponse
     case unhealthyStatus(Int)
-    case rpcError(String)
+    case rpcError(code: String, message: String)
+
+    var rpcCode: String? {
+        guard case .rpcError(let code, _) = self else {
+            return nil
+        }
+
+        return code
+    }
 
     var errorDescription: String? {
         switch self {
@@ -119,7 +129,7 @@ enum BackendClientError: LocalizedError {
             return "Core rejected the request."
         case .unhealthyStatus(let statusCode):
             return "Core returned HTTP \(statusCode)."
-        case .rpcError(let message):
+        case .rpcError(_, let message):
             return message
         }
     }

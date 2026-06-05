@@ -11,17 +11,21 @@ import Foundation
 
 @MainActor
 final class WorkspaceBrowserViewModel: ObservableObject {
-    @Published var path: String
+    @Published private(set) var path: String
     @Published private(set) var workspaceState: WorkspaceState?
     @Published private(set) var listing: DirectoryListing?
     @Published private(set) var isLoading = false
     @Published private(set) var errorText: String?
     @Published private(set) var fileOpenErrorText: String?
     @Published private(set) var selectedEntryPath: String?
+    @Published private(set) var showsHiddenFiles = false
+    @Published private var backHistory: [String] = []
+    @Published private var forwardHistory: [String] = []
 
     private let backendClient: any BackendClientProtocol
     private let workspaceItemOpener: any WorkspaceItemOpening
     private var loadTask: Task<Void, Never>?
+    private var shouldReloadInitialState = false
 
     let sidebarLocations: [WorkspaceSidebarLocation]
 
@@ -47,11 +51,36 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     }
 
     var entries: [DirectoryEntry] {
-        listing?.entries ?? []
+        let allEntries = listing?.entries ?? []
+        guard !showsHiddenFiles else {
+            return allEntries
+        }
+
+        return allEntries.filter { !$0.name.hasPrefix(".") }
+    }
+
+    var canGoBack: Bool {
+        !isLoading && !backHistory.isEmpty
+    }
+
+    var canGoForward: Bool {
+        !isLoading && !forwardHistory.isEmpty
+    }
+
+    var canGoUp: Bool {
+        !isLoading && parentDirectoryPath != nil
+    }
+
+    var canOpen: Bool {
+        !isLoading && (selectedEntry != nil || !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     func loadInitialState() {
-        loadTask?.cancel()
+        guard !isLoading else {
+            shouldReloadInitialState = true
+            return
+        }
+
         isLoading = true
         errorText = nil
 
@@ -66,6 +95,9 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                 workspaceState = state
                 path = state.currentDirectory
                 listing = result
+                selectedEntryPath = nil
+                backHistory.removeAll()
+                forwardHistory.removeAll()
             } catch is CancellationError {
                 return
             } catch {
@@ -80,25 +112,88 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                 return
             }
 
-            isLoading = false
+            finishLoading()
         }
     }
 
     func openCurrentPath() {
-        openDirectory(path: path)
+        openPath(path)
+    }
+
+    func openSelectedItemOrCurrentPath() {
+        if let selectedEntry {
+            open(selectedEntry)
+            return
+        }
+
+        openCurrentPath()
+    }
+
+    func updatePathInput(_ value: String) {
+        path = value
+        selectedEntryPath = nil
     }
 
     func refresh() {
+        guard !isLoading else {
+            return
+        }
+
         let targetPath = workspaceState?.currentDirectory ?? path
         loadListing(path: targetPath)
     }
 
-    func open(_ entry: DirectoryEntry) {
-        if entry.isDirectory {
-            openDirectory(path: entry.path)
+    func toggleHiddenFiles() {
+        let selectedEntryIsHidden = listing?.entries.first {
+            $0.path == selectedEntryPath
+        }?.name.hasPrefix(".") == true
+
+        showsHiddenFiles.toggle()
+
+        if !showsHiddenFiles, selectedEntryIsHidden {
+            selectedEntryPath = nil
+        }
+    }
+
+    func goBack() {
+        guard let origin = currentDirectoryPath,
+              let destination = backHistory.last
+        else {
             return
         }
 
+        navigate(to: destination, mode: .back(origin: origin, destination: destination))
+    }
+
+    func goForward() {
+        guard let origin = currentDirectoryPath,
+              let destination = forwardHistory.last
+        else {
+            return
+        }
+
+        navigate(to: destination, mode: .forward(origin: origin, destination: destination))
+    }
+
+    func goUp() {
+        guard let destination = parentDirectoryPath else {
+            return
+        }
+
+        navigate(to: destination, mode: .new(origin: currentDirectoryPath))
+    }
+
+    func open(_ entry: DirectoryEntry) {
+        guard !isLoading else {
+            return
+        }
+
+        if entry.isDirectory {
+            navigate(to: entry.path, mode: .new(origin: currentDirectoryPath))
+            return
+        }
+
+        errorText = nil
         do {
             try workspaceItemOpener.openFile(atPath: entry.path)
             fileOpenErrorText = nil
@@ -108,7 +203,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     }
 
     func open(_ location: WorkspaceSidebarLocation) {
-        openDirectory(path: location.path)
+        navigate(to: location.path, mode: .new(origin: currentDirectoryPath))
     }
 
     func dismissFileOpenError() {
@@ -123,38 +218,110 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         selectedEntryPath = path
     }
 
-    private func openDirectory(path targetPath: String) {
-        let trimmedPath = targetPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPath.isEmpty else {
-            loadTask?.cancel()
-            isLoading = false
-            errorText = "Enter a directory path."
+    private var currentDirectoryPath: String? {
+        workspaceState?.currentDirectory ?? listing?.path
+    }
+
+    private var selectedEntry: DirectoryEntry? {
+        guard let selectedEntryPath else {
+            return nil
+        }
+
+        return entries.first { $0.path == selectedEntryPath }
+    }
+
+    private var parentDirectoryPath: String? {
+        guard let currentDirectoryPath else {
+            return nil
+        }
+
+        let currentURL = URL(fileURLWithPath: currentDirectoryPath).standardizedFileURL
+        let parentURL = currentURL.deletingLastPathComponent().standardizedFileURL
+        guard parentURL.path != currentURL.path else {
+            return nil
+        }
+
+        return parentURL.path
+    }
+
+    private func openPath(_ targetPath: String) {
+        let resolvedPath = resolvedInputPath(targetPath)
+        guard !resolvedPath.isEmpty else {
+            errorText = "Enter a file or directory path."
             return
         }
 
-        loadTask?.cancel()
+        navigate(to: resolvedPath, mode: .new(origin: currentDirectoryPath), openFileWhenNotDirectory: true)
+    }
+
+    private func resolvedInputPath(_ input: String) -> String {
+        let trimmedPath = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else {
+            return ""
+        }
+
+        let expandedPath = NSString(string: trimmedPath).expandingTildeInPath
+        guard !expandedPath.hasPrefix("/") else {
+            return URL(fileURLWithPath: expandedPath).standardizedFileURL.path
+        }
+
+        let basePath = currentDirectoryPath ?? path
+        return URL(fileURLWithPath: basePath)
+            .appendingPathComponent(expandedPath)
+            .standardizedFileURL
+            .path
+    }
+
+    private func navigate(
+        to targetPath: String,
+        mode: NavigationMode,
+        openFileWhenNotDirectory: Bool = false
+    ) {
+        guard !isLoading else {
+            return
+        }
+
+        let trimmedPath = targetPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else {
+            errorText = "Enter a file or directory path."
+            return
+        }
+
         isLoading = true
         errorText = nil
 
-        loadTask = Task { [backendClient] in
+        loadTask = Task { [backendClient, workspaceItemOpener] in
             do {
                 let result = try await backendClient.openDirectory(path: trimmedPath)
-                let listingResult: DirectoryListing
-                if let listing = result.listing {
-                    listingResult = listing
-                } else {
-                    listingResult = try await backendClient.listDirectory(path: result.state.currentDirectory)
-                }
                 guard !Task.isCancelled else {
                     return
                 }
 
                 workspaceState = result.state
                 path = result.state.currentDirectory
-                listing = listingResult
                 selectedEntryPath = nil
+                updateHistory(openedPath: result.state.currentDirectory, mode: mode)
+
+                if let resultListing = result.listing {
+                    listing = resultListing
+                } else {
+                    listing = nil
+                    do {
+                        listing = try await backendClient.listDirectory(path: result.state.currentDirectory)
+                    } catch {
+                        errorText = error.localizedDescription
+                    }
+                }
             } catch is CancellationError {
                 return
+            } catch let backendError as BackendClientError
+                where openFileWhenNotDirectory && backendError.rpcCode == "not_directory" {
+                do {
+                    try workspaceItemOpener.openFile(atPath: trimmedPath)
+                    fileOpenErrorText = nil
+                } catch {
+                    fileOpenErrorText = error.localizedDescription
+                }
             } catch {
                 guard !Task.isCancelled else {
                     return
@@ -167,12 +334,47 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                 return
             }
 
-            isLoading = false
+            finishLoading()
+        }
+    }
+
+    private func updateHistory(openedPath: String, mode: NavigationMode) {
+        switch mode {
+        case .new(let origin):
+            guard let origin, origin != openedPath else {
+                return
+            }
+
+            backHistory.append(origin)
+            forwardHistory.removeAll()
+
+        case .back(let origin, let destination):
+            guard backHistory.last == destination else {
+                return
+            }
+
+            backHistory.removeLast()
+            if origin != openedPath {
+                forwardHistory.append(origin)
+            }
+
+        case .forward(let origin, let destination):
+            guard forwardHistory.last == destination else {
+                return
+            }
+
+            forwardHistory.removeLast()
+            if origin != openedPath {
+                backHistory.append(origin)
+            }
         }
     }
 
     private func loadListing(path targetPath: String) {
-        loadTask?.cancel()
+        guard !isLoading else {
+            return
+        }
+
         isLoading = true
         errorText = nil
 
@@ -199,8 +401,18 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                 return
             }
 
-            isLoading = false
+            finishLoading()
         }
+    }
+
+    private func finishLoading() {
+        isLoading = false
+        guard shouldReloadInitialState else {
+            return
+        }
+
+        shouldReloadInitialState = false
+        loadInitialState()
     }
 
     private nonisolated static func defaultInitialPath() -> String {
@@ -221,6 +433,12 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             WorkspaceSidebarLocation(title: "Documents", systemImageName: "doc.text", path: "\(homePath)/Documents")
         ]
     }
+}
+
+private enum NavigationMode {
+    case new(origin: String?)
+    case back(origin: String, destination: String)
+    case forward(origin: String, destination: String)
 }
 
 struct WorkspaceSidebarLocation: Identifiable {

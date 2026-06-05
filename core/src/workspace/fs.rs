@@ -20,6 +20,14 @@ pub fn open_directory_blocking(
     Ok((directory, listing))
 }
 
+pub fn workspace_root_for_directory(workspace_root: PathBuf, directory: &Path) -> PathBuf {
+    workspace_root
+        .canonicalize()
+        .ok()
+        .filter(|root| directory.starts_with(root))
+        .unwrap_or_else(|| directory.to_path_buf())
+}
+
 pub fn list_directory_blocking(
     params: ListDirectoryParams,
 ) -> Result<ListDirectoryResponse, ApiError> {
@@ -178,6 +186,69 @@ mod tests {
     }
 
     #[test]
+    fn keeps_canonical_workspace_root_for_directory_inside_it() {
+        let test_path = unique_test_path("workspace-root-inside");
+        let child_path = test_path.join("child");
+        fs::create_dir(&test_path).expect("create test directory");
+        fs::create_dir(&child_path).expect("create child directory");
+
+        let expected_root = test_path.canonicalize().expect("canonicalize root");
+        let directory = child_path.canonicalize().expect("canonicalize child");
+        let workspace_root = workspace_root_for_directory(test_path.clone(), &directory);
+
+        fs::remove_dir_all(&test_path).expect("remove test directory");
+
+        assert_eq!(workspace_root, expected_root);
+    }
+
+    #[test]
+    fn switches_workspace_root_for_directory_outside_it() {
+        let test_path = unique_test_path("workspace-root-outside");
+        let first_root = test_path.join("first");
+        let second_root = test_path.join("second");
+        fs::create_dir(&test_path).expect("create test directory");
+        fs::create_dir(&first_root).expect("create first root");
+        fs::create_dir(&second_root).expect("create second root");
+
+        let directory = second_root
+            .canonicalize()
+            .expect("canonicalize second root");
+        let workspace_root = workspace_root_for_directory(first_root, &directory);
+
+        fs::remove_dir_all(&test_path).expect("remove test directory");
+
+        assert_eq!(workspace_root, directory);
+    }
+
+    #[test]
+    fn switches_workspace_root_when_opening_its_ancestor() {
+        let test_path = unique_test_path("workspace-root-ancestor");
+        let child_path = test_path.join("child");
+        fs::create_dir(&test_path).expect("create test directory");
+        fs::create_dir(&child_path).expect("create child directory");
+
+        let directory = test_path.canonicalize().expect("canonicalize ancestor");
+        let workspace_root = workspace_root_for_directory(child_path, &directory);
+
+        fs::remove_dir_all(&test_path).expect("remove test directory");
+
+        assert_eq!(workspace_root, directory);
+    }
+
+    #[test]
+    fn switches_workspace_root_when_current_root_is_missing() {
+        let test_path = unique_test_path("workspace-root-missing");
+        fs::create_dir(&test_path).expect("create test directory");
+
+        let directory = test_path.canonicalize().expect("canonicalize directory");
+        let workspace_root = workspace_root_for_directory(test_path.join("missing"), &directory);
+
+        fs::remove_dir_all(&test_path).expect("remove test directory");
+
+        assert_eq!(workspace_root, directory);
+    }
+
+    #[test]
     fn lists_directory_entries_with_directories_first() {
         let test_path = std::env::temp_dir().join(format!(
             "terminal-finder-list-directory-test-{}",
@@ -255,5 +326,15 @@ mod tests {
             system_time_to_utc_iso(time).as_deref(),
             Some("2026-06-01T08:00:00Z")
         );
+    }
+
+    fn unique_test_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "terminal-finder-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time is after unix epoch")
+                .as_nanos()
+        ))
     }
 }

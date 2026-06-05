@@ -4,7 +4,7 @@ use crate::{
     workspace::{
         GetStateResponse, ListDirectoryParams, ListDirectoryResponse, OpenDirectoryParams,
         OpenDirectoryResponse, WorkspaceStateResponse,
-        fs::{list_directory_blocking, open_directory_blocking},
+        fs::{list_directory_blocking, open_directory_blocking, workspace_root_for_directory},
         state::WorkspaceState,
     },
 };
@@ -28,15 +28,21 @@ pub async fn open_directory(
         "opening directory"
     );
 
-    let (directory, listing) =
-        tokio::task::spawn_blocking(move || open_directory_blocking(requested_path))
-            .await
-            .map_err(|error| ApiError::BackgroundTask {
-                operation: "workspace.openDirectory",
-                message: error.to_string(),
-            })??;
+    let workspace_root = state.workspace().state().workspace_root;
+    let (workspace_root, directory, listing) = tokio::task::spawn_blocking(move || {
+        let (directory, listing) = open_directory_blocking(requested_path)?;
+        let workspace_root = workspace_root_for_directory(workspace_root, &directory);
+        Ok::<_, ApiError>((workspace_root, directory, listing))
+    })
+    .await
+    .map_err(|error| ApiError::BackgroundTask {
+        operation: "workspace.openDirectory",
+        message: error.to_string(),
+    })??;
 
-    let workspace_state = state.workspace().set_current_directory(directory);
+    let workspace_state = state
+        .workspace()
+        .set_directory_state(workspace_root, directory);
     let state = workspace_state_response(workspace_state);
 
     tracing::info!(

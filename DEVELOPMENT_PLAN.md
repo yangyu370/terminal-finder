@@ -68,7 +68,7 @@ terminal-finder/
 
 Keep the current structure lightweight until a feature needs more separation. Do not create the future `core/crates/*` workspace until the backend has enough real surface area to justify it.
 
-### Current Status As Of 2026-06-03
+### Current Status As Of 2026-06-05
 
 The project is now past the pure connectivity baseline.
 
@@ -81,14 +81,21 @@ Completed:
 - Backend request logging uses `tracing` with method/status/duration fields.
 - Directory listing runs through `tokio::task::spawn_blocking` so filesystem scans do not block async runtime workers.
 - Workspace state is now owned by the backend through `workspace.getState` and `workspace.openDirectory`.
+- `workspace.openDirectory` now preserves `workspaceRoot` for directories inside the canonical root and switches root/current for root-external directories, root ancestors, or an invalid previous root.
 - The macOS client checks `/health` on startup, launches the bundled Rust backend with `Process` when needed, polls health, and only then enters the main workspace UI.
 - The macOS build copies the Rust core executable into the app bundle so the client can start it without relying on a manually launched backend.
 - The macOS app sandbox is disabled for the current local-first backend model so a client-launched backend can see the same real user directories as a manually launched backend.
+- The macOS client has a `MacOSTests` unit-test target with `WorkspaceBrowserViewModelTests` covering hidden files, navigation history, relative path input, file-open fallback, refresh, failure handling, and reconnect/load resync behavior.
+- The Phase 1 UI no longer shows status-bar item counts or visible-count-of-total text.
+- Current verification baseline: macOS client unit tests, Rust unit tests, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, and `git diff --check`.
 
 Still active:
 
-- The client is still only partially Finder-like; the directory table has moved toward AppKit, but sidebar, toolbar, context menus, and keyboard behavior still need refinement.
+- The client is still only partially Finder-like; sidebar and toolbar are improving, while context menus, native table behavior, and broader keyboard behavior still need refinement.
 - Backend process lifecycle is a first working path, but packaging/signing and graceful shutdown semantics should be revisited before distribution.
+- Backend directory scanning still needs race handling for entries deleted during scan, while preserving hard failures for permission and metadata errors.
+- Backend workspace state should still gain `RwLock` poison recovery and additional concurrency coverage where state snapshots matter.
+- Workspace/service logging still needs path/params minimization for info/warn logs.
 - There is no event stream or file watcher yet.
 - File operations, terminal sessions, search, and git awareness remain deferred.
 
@@ -322,7 +329,7 @@ Do not build yet:
 
 Goal: prove the core product loop: macOS client asks Rust backend for a directory, then renders it in native AppKit controls.
 
-Status: first backend-to-client directory browsing slice completed. Full Finder-like Phase 1 is still in progress.
+Status: core workspace browsing loop is functional and tested. Full Finder-like Phase 1 is still in progress.
 
 First slice:
 
@@ -347,6 +354,20 @@ First slice built:
 - `WorkspaceBrowserViewModel` with cancellable directory loads.
 - Simple SwiftUI path field and list rendering.
 - Default path fixed to the real user home instead of the sandbox container home.
+
+Current Phase 1 built:
+
+- Backend-owned workspace state with `workspace.getState`.
+- `workspace.openDirectory` returning refreshed state plus non-recursive listing.
+- `workspaceRoot` / `currentDirectory` semantics for root-internal navigation, root-external navigation, ancestors, and invalid previous roots.
+- macOS sidebar entries for common locations.
+- macOS navigation controls for back, forward, and parent directory.
+- Path input that resolves relative paths from the current backend directory.
+- Double-click/open action for directories and default-app file opening when backend reports `not_directory`.
+- Hidden-file filtering with a client-side toggle; this is presentation filtering over backend entries.
+- Toolbar/browser UI that avoids item counts and visible-count-of-total text.
+- `MacOSTests` target with `WorkspaceBrowserViewModelTests`.
+- Rust tests covering directory listing, symlinked directories, timestamp formatting, and workspaceRoot selection semantics.
 
 Initial request shape:
 
@@ -392,6 +413,15 @@ Full Phase 1 build:
 - File list using `NSTableView`.
 - Double-click folder to open.
 - Double-click file to ask macOS to open with default app.
+- Automated tests for every new backend/client behavior added in this phase.
+
+Remaining Phase 1 hardening:
+
+- Directory scan should explicitly skip `NotFound` entry races and fail on permission or other metadata errors.
+- Workspace state should recover from poisoned `RwLock` with warning logs.
+- Service logs should avoid full paths and detailed params at info/warn level.
+- Add backend tests for failed `openDirectory` preserving previous root/current once service-level test hooks exist.
+- Continue replacing proof-of-flow SwiftUI pieces with native AppKit behavior where it materially improves Finder-like usage.
 
 Implementation note:
 
