@@ -10,6 +10,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var connectionViewModel = BackendConnectionViewModel()
     @StateObject private var browserViewModel = WorkspaceBrowserViewModel()
+    @StateObject private var terminalPanelLayout = PseudoTerminalPanelLayoutState()
 
     var body: some View {
         Group {
@@ -23,6 +24,9 @@ struct ContentView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .task {
             connectionViewModel.connect()
+        }
+        .overlay {
+            terminalPanelShortcut
         }
         .onChange(of: connectionViewModel.status) { _, status in
             guard status == .connected else {
@@ -50,6 +54,20 @@ struct ContentView: View {
         }
     }
 
+    private var terminalPanelShortcut: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.18)) {
+                terminalPanelLayout.open()
+            }
+        } label: {
+            EmptyView()
+        }
+        .keyboardShortcut("k", modifiers: .command)
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
     private var mainInterface: some View {
         HStack(spacing: 0) {
             sidebar
@@ -61,9 +79,39 @@ struct ContentView: View {
 
                 Divider()
 
-                directoryBrowser
+                workspaceContent
             }
         }
+    }
+
+    private var workspaceContent: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                directoryBrowser
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if terminalPanelLayout.isOpen {
+                    TerminalResizeHandle { verticalDrag in
+                        terminalPanelLayout.resize(
+                            byVerticalDrag: verticalDrag,
+                            availableContentHeight: geometry.size.height
+                        )
+                    }
+
+                    PseudoTerminalPanelView { viewportSize in
+                        terminalPanelLayout.noteViewportSize(viewportSize)
+                    }
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: terminalPanelLayout.height,
+                        idealHeight: terminalPanelLayout.height,
+                        maxHeight: terminalPanelLayout.height
+                    )
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+        }
+        .clipped()
     }
 
     private var startupView: some View {

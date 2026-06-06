@@ -13,12 +13,12 @@
 
 ## 当前阶段
 
-- 当前优先 Phase 1：workspace 与目录浏览体验。
-- 当前已有 `MacOSTests` target 和 `WorkspaceBrowserViewModelTests`，后续客户端行为改动必须优先用这些测试锁定。
+- 当前优先 Phase 1：workspace、目录浏览体验和窗口内伪终端面板的 UI 外壳。
+- 当前已有 `MacOSTests` target、`WorkspaceBrowserViewModelTests` 和 `PseudoTerminalPanelLayoutStateTests`，后续客户端行为改动必须优先用这些测试锁定。
 - 可以继续保留 SwiftUI proof-of-flow，用于验证 backend 通信、目录列表和基础交互。
 - Finder-like 主界面应逐步转向更原生的 macOS 结构：AppKit、`NSTableView`、sidebar、toolbar、native behavior。
 - 隐藏文件切换、后退/前进/上级目录、路径输入、刷新、打开文件、连接恢复后重新同步、以及不在状态栏/底栏显示项目数量等当前行为都属于 Phase 1 受保护行为。
-- Phase 1 内不要提前实现真实 terminal、search、git、plugins，也不要为了未来功能提前扩大客户端架构。
+- Phase 1 内不要在客户端实现真实 PTY/shell 生命周期、search、git、plugins，也不要为了未来功能提前扩大客户端架构。
 
 ## 分层职责
 
@@ -68,6 +68,21 @@
 - 打开目录后是否保留或切换 `workspaceRoot` 完全由 backend 决定；客户端不得根据字符串前缀、父子目录关系、symlink 目标或用户入口自行推断和改写 root，只消费并呈现 backend 返回的新 state。
 - 错误展示可以由客户端决定，但错误含义、文件系统权限、路径有效性等判断应来自 backend。
 - 任何为了 UI 方便而新增的字段，如果代表产品事实，应先加到 backend/protocol；不要只在 Swift DTO 或 ViewModel 中拼出来。
+
+## 导航与打开边界
+
+- 路径打开、目录事实判断、目录切换和列目录必须走 Rust backend RPC；客户端不得用 `FileManager`、字符串前缀或本地 stat 结果决定路径是否为目录、是否存在或是否可进入。
+- `WorkspaceItemOpener` 只负责把文件交给 macOS 系统打开。目录导航不属于 opener 职责；用户双击目录、输入路径、点击 sidebar 或执行上级/刷新，都应回到 ViewModel/API/backend 链路。
+- 无效、缺失或不可进入目录的导航错误应通过可复用 `WorkspaceAlertPresenter` 展示。失败时保持当前目录事实不变，并刷新当前 listing，避免 UI 停留在半切换状态。
+- 刷新行为只重新 list 当前目录；不要为了恢复 UI 状态而额外调用 openDirectory 或在客户端重新推断当前路径。
+
+## 伪终端面板边界
+
+- 伪终端面板是主窗口内部布局，不使用外部 `NSPanel`、child window 或附着窗口。Command+K 打开时主窗口大小保持不变，由窗口内 directory browser 让出空间；当前不提供关闭控件。
+- 客户端可以管理纯 UI 状态：panel open/closed、面板高度、拖拽布局、viewport 像素测量、focus 和动画。
+- `PseudoTerminalPanelLayoutState` 应保持为独立 UI 状态；`TerminalResizeHandle` 应保持为独立拖拽分割条；`PseudoTerminalPanelView` 通过 `onViewportChanged` 测量可用尺寸。
+- viewport 变化要 debounce/coalesce，后续只把合并后的尺寸转换成 backend 需要的 resize 请求。不要把每次 SwiftUI layout 抖动都直接当作 terminal 业务事件。
+- 客户端不得实现 PTY、shell、进程生命周期、terminal cwd、命令执行、环境变量、buffer/backscroll 或 resize 语义。真实 terminal 会话事实和生命周期归 Rust backend/protocol 所有。
 
 ## 原生体验方向
 

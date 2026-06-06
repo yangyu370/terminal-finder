@@ -26,10 +26,10 @@
 - 任何新增 workspace 行为，都要先明确它读写的是 backend state、filesystem 事实，还是纯展示派生数据；纯展示派生数据不应进入 core。
 - 当前已修复并测试覆盖：打开 root 内目录保留 root，打开 root 外、root 祖先或 root 失效时切换 root/current。
 - 当前剩余重大待办：目录扫描竞争只忽略 `NotFound`、`RwLock` 中毒恢复、info/warn 日志路径脱敏、必要时补并发 `openDirectory` 状态测试。
+- PTY 尚未接入时，不要在 core 内伪造 shell 行为；但协议和状态设计不得把 shell 生命周期固定到客户端，后续 PTY 对接应由 core 承担真实会话管理。
 
 暂时不要提前实现：
 
-- terminal session / PTY 管理
 - search / indexing
 - git awareness
 - plugins / automation
@@ -70,6 +70,16 @@
 - 客户端主动销毁 launcher 时应关闭 pipe 写端，并允许 core 完成 graceful shutdown；不应依赖只在正常退出路径执行的清理逻辑保证 core 退出。
 - 手动交互运行 `cargo run` 时，core 从终端 stdin 读取，使用 Ctrl-C 正常退出；输入 Ctrl-D 或以已关闭、`/dev/null`、管道末端等 EOF stdin 启动时，core 立即 graceful shutdown，这是 stdin 生命周期契约的预期边界。
 - 生命周期任务不得阻塞 async runtime；shutdown reason 应保留非敏感的结构化 info 日志，便于区分 `ctrl_c` 与 `stdin_eof`。
+
+## PTY 边界
+
+- 后续接入 PTY 时，core 拥有 PTY session、shell process、stdin/stdout/stderr stream、working directory、退出状态和资源清理的生命周期。
+- 客户端负责终端面板 UI、布局、viewport 像素测量、字体指标测量、系统打开文件等表现层能力；不要把 shell 启动、进程持有、PTY IO 或会话恢复塞进客户端。
+- 终端尺寸边界应由客户端发送合并后的可用尺寸，或发送已按本地字体指标转换后的 `rows` / `cols`；core 负责把最终 `rows` / `cols` 应用到 PTY，不负责测量像素 viewport。
+- core 处理 resize 必须容忍连续请求、重复尺寸和乱序附近的快速更新；实现应幂等，并方便调用方节流或合并，不因重复 resize 破坏 session。
+- PTY 的 working directory 应由 core 根据 workspace state、请求参数和后端路径规则确定并校验；客户端不能用自己的路径推断覆盖后端事实。
+- PTY API 与事件流应表达跨平台业务语义，例如 session id、cwd、rows、cols、data、exit status 和错误 code；不要返回某个客户端面板布局或视觉状态。
+- 会影响 shell process、PTY session 或 cwd 的行为都必须走后端 API，并配套协议文档和 Rust 测试。
 
 ## API 与协议
 

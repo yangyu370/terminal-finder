@@ -14,7 +14,7 @@ Rust backend 是产品核心和 source of truth。macOS、未来 web、Windows�
 
 当前处于 Phase 1: Workspace And Directory Browsing。
 
-Phase 1 的边界要收紧：本阶段只证明 workspace state、目录打开、目录列表、macOS Finder-like 浏览体验和 backend/client 协议可以稳定工作。不要因为相邻功能看起来顺手，就扩大到搜索、终端、文件监听、文件变更、git、插件、AI、索引或多平台客户端实现。
+Phase 1 的边界要收紧：本阶段只证明 workspace state、目录打开、目录列表、macOS Finder-like 浏览体验和 backend/client 协议可以稳定工作。不要因为相邻功能看起来顺手，就扩大到搜索、真实 shell/PTY 会话、文件监听、文件变更、git、插件、AI、索引或多平台客户端实现。
 
 优先完成：
 
@@ -25,7 +25,7 @@ Phase 1 的边界要收紧：本阶段只证明 workspace state、目录打开�
 
 暂时不要做：
 
-- real terminal sessions
+- real shell/PTY sessions
 - search / indexing
 - git awareness
 - plugins
@@ -35,12 +35,16 @@ Phase 1 的边界要收紧：本阶段只证明 workspace state、目录打开�
 
 ## 架构边界
 
-- Backend owns workspace state, current directory, file operations, terminal lifecycle, future search/git/events/plugins/automation.
-- Client owns rendering, selection state, focus, layout, interaction, and platform-native UI behavior.
-- 文件数据、目录状态、未来文件操作必须通过 backend API 表达，不要把产品核心逻辑搬进客户端。
-- 客户端可以做 UI 临时状态、视觉排序、焦点和选择；不要在客户端私自维护与 backend 冲突的 canonical workspace state、目录栈或文件系统真相。
+- Core owns workspace state, current directory, directory validation, filesystem facts, path open/list operations, future file operations, and future search/git/events/plugins/automation.
+- Client owns AppKit windows, rendering, selection state, focus, visual/layout state, interaction, platform-native open-file behavior, alerts, and viewport measurement.
+- 文件数据、目录状态、路径打开/列目录和未来文件操作必须通过 backend API 表达，不要把产品核心逻辑搬进客户端。
+- 客户端可以做 UI 临时状态、视觉排序、焦点、选择和窗口内伪终端面板布局；不要在客户端私自维护与 backend 冲突的 canonical workspace state、目录栈或文件系统真相。
 - 后端可以暴露平台无关的文件/目录能力；不要让后端依赖 macOS AppKit、Finder 私有体验或某个客户端的 UI 形状。
-- 打开文件、系统默认应用、窗口行为等平台动作可以由客户端触发，但必须基于 backend 返回的数据或明确的 API 结果，不要绕过 backend 构造核心状态。
+- 打开文件和系统默认应用是客户端平台行为，但目录导航、路径打开和目录 listing 的事实必须来自 backend；不要绕过 backend 构造核心状态。
+- 无效或缺失目录导航失败时，客户端负责呈现可复用 AppKit alert，并保持当前目录语义；需要刷新 listing 时仍通过 backend 查询当前目录。
+- 当前伪终端面板只是窗口内 UI：Command+K、压缩目录 view、拖拽高度和 viewport 测量都属于客户端视觉/布局状态，不代表已有 shell/PTY runtime。
+- PTY 接入前，不要把 shell process、PTY session、命令执行生命周期或终端状态机塞进客户端；需要接入时先定义 backend 协议、core 生命周期和跨层测试。
+- 客户端 resize 只能维护 `isOpen`、`height`、`viewportSize` 等 UI 状态，并 debounce/coalesce viewport 变化；未来 backend 只接受合并后的终端可用尺寸或 rows/cols，不接收原始拖拽事件、AppKit view 尺寸细节或客户端布局高度。
 - API 优先保持简单可调试：本地 HTTP JSON RPC 先行，WebSocket 事件后置。
 - 修改 API 行为或 workspace state 语义时，必须同步更新 backend、客户端调用、测试和 `protocol/README.md`，不要让任一层保留旧规则。
 

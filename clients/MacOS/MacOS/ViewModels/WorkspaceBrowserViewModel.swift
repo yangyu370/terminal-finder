@@ -24,6 +24,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
 
     private let backendClient: any BackendClientProtocol
     private let workspaceItemOpener: any WorkspaceItemOpening
+    private let workspaceAlertPresenter: any WorkspaceAlertPresenting
     private var loadTask: Task<Void, Never>?
     private var shouldReloadInitialState = false
 
@@ -32,10 +33,12 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     init(
         backendClient: (any BackendClientProtocol)? = nil,
         workspaceItemOpener: (any WorkspaceItemOpening)? = nil,
+        workspaceAlertPresenter: (any WorkspaceAlertPresenting)? = nil,
         initialPath: String = WorkspaceBrowserViewModel.defaultInitialPath()
     ) {
         self.backendClient = backendClient ?? BackendClient()
         self.workspaceItemOpener = workspaceItemOpener ?? WorkspaceItemOpener()
+        self.workspaceAlertPresenter = workspaceAlertPresenter ?? WorkspaceAlertPresenter()
         self.path = initialPath
         sidebarLocations = WorkspaceBrowserViewModel.defaultSidebarLocations(homePath: initialPath)
     }
@@ -247,7 +250,12 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     private func openPath(_ targetPath: String) {
         let resolvedPath = resolvedInputPath(targetPath)
         guard !resolvedPath.isEmpty else {
-            errorText = "Enter a file or directory path."
+            workspaceAlertPresenter.showWarning(
+                message: "Enter a folder path to continue.",
+                informativeText: "Terminal Finder kept your current folder open.",
+                recoverySuggestion: "Type or paste a valid file or folder path, then try again."
+            )
+            restoreCurrentPathInput()
             return
         }
 
@@ -283,14 +291,19 @@ final class WorkspaceBrowserViewModel: ObservableObject {
 
         let trimmedPath = targetPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPath.isEmpty else {
-            errorText = "Enter a file or directory path."
+            workspaceAlertPresenter.showWarning(
+                message: "Enter a folder path to continue.",
+                informativeText: "Terminal Finder kept your current folder open.",
+                recoverySuggestion: "Type or paste a valid file or folder path, then try again."
+            )
+            restoreCurrentPathInput()
             return
         }
 
         isLoading = true
         errorText = nil
 
-        loadTask = Task { [backendClient, workspaceItemOpener] in
+        loadTask = Task { [backendClient, workspaceItemOpener, workspaceAlertPresenter] in
             do {
                 let result = try await backendClient.openDirectory(path: trimmedPath)
                 guard !Task.isCancelled else {
@@ -327,7 +340,13 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                     return
                 }
 
-                errorText = error.localizedDescription
+                workspaceAlertPresenter.showWarning(
+                    message: "The folder can’t be opened.",
+                    informativeText: "Terminal Finder kept your current folder open and refreshed it.",
+                    detailText: error.localizedDescription,
+                    recoverySuggestion: "Check the path, permissions, or whether the folder still exists."
+                )
+                await refreshCurrentDirectoryAfterNavigationFailure(using: backendClient)
             }
 
             guard !Task.isCancelled else {
@@ -335,6 +354,47 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             }
 
             finishLoading()
+        }
+    }
+
+    private func refreshCurrentDirectoryAfterNavigationFailure(
+        using backendClient: any BackendClientProtocol
+    ) async {
+        guard let currentDirectoryPath else {
+            return
+        }
+
+        do {
+            let refreshedListing = try await backendClient.listDirectory(path: currentDirectoryPath)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            path = currentDirectoryPath
+            listing = refreshedListing
+
+            if let selectedEntryPath,
+               !refreshedListing.entries.contains(where: { $0.path == selectedEntryPath }) {
+                self.selectedEntryPath = nil
+            }
+        } catch {
+            guard !Task.isCancelled else {
+                return
+            }
+
+            restoreCurrentPathInput()
+            workspaceAlertPresenter.showWarning(
+                message: "The folder couldn’t be refreshed.",
+                informativeText: "The current location is unchanged, but Terminal Finder couldn’t reload its contents.",
+                detailText: error.localizedDescription,
+                recoverySuggestion: "Try refreshing again or choose another folder from the sidebar."
+            )
+        }
+    }
+
+    private func restoreCurrentPathInput() {
+        if let currentDirectoryPath {
+            path = currentDirectoryPath
         }
     }
 

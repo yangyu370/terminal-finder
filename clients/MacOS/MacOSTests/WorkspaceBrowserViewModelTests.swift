@@ -94,22 +94,99 @@ final class WorkspaceBrowserViewModelTests: XCTestCase {
     func testFailedDirectoryNavigationDoesNotChangeHistoryOrCurrentPath() async throws {
         let backend = MockBackendClient()
         backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
-        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.listings["/workspace"] = listing(
+            path: "/workspace",
+            entries: [entry(name: "stable.txt", path: "/workspace/stable.txt")]
+        )
         backend.openErrors["/workspace/missing"] = MockBackendClientError.missingOpenResult(
             "/workspace/missing"
         )
-        let viewModel = makeViewModel(backend: backend)
+        let alerts = MockWorkspaceAlertPresenter()
+        let viewModel = makeViewModel(backend: backend, alerts: alerts)
 
         viewModel.loadInitialState()
         try await waitUntilLoaded(viewModel)
 
+        backend.listings["/workspace"] = listing(
+            path: "/workspace",
+            entries: [entry(name: "refreshed.txt", path: "/workspace/refreshed.txt")]
+        )
         viewModel.open(entry(name: "missing", path: "/workspace/missing", isDirectory: true))
         try await waitUntilLoaded(viewModel)
 
         XCTAssertEqual(viewModel.path, "/workspace")
         XCTAssertFalse(viewModel.canGoBack)
         XCTAssertFalse(viewModel.canGoForward)
-        XCTAssertNotNil(viewModel.errorText)
+        XCTAssertNil(viewModel.errorText)
+        XCTAssertEqual(viewModel.entries.map(\.name), ["refreshed.txt"])
+        XCTAssertEqual(backend.listDirectoryPaths, ["/workspace", "/workspace"])
+        XCTAssertEqual(alerts.warnings.map(\.message), ["The folder can’t be opened."])
+        XCTAssertEqual(
+            alerts.warnings.first?.recoverySuggestion,
+            "Check the path, permissions, or whether the folder still exists."
+        )
+    }
+
+    func testFailedEnteredDirectoryRestoresCurrentPathAndRefreshesListing() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.openErrors["/workspace/missing"] = MockBackendClientError.missingOpenResult(
+            "/workspace/missing"
+        )
+        let alerts = MockWorkspaceAlertPresenter()
+        let viewModel = makeViewModel(backend: backend, alerts: alerts)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        backend.listings["/workspace"] = listing(
+            path: "/workspace",
+            entries: [entry(name: "after-refresh.txt", path: "/workspace/after-refresh.txt")]
+        )
+        viewModel.updatePathInput("/workspace/missing")
+        viewModel.openCurrentPath()
+        try await waitUntilLoaded(viewModel)
+
+        XCTAssertEqual(viewModel.path, "/workspace")
+        XCTAssertEqual(viewModel.entries.map(\.name), ["after-refresh.txt"])
+        XCTAssertNil(viewModel.errorText)
+        XCTAssertEqual(backend.openDirectoryPaths, ["/workspace/missing"])
+        XCTAssertEqual(backend.listDirectoryPaths, ["/workspace", "/workspace"])
+        XCTAssertEqual(alerts.warnings.count, 1)
+        XCTAssertEqual(alerts.warnings.first?.message, "The folder can’t be opened.")
+        XCTAssertEqual(
+            alerts.warnings.first?.informativeText,
+            "Terminal Finder kept your current folder open and refreshed it."
+        )
+        XCTAssertEqual(
+            alerts.warnings.first?.detailText,
+            "Missing mock open result for /workspace/missing."
+        )
+    }
+
+    func testEmptyEnteredPathShowsWarningWithoutChangingCurrentDirectory() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        let alerts = MockWorkspaceAlertPresenter()
+        let viewModel = makeViewModel(backend: backend, alerts: alerts)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        viewModel.updatePathInput(" ")
+        viewModel.openCurrentPath()
+
+        XCTAssertEqual(viewModel.path, "/workspace")
+        XCTAssertNil(viewModel.errorText)
+        XCTAssertTrue(backend.openDirectoryPaths.isEmpty)
+        XCTAssertEqual(backend.listDirectoryPaths, ["/workspace"])
+        XCTAssertEqual(alerts.warnings.map(\.message), ["Enter a folder path to continue."])
+        XCTAssertEqual(
+            alerts.warnings.first?.recoverySuggestion,
+            "Type or paste a valid file or folder path, then try again."
+        )
     }
 
     func testRelativePathIsResolvedFromCurrentDirectory() async throws {
@@ -208,11 +285,13 @@ final class WorkspaceBrowserViewModelTests: XCTestCase {
 
     private func makeViewModel(
         backend: MockBackendClient,
-        opener: MockWorkspaceItemOpener? = nil
+        opener: MockWorkspaceItemOpener? = nil,
+        alerts: MockWorkspaceAlertPresenter? = nil
     ) -> WorkspaceBrowserViewModel {
         WorkspaceBrowserViewModel(
             backendClient: backend,
             workspaceItemOpener: opener ?? MockWorkspaceItemOpener(),
+            workspaceAlertPresenter: alerts ?? MockWorkspaceAlertPresenter(),
             initialPath: "/initial"
         )
     }
@@ -317,6 +396,15 @@ private final class MockWorkspaceItemOpener: WorkspaceItemOpening {
 
     func openFile(atPath path: String) throws {
         openedPaths.append(path)
+    }
+}
+
+@MainActor
+private final class MockWorkspaceAlertPresenter: WorkspaceAlertPresenting {
+    private(set) var warnings: [WorkspaceAlertWarning] = []
+
+    func showWarning(_ warning: WorkspaceAlertWarning) {
+        warnings.append(warning)
     }
 }
 
