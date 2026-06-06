@@ -123,7 +123,8 @@ struct ContentView: View {
 
             BackendStatusView(
                 status: connectionViewModel.status,
-                detailText: connectionViewModel.detailText
+                detailText: connectionViewModel.detailText,
+                eventStatusText: connectionViewModel.eventStatusText
             )
             .frame(maxWidth: 420, alignment: .leading)
 
@@ -141,7 +142,8 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             BackendStatusView(
                 status: connectionViewModel.status,
-                detailText: connectionViewModel.detailText
+                detailText: connectionViewModel.detailText,
+                eventStatusText: connectionViewModel.eventStatusText
             )
             .padding(.horizontal, 14)
             .padding(.top, 16)

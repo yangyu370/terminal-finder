@@ -10,6 +10,17 @@ import SwiftUI
 struct BackendStatusView: View {
     let status: ConnectionStatus
     let detailText: String
+    let eventStatusText: String?
+
+    init(
+        status: ConnectionStatus,
+        detailText: String,
+        eventStatusText: String? = nil
+    ) {
+        self.status = status
+        self.detailText = detailText
+        self.eventStatusText = eventStatusText
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -24,6 +35,12 @@ struct BackendStatusView: View {
 
             Text(detailText)
                 .foregroundStyle(.secondary)
+
+            if let eventStatusText {
+                Text(eventStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
