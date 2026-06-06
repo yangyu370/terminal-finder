@@ -6,6 +6,7 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 mod api;
+mod clock;
 mod error;
 mod state;
 mod workspace;
@@ -17,9 +18,10 @@ const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
+        .with_timer(clock::KualaLumpurTimer)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "terminal_finder_core=info,core=info,rpc=info,workspace=info,tower_http=info".into()
+                "terminal_finder_core=info,core=info,rpc=info,workspace=info,events=info,tower_http=info".into()
             }),
         )
         .init();
