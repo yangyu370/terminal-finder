@@ -1,146 +1,145 @@
 # Core Backend 审查结论与实施计划
 
-> 审查范围：`core/` Rust backend 全部源码（`api/`、`workspace/`、`error.rs`、`state.rs`、`main.rs`）
-> 审查日期：2026-06-04
-> 状态：已完成结论校准，可直接按本文实施
+> 审查范围：`core/` Rust backend 全部源码（`api/`、`terminal/`、`workspace/`、`error.rs`、`state.rs`、`main.rs`）
+> 审查日期：2026-06-07
+> 状态：终端 WebSocket 安全为最高优先级，需在对外分发前阻断
 
 ## 总体评价
 
-当前 backend 分层清晰（routes → RPC dispatch → controllers → service → fs），阻塞文件系统
-操作使用 `spawn_blocking` 隔离，状态集中在 `WorkspaceStore`，错误和响应结构也保持统一。
+backend 分层清晰（routes → RPC dispatch → controllers → service → fs / terminal），阻塞 IO 用
+`spawn_blocking` 或独立线程隔离，状态集中在 `AppState`，错误和响应结构统一。
 
-本轮不调整整体架构，重点修正目录扫描竞争、明确 `workspaceRoot` 语义、增强状态锁恢复能力，
-并降低 info 日志中的路径暴露。RPC 请求和响应结构保持不变。
+新增的 `/terminal` WebSocket 引入了一个完整的交互式 shell 端点，把后端的攻击面从"只读文件
+浏览"扩大到"任意命令执行"。本轮审查的核心结论：**终端端点当前无任何鉴权与来源校验，构成可被
+任意网页触发的本地 RCE，必须优先修复。** 其余为 workspace 历史遗留项与终端健壮性项。
 
-## 已确认决策
+## 🔴 终端 WebSocket 安全（最高优先级，对外分发前必须阻断）
 
-| 编号 | 结论 | 本轮动作 |
-| --- | --- | --- |
-| #1 | 目录扫描应容忍条目在扫描期间消失，但不能静默忽略其他错误 | 仅跳过 `NotFound`，其他错误继续失败 |
-| #2 | `workspaceRoot` 是 workspace 上下文根，不是文件系统访问沙箱 | root 内导航保留 root，root 外导航切换 root |
-| #3 | `RwLock` 中毒恢复属于防御性改进 | warning 后使用锁内状态继续服务 |
-| #6 | info 日志不应记录完整请求参数或路径 | 完整路径和 params 降到 debug |
-| #4 / #5 / #7 | 当前不是本轮必要修改 | 明确延期 |
+### T1 无鉴权 + 无 Origin 校验 → CSWSH / 本地 RCE
 
-## #1 目录扫描竞争处理
+位置：`api/terminal.rs:70-82`、`main.rs:32`
 
-位置：`workspace/fs.rs`
+`/terminal` 直接 `upgrade.on_upgrade(...)` 开启完整 shell，握手阶段不校验 `Origin`、不校验任何
+token 或子协议。绑定 `127.0.0.1` **挡不住浏览器攻击**：WebSocket 不受同源策略 / CORS 限制，
+任意恶意网页的 JS 都能 `new WebSocket("ws://127.0.0.1:3587/terminal")` 连入、发 `terminal.create`
+拿到 shell 并执行任意命令（Cross-Site WebSocket Hijacking）。
 
-当前 `read_dir` 结果通过 `collect::<Result<Vec<_>, _>>()` 收集，任何条目处理错误都会使整个
-listing 失败。目录扫描与条目 metadata 读取之间存在正常竞争：条目可能恰好被删除，此时返回
-`NotFound` 不应拖垮整个 listing。
+这是把本地工具变成"任意网站可在受害者机器执行任意代码"的洞，是当前最严重问题。
 
 实施规则：
 
-- 使用显式扫描循环替代当前 `collect::<Result<...>>()`。
-- `directory_entry` 返回的 `ApiError::FileSystemRead` 若来源为 `io::ErrorKind::NotFound`，
-  视为扫描竞争，使用 debug 日志记录后跳过。
-- `PermissionDenied` 及其他错误继续使整个 listing 失败，避免把不完整结果伪装为完整成功。
-- 不新增 `partial`、`warnings` 或其他协议字段。
-- 悬空 symlink 应继续作为 symlink 条目返回；`symlink_metadata` 可以读取链接本身，
-  不能将悬空 symlink 视为应跳过的错误。
+- 握手时校验 `Origin` 头，仅允许已知客户端来源（白名单）；缺失或不匹配直接拒绝升级。
+- 进程启动时生成随机 session token，由本地客户端持有，握手时通过子协议或 query 校验。
+- `/rpc`、`/events` 同样缺乏鉴权（见 #7），应统一在一层中间件解决，避免逐端点重复。
 
-## #2 workspaceRoot 语义与切换规则
+### T2 input / resize / close 不校验会话归属（跨连接越权）
 
-位置：`workspace/state.rs`、`workspace/fs.rs`、`workspace/service.rs`
+位置：`api/terminal.rs:303,355,389`
 
-`workspaceRoot` 表示当前 workspace 的稳定上下文根，但不是安全边界。Phase 1 继续允许客户端
-通过 `openDirectory` 和 `listDirectory` 访问进程权限范围内的任意可访问目录。
+`owned_sessions` 仅用于断开时清理（`terminal.rs:177`），但 `terminal.input` / `terminal.resize`
+/ `terminal.close` 全程只按 `session_id` 在**全局** registry 查找，不校验该会话是否由当前连接创建。
+任意连接只要持有 UUID 即可向他人会话注入输入、改尺寸或关闭它。UUID v4 不可猜可缓解，但叠加 T1
+后构成真实越权面。
 
-`workspace.openDirectory` 的确定行为：
+实施规则：input / resize / close 执行前先校验 `owned_sessions.contains(&session_id)`，否则返回
+`unknown_session`，不得触达全局 registry。
 
-- 先在 blocking 文件系统区域规范化目标目录和当前 `workspaceRoot`。
-- 目标目录位于当前 root 内时，仅更新 `currentDirectory`，保留规范化后的 root。
-- 目标目录位于当前 root 外时，将规范化后的目标目录同时设为新的 `workspaceRoot` 和
-  `currentDirectory`。
-- 当前 root 已无法规范化时，将成功打开的目标目录设为新的 root/current。
-- 通过 symlink 打开目录时，以规范化后的真实目标判断是否位于 root 内。
-- 目录验证和 listing 全部成功后，才在同一次写锁中更新 root/current；失败不得部分更新状态。
+## 🟠 终端健壮性（资源与可用性）
 
-`workspace.listDirectory` 保持无状态：
+### T3 单连接可无限创建会话 → 进程/线程耗尽
 
-- 可列举任意可访问目录，包括当前 root 外目录。
-- 不修改 `workspaceRoot` 或 `currentDirectory`。
+位置：`api/terminal.rs:216`、`terminal/session.rs:95-96`
 
-该语义需要同步写入 `core/agent.md` 和 `protocol/README.md`。`workspaceRoot` 不提供访问控制；
-正式分发前的安全边界应通过独立的 Host/Origin 校验、认证或授权设计解决。
+`terminal.create` 无任何数量上限。每次 create 会 spawn 一个子进程加两个 OS 线程（reader +
+control）。失控或恶意客户端循环 create 即可打满机器线程/进程数。
 
-## #3 RwLock 中毒恢复
+实施规则：对每连接与全局活跃会话数设上限（如每连接 16、全局可配置），超限返回明确错误 code，
+不静默丢弃。
 
-位置：`workspace/state.rs`
+### T4 cols / rows 无下限校验，可传 0
 
-当前通过 `.expect("workspace state lock is not poisoned")` 获取读写锁。虽然持锁代码很短，
-现实中毒风险较低，但一旦发生会令后续 workspace 请求持续 panic。
+位置：`api/terminal.rs:36-53`
+
+`CreateData` / `ResizeData` 直接接收 `u16`，客户端可传 `cols:0, rows:0`，以 0 尺寸开 PTY，
+导致 TUI 程序行为异常甚至卡死。
+
+实施规则：create 与 resize 均将 cols/rows 钳制到合理区间（如 1..=1000），越界归一化或拒绝。
+
+### T5 退出信号永远丢失
+
+位置：`terminal/session.rs:242-248`
+
+`send_exit` 将 `signal` 硬编码为 `None`，被信号杀死的子进程（Ctrl-C / kill）前端无法与正常退出
+区分。portable_pty 的 `ExitStatus` 信息有限，至少应在能区分时填充 signal，或显式注释该限制并在
+协议中说明。
+
+## 🔴 全局鉴权（原 #7，终端落地后提级为必须）
+
+位置：`api/routes.rs`、`main.rs`
+
+`/rpc`、`/events`、`/terminal` 均无认证与 Host/Origin 校验。在仅有只读文件浏览时风险有限，但
+`/terminal` 落地后任意本地进程或网页都可借此执行命令，已不可继续延期。应在 router 层加统一鉴权
+中间件（Host/Origin 校验 + 启动期随机 token），三个端点共用，而非逐端点实现（与 T1 协同）。
+
+## 🟡 Workspace 历史遗留项（保留，未解决）
+
+### #1 目录扫描竞争未容错
+
+位置：`workspace/fs.rs:43-49`
+
+`read_dir` 结果仍通过 `collect::<Result<Vec<_>, _>>()?` 收集，任何条目处理错误都会使整个 listing
+失败。扫描与条目 metadata 读取之间存在正常竞争：条目可能恰好被删除并返回 `NotFound`，不应拖垮
+整个 listing。
 
 实施规则：
 
-- 继续使用标准库 `RwLock`，不引入 `parking_lot`。
-- 读锁或写锁中毒时记录 warning，并通过 `poisoned.into_inner()` 获取锁内状态继续服务。
-- root/current 更新必须由单个状态更新方法在同一次写锁中完成，防止状态部分更新。
-- 中毒恢复属于可用性策略，不代表忽略触发中毒的原始 panic；日志需保留诊断信号。
+- 用显式扫描循环替代 `collect::<Result<...>>()`。
+- 来源为 `io::ErrorKind::NotFound` 的 `FileSystemRead` 视为扫描竞争，debug 记录后跳过。
+- `PermissionDenied` 及其他错误继续使整个 listing 失败，不把不完整结果伪装成完整成功。
+- 悬空 symlink 继续作为 symlink 条目返回。
 
-## #6 日志路径与参数
+### #3 RwLock 中毒恢复未实现
 
-位置：`api/rpc.rs`、`workspace/service.rs`
+位置：`workspace/state.rs:35,47`
 
-info/warn 日志用于请求级诊断，不记录完整请求参数、完整路径或详细错误 message：
+`state()` 与 `set_directory_state()` 仍用 `.expect("...lock is not poisoned")`。root/current 的原子
+更新已落地，但中毒恢复未做：一旦锁中毒，后续 workspace 请求会持续 panic。
 
-- info 保留 method、status、elapsed time、成功/失败结果和非敏感数量摘要。
-- warn 保留 method、status、elapsed time 和错误 code。
-- 完整 `params`、目标路径和详细错误 message 仅在 debug 级别记录。
-- API 返回给客户端的路径和错误 message 不受本日志策略影响。
+实施规则：读/写锁中毒时记录 warning，并通过 `poisoned.into_inner()` 获取锁内状态继续服务；保留
+触发中毒的诊断信号。
 
-## 本轮延期项
+### #6 info 日志暴露完整路径与参数
 
-以下项目已审查，但本轮不修改：
+位置：`api/rpc.rs:47`、`workspace/service.rs:27,52`
 
-- **#4 RPC 序列化 `.expect()`**：当前响应 DTO 由普通可序列化字段组成，`.expect()` 用作
-  不变量断言；暂不新增内部序列化错误类型。
-- **#5 `ApiError::message()` 与 Display 重复**：属于低风险清理，后续可在确定对外 message
-  与内部 Display 的绑定策略后处理。
-- **#7 Host/Origin 校验与认证**：Phase 1 内部开发阶段延期；正式分发前必须单独评估并实现。
-- **超大目录分页或上限**：当前不增加分页、不静默截断结果，后续根据真实性能数据设计协议。
-- **`open_directory_blocking` 的 TOCTOU 窗口**：当前影响有限，暂不处理。
+`rpc.rs` 仍在 info 级打印 `params=%params`，`service.rs` 仍在 info 级打印完整请求路径。应将完整
+`params`、目标路径和详细错误 message 降到 debug；info/warn 仅保留 method、status、elapsed、错误
+code 和非敏感数量摘要。
+
+## 延期项（已审查，本轮不改）
+
+- **#4 RPC 序列化 `.expect()`**：响应 DTO 由普通可序列化字段组成，`.expect()` 作为不变量断言。
+- **#5 `ApiError::message()` 与 Display 重复**：低风险清理，待对外 message 策略确定后处理。
+- **超大目录分页或上限**：暂不分页、不静默截断，后续按真实性能数据设计协议。
+- **`open_directory_blocking` 的 TOCTOU 窗口**：当前影响有限。
 
 ## 实施顺序
 
-1. 调整 `WorkspaceStore`，支持原子更新 root/current 和锁中毒恢复。
-2. 调整 `openDirectory` 的规范化、root 判断和成功后状态更新流程。
-3. 调整目录扫描，仅忽略条目竞争产生的 `NotFound`。
-4. 调整 RPC 与 workspace 日志级别和摘要。
-5. 同步 `core/agent.md` 与 `protocol/README.md` 中的 workspaceRoot 语义。
+1. **T1 + 全局鉴权**：router 层统一鉴权中间件（Origin/Host 白名单 + 启动期随机 token）。
+2. **T2**：input/resize/close 加 `owned_sessions` 归属校验。
+3. **T3 / T4**：会话数上限、cols/rows 钳制。
+4. **#1 / #3 / #6**：扫描竞争容错、锁中毒恢复、日志降级。
+5. **T5**：退出 signal 处理或显式注释。
 6. 补充测试并执行完整验证。
-
-## 测试场景
-
-workspace 状态与导航：
-
-- 打开当前 root 内的子目录时保留 root，只更新 current。
-- 打开当前 root 外目录或 root 的祖先目录时，将目标设为新的 root/current。
-- 当前 root 已失效时，成功打开的目标成为新的 root/current。
-- Unix 下打开指向 root 外的目录 symlink 时，按规范化目标切换 root。
-- 目标验证或 listing 失败时，root/current 均保持不变。
-- `listDirectory` 列举 root 外目录时不修改 workspace 状态。
-
-目录扫描：
-
-- 条目在扫描期间消失并产生 `NotFound` 时，返回其余条目。
-- 条目产生 `PermissionDenied` 或其他错误时，listing 明确失败。
-- 悬空 symlink 仍作为 symlink 条目返回。
-- 目录优先和名称排序行为保持不变。
-
-状态恢复与日志：
-
-- 锁中毒后 `state()` 和 workspace 状态更新仍可继续工作。
-- info/warn 日志不包含完整请求 params、路径或详细错误 message。
-- debug 日志保留定位扫描竞争和请求失败所需的信息。
 
 ## 验收标准
 
-- RPC 请求和响应结构不变，不新增错误 code。
-- `workspaceRoot`、`currentDirectory` 和 `listDirectory` 行为符合本文确定语义。
-- 扫描竞争不会因单个 `NotFound` 拖垮 listing，其他错误不会被静默忽略。
-- backend info/warn 日志不暴露完整路径或 params。
+- 未通过 Origin/token 校验的 `/terminal`、`/rpc`、`/events` 升级或请求被拒绝。
+- 非本连接创建的 session 无法被 input/resize/close 触达。
+- 单连接与全局会话数受上限保护，超限返回明确错误 code。
+- cols/rows 被钳制到合理区间。
+- 扫描竞争不会因单个 `NotFound` 拖垮 listing，其他错误不被静默忽略。
+- 锁中毒后 workspace 仍可服务；info/warn 不暴露完整路径或 params。
 - 执行以下命令均通过：
 
 ```sh

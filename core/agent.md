@@ -14,7 +14,7 @@
 
 ## 当前阶段
 
-当前仍以 Phase 1 为主，优先把 workspace 基础能力做稳。
+当前仍以 Phase 1 为主，优先把 workspace 基础能力、后端事件通道和下一步 PTY 最小闭环边界做稳。
 
 优先事项：
 
@@ -22,11 +22,14 @@
 - 持续守住已实现的 `workspace.getState` 与 `workspace.openDirectory` 语义。
 - 让 backend workspace state 继续作为 `workspaceRoot` / `currentDirectory` 的唯一事实来源。
 - 保持 `/health`、`POST /rpc`、`core.ping` 可作为连通性基线。
+- 保持 `/events` WebSocket 独立于 `/rpc`：它只承载 backend lifecycle / event bus 语义，不做 RPC 分流。
+- 稳定 `/events` 的 `backend.ready` 与 `heartbeat` envelope，确保客户端能基于事件通道判活。
+- WebSocket 连接必须同时读写 socket，能及时处理客户端 close、读错误和半开连接迹象，而不是只等待下一次发送失败。
 - 稳定客户端受管 backend 的 stdin pipe 生命周期和 graceful shutdown 行为。
 - 任何新增 workspace 行为，都要先明确它读写的是 backend state、filesystem 事实，还是纯展示派生数据；纯展示派生数据不应进入 core。
 - 当前已修复并测试覆盖：打开 root 内目录保留 root，打开 root 外、root 祖先或 root 失效时切换 root/current。
 - 当前剩余重大待办：目录扫描竞争只忽略 `NotFound`、`RwLock` 中毒恢复、info/warn 日志路径脱敏、必要时补并发 `openDirectory` 状态测试。
-- PTY 尚未接入时，不要在 core 内伪造 shell 行为；但协议和状态设计不得把 shell 生命周期固定到客户端，后续 PTY 对接应由 core 承担真实会话管理。
+- PTY 尚未接入时，不要在 core 内伪造 shell 行为；后续 PTY 最小闭环由 core 承担真实 session、process、IO 与退出生命周期。
 
 暂时不要提前实现：
 
@@ -46,6 +49,8 @@
 - 所有新增加的代码文件必须由 git 统一管理；新增 Rust 源码、测试、配置或协议相关文件后，要确认它们出现在 `git status` 中，并在交付前说明是否需要纳入版本控制。
 - 共享状态应放在后端状态层统一管理，不要散落在 route/controller 的局部静态变量里。
 - workspace state 必须集中在 `src/workspace/state.rs` 及 `AppState` 持有的 store 中维护；controller / RPC 分发层只读取或调用 service，不直接改状态。
+- backend event sender、connection id、PTY session registry、PTY process handle 等跨请求共享资源必须进入 `AppState` 或明确的 state/store 层。
+- route / controller 只能做提取参数、调用 service/state、组装协议响应和少量 tracing；不能持有长期 session、spawn 出无法追踪的任务，或直接成为业务状态容器。
 - filesystem 细节应优先隔离在 `src/workspace/fs.rs`，service 负责调度 blocking task、更新状态和组合 response；controller 保持转接职责。
 
 ## 技术风格
@@ -71,19 +76,36 @@
 - 手动交互运行 `cargo run` 时，core 从终端 stdin 读取，使用 Ctrl-C 正常退出；输入 Ctrl-D 或以已关闭、`/dev/null`、管道末端等 EOF stdin 启动时，core 立即 graceful shutdown，这是 stdin 生命周期契约的预期边界。
 - 生命周期任务不得阻塞 async runtime；shutdown reason 应保留非敏感的结构化 info 日志，便于区分 `ctrl_c` 与 `stdin_eof`。
 
+## WebSocket 边界
+
+- `/events` 是独立 WebSocket event channel，不属于 `/rpc` 分流，也不应复用 RPC request/response 语义。
+- `/events` 当前只表达 backend lifecycle / event bus：例如 `backend.ready`、`heartbeat` 和未来低频 backend 状态事件。
+- 高频双向业务流不得塞进 `/events`；PTY、文件流、搜索流等应按业务建立独立 session/channel。
+- WebSocket handler 必须 split socket，持续读取入站 frame，并同时驱动出站发送；不得只写不读。
+- 入站 `Close` 必须尽量发送 close response 并结束连接；读到 EOF、read failure、send failure、receiver lagged 都必须能收敛到干净的连接退出路径。
+- 入站 text / binary / ping / pong 若当前业务不消费，也必须被显式处理或记录非敏感摘要，避免协议边界变成隐式丢弃。
+- `heartbeat` 是常态判活事件：成功发送/接收默认不打 info 日志，只在断开摘要中保留计数；需要逐条排查时再用 debug。
+- WebSocket info/warn 日志只记录 connection id、peer、event type、reason、计数等摘要；完整 payload、详细错误 message 和敏感路径只能进入 debug。
+- WebSocket 生命周期测试要覆盖 ready/heartbeat、客户端主动 close、读错误或连接断开后的快速退出，以及不会把 heartbeat 噪声刷满 info 日志。
+
 ## PTY 边界
 
 - 后续接入 PTY 时，core 拥有 PTY session、shell process、stdin/stdout/stderr stream、working directory、退出状态和资源清理的生命周期。
 - 客户端负责终端面板 UI、布局、viewport 像素测量、字体指标测量、系统打开文件等表现层能力；不要把 shell 启动、进程持有、PTY IO 或会话恢复塞进客户端。
+- PTY 不得混进 `/events`；应使用独立 session API 与独立 WebSocket channel，例如先发送 `terminal.create`，再用该 session 的 channel 做 `terminal.input` / `terminal.output` / `terminal.resize` / `terminal.close`。
+- PTY 最小闭环优先实现：`terminal.create`、`terminal.input`、`terminal.output`、`terminal.resize`、`terminal.close`、`terminal.exit`；不要一开始追求完整 terminal emulator 或复杂恢复协议。
 - 终端尺寸边界应由客户端发送合并后的可用尺寸，或发送已按本地字体指标转换后的 `rows` / `cols`；core 负责把最终 `rows` / `cols` 应用到 PTY，不负责测量像素 viewport。
 - core 处理 resize 必须容忍连续请求、重复尺寸和乱序附近的快速更新；实现应幂等，并方便调用方节流或合并，不因重复 resize 破坏 session。
 - PTY 的 working directory 应由 core 根据 workspace state、请求参数和后端路径规则确定并校验；客户端不能用自己的路径推断覆盖后端事实。
 - PTY API 与事件流应表达跨平台业务语义，例如 session id、cwd、rows、cols、data、exit status 和错误 code；不要返回某个客户端面板布局或视觉状态。
+- PTY process lifecycle 必须可取消、可关闭、可回收；session close、shell exited、client channel dropped、backend shutdown 都要进入统一清理路径。
+- PTY stdout/stderr/output 可能是高频字节流；日志只记录 session id、字节数、方向和错误摘要，禁止在 info/warn 打印完整终端内容。
 - 会影响 shell process、PTY session 或 cwd 的行为都必须走后端 API，并配套协议文档和 Rust 测试。
 
 ## API 与协议
 
 - RPC 入口保持 `POST /rpc`，方法名继续使用类似 `core.ping`、`workspace.listDirectory` 的 method-style 风格。
+- WebSocket event channel 与 RPC 协议分开描述：RPC 负责请求/响应命令，WebSocket 负责连接生命周期和服务端主动事件。
 - API 的请求、响应、错误语义发生变化时，必须同步更新根目录下的 `protocol/README.md`。
 - 新增或修改 RPC 方法时，要明确：
   - method 名称
@@ -93,6 +115,8 @@
   - 是否改变后端 workspace state
 - 保持协议可读、可 curl 调试、可被 Swift 客户端直接消费。
 - 早期继续使用本地 HTTP JSON；不要提前引入 gRPC 或复杂 schema 生成流程。
+- WebSocket envelope 字段应表达跨平台事件语义；新增 event type 前先确认它不是某个客户端 UI 状态。
+- `heartbeat` envelope 只用于判活和连接质量，不应携带业务状态，也不应成为触发 UI 业务刷新的信号。
 - 协议职责必须清楚区分：
   - `workspace.getState`：只返回 backend 当前持有的 workspace state；不扫描目录、不修补客户端路径、不产生文件系统副作用。
   - `workspace.openDirectory`：验证请求 path 存在且是目录，规范化目标和当前 root，根据目标是否位于 root 内决定保留或切换 `workspaceRoot`，原子更新 backend state，并返回新 state 和该目录的非递归 listing，方便客户端立即重绘。
@@ -132,6 +156,8 @@
 - info/warn 请求日志不得包含完整请求 params、完整路径或详细错误 message。
 - info 日志保留 method、status、elapsed time、结果类型及 entries 等非敏感数量摘要；warn 日志保留 method、status、elapsed time 和错误 code。
 - 完整 params、目标路径、详细错误 message 和扫描竞争路径只允许记录到 debug；API 返回给客户端的路径和错误 message 不受该日志级别规则影响。
+- heartbeat、PTY output chunk、重复 resize 等常态高频事件默认不进入 info；只记录连接建立、断开、错误、状态转移和聚合计数。
+- WebSocket / PTY warn 日志不得打印完整 payload、终端输出、请求 params、完整路径或详细错误 message；需要诊断时用 debug 并保持字段化。
 
 ## 测试与验证
 
@@ -142,6 +168,9 @@
 - 修改 `workspace/state.rs` 时，必须覆盖 root/current 原子更新、失败不改状态、锁中毒恢复或并发相关行为。
 - 修改 `workspace/fs.rs` 时，必须覆盖路径规范化、目录/文件/symlink 分类、错误映射、排序、扫描竞争和权限失败。
 - 修改 `workspace/service.rs` 或 API controller 时，必须覆盖 endpoint 是否改变 state、blocking task 错误映射、response shape 和协议约定。
+- 修改 `/events` 时，必须覆盖 WebSocket close/read/send/lifecycle 行为，尤其是客户端主动断开后能快速退出，而不是等 heartbeat 发送失败。
+- 修改 `AppState` 时，必须覆盖新增共享状态在 clone 后仍保持同一 backend state，例如 event connection id、event sender 或未来 PTY session registry。
+- 接入 PTY 时，必须覆盖 `terminal.create` / `terminal.input` / `terminal.output` / `terminal.resize` / `terminal.close` / `terminal.exit`、client disconnect 清理、process exited 清理和 backend shutdown 清理。
 - 修改错误 code、response 字段或 workspace 语义时，必须同步更新 `protocol/README.md` 和客户端 DTO/测试。
 - 如果行为影响 macOS 客户端状态展示，还要确认或补充对应 `MacOSTests`。
 

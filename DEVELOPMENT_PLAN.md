@@ -68,36 +68,26 @@ terminal-finder/
 
 Keep the current structure lightweight until a feature needs more separation. Do not create the future `core/crates/*` workspace until the backend has enough real surface area to justify it.
 
-### Current Status As Of 2026-06-05
+### Current Status As Of 2026-06-06
 
-The project is now past the pure connectivity baseline.
+The project is between Phase 1 hardening and the first Phase 3 terminal slice. The basic backend/client browsing loop is in place, and the minimal WebSocket event lifecycle is now implemented, so the active plan focuses on finishing browsing hardening while starting PTY through a narrow backend-owned minimum loop.
 
-Completed:
+Active:
 
-- Phase 0 baseline: Rust backend, macOS client shell, `core.ping`, `/health`, protocol notes, and lightweight module split.
-- Phase 1 first slice: `workspace.listDirectory` exists in the Rust backend and is callable from the macOS client.
-- The macOS client can request a directory path and render returned entries in a simple SwiftUI list.
-- The default client directory uses the real user home path from the password database instead of the sandbox container home.
-- Backend request logging uses `tracing` with method/status/duration fields.
-- Directory listing runs through `tokio::task::spawn_blocking` so filesystem scans do not block async runtime workers.
-- Workspace state is now owned by the backend through `workspace.getState` and `workspace.openDirectory`.
-- `workspace.openDirectory` now preserves `workspaceRoot` for directories inside the canonical root and switches root/current for root-external directories, root ancestors, or an invalid previous root.
-- The macOS client checks `/health` on startup, launches the bundled Rust backend with `Process` when needed, polls health, and only then enters the main workspace UI.
-- The macOS build copies the Rust core executable into the app bundle so the client can start it without relying on a manually launched backend.
-- The macOS app sandbox is disabled for the current local-first backend model so a client-launched backend can see the same real user directories as a manually launched backend.
-- The macOS client has a `MacOSTests` unit-test target with `WorkspaceBrowserViewModelTests` covering hidden files, navigation history, relative path input, file-open fallback, refresh, failure handling, and reconnect/load resync behavior.
-- The Phase 1 UI no longer shows status-bar item counts or visible-count-of-total text.
-- Current verification baseline: macOS client unit tests, Rust unit tests, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, and `git diff --check`.
+- Finish Finder-like browsing polish: context menus, native table behavior, toolbar/sidebar refinement, and broader keyboard behavior.
+- Revisit backend process lifecycle before distribution, especially packaging/signing, port discovery, and graceful shutdown semantics.
+- Harden backend directory scanning so entry deletion races skip only `NotFound`, while permission and metadata failures still fail clearly.
+- Add `RwLock` poison recovery and additional backend state concurrency coverage where state snapshots matter.
+- Minimize path/params exposure in service and RPC info/warn logs.
+- Start PTY as a minimum backend-owned loop: `terminal.create`, `terminal.output`, `terminal.input`, `terminal.resize`, `terminal.close`, and `terminal.exit`.
 
-Still active:
+Deferred:
 
-- The client is still only partially Finder-like; sidebar and toolbar are improving, while context menus, native table behavior, and broader keyboard behavior still need refinement.
-- Backend process lifecycle is a first working path, but packaging/signing and graceful shutdown semantics should be revisited before distribution.
-- Backend directory scanning still needs race handling for entries deleted during scan, while preserving hard failures for permission and metadata errors.
-- Backend workspace state should still gain `RwLock` poison recovery and additional concurrency coverage where state snapshots matter.
-- Workspace/service logging still needs path/params minimization for info/warn logs.
-- There is no event stream or file watcher yet.
-- File operations, terminal sessions, search, and git awareness remain deferred.
+- File mutations such as delete, move, rename, and create.
+- File watcher and automatic directory refresh from file system changes.
+- Full terminal UX beyond a single-session PTY minimum loop.
+- Search and indexing.
+- Git awareness.
 
 ## 3. Core Technology Stack
 
@@ -130,7 +120,7 @@ trash             move-to-trash/recycle-bin behavior
 
 Use Swift as the first native client.
 
-Phase 0 uses SwiftUI because the current client is only a connectivity shell. Finder-like browsing screens can still move toward AppKit controls where native behavior matters, especially sidebar/file-table interactions.
+SwiftUI can remain useful for state-driven composition, but Finder-like browsing screens should use AppKit controls where native behavior matters, especially sidebar/file-table interactions.
 
 Recommended stack:
 
@@ -204,7 +194,7 @@ Early transport:
 
 ```text
 HTTP JSON API for request/response
-WebSocket for events and streams
+WebSocket channels for backend events and future PTY streams
 ```
 
 Avoid gRPC at the beginning. JSON is easier to debug, easier to consume from Swift and web clients, and good enough for the first several phases.
@@ -215,22 +205,24 @@ Later, if stronger typing or high-throughput streaming becomes necessary, the pr
 
 Use method-style endpoints or JSON-RPC-style calls.
 
-Initial methods:
+Current method contracts live in `protocol/README.md`.
+
+Current method names:
 
 ```text
 core.ping
 workspace.getState
 workspace.openDirectory
 workspace.listDirectory
-workspace.revealPath
-events.subscribe
+/events WebSocket channel for backend lifecycle events
+/terminal WebSocket channel for terminal session messages
 ```
 
 Later methods:
 
 ```text
-terminal.createSession
-terminal.write
+terminal.create
+terminal.input
 terminal.resize
 terminal.close
 search.query
@@ -240,25 +232,39 @@ task.run
 task.cancel
 ```
 
-Initial events:
+Initial `/events` messages:
+
+```text
+backend.ready
+heartbeat
+backend.error
+```
+
+Later `/events` messages:
 
 ```text
 workspace.changed
 directory.updated
 file.changed
-backend.ready
-backend.error
-```
-
-Later events:
-
-```text
-terminal.output
-terminal.exit
 search.result
 git.updated
 task.output
 task.finished
+```
+
+Planned `/terminal` messages:
+
+```text
+terminal.create
+terminal.input
+terminal.resize
+terminal.close
+terminal.created
+terminal.output
+terminal.resized
+terminal.closed
+terminal.exit
+terminal.error
 ```
 
 ## 5. Development Phases
@@ -267,165 +273,26 @@ task.finished
 
 Goal: create a stable monorepo foundation and decide how clients launch/connect to the backend.
 
-Status: completed as the initial baseline commit.
-
-Built:
-
-- Create repository structure.
-- Create Rust backend under `core/`.
-- Create macOS client under `clients/MacOS/`.
-- Add protocol docs under `protocol/`.
-- Add basic logging and error conventions.
-- Add unified root Git repository.
-- Add `core.ping` over local HTTP JSON RPC.
-- Add macOS connectivity UI.
-- Split macOS client into lightweight MVVM folders.
-- Split Rust backend into lightweight API/controller/workspace/error/state modules.
-
-Rust stack used:
-
-```text
-cargo
-tokio
-axum
-serde
-serde_json
-tracing
-thiserror
-anyhow
-```
-
-macOS stack used:
-
-```text
-Swift
-SwiftUI
-URLSession
-```
-
-Deliverables:
-
-- Rust backend can start locally on `127.0.0.1:3587`.
-- Backend exposes `POST /rpc` with `core.ping`.
-- Backend exposes `GET /health`.
-- macOS client can connect to an already running backend.
-- macOS client can call `core.ping` and display connection status.
-- Protocol is documented in `protocol/README.md`.
-
-Still deferred:
-
-- macOS client launching the backend automatically.
-- Production launch/port discovery flow.
-
-Do not build yet:
-
-- Real Finder UI
-- Terminal
-- Search
-- Git
-- File mutations
+Status: closed. No active Phase 0 work remains in this plan.
 
 ## Phase 1: Workspace And Directory Browsing
 
 Goal: prove the core product loop: macOS client asks Rust backend for a directory, then renders it in native AppKit controls.
 
-Status: core workspace browsing loop is functional and tested. Full Finder-like Phase 1 is still in progress.
+Status: active. The remaining work is hardening and Finder-like polish, not another browsing-loop rebuild.
 
-First slice:
-
-- Add `workspace.listDirectory`.
-- Backend reads a requested directory using Rust filesystem APIs.
-- Backend returns file metadata: name, path, kind, size, modified date, directory flag.
-- macOS client sends a path to the backend.
-- macOS client renders the returned entries in a simple list/table.
-- Start with a default directory such as the user's home directory, or a path input.
-
-First slice built:
-
-- Rust `workspace.listDirectory` controller.
-- Directory entry DTOs with name, path, kind, size, modified date, and directory flag.
-- Directories sorted before files.
-- Symlinked directories marked openable.
-- API errors for invalid params, missing paths, permission failures, and non-directory paths.
-- RPC logs with method, status, elapsed time, and compact response summaries.
-- Filesystem listing isolated in a blocking task.
-- Swift `BackendClient.listDirectory`.
-- Swift RPC models for directory entries and RPC errors.
-- `WorkspaceBrowserViewModel` with cancellable directory loads.
-- Simple SwiftUI path field and list rendering.
-- Default path fixed to the real user home instead of the sandbox container home.
-
-Current Phase 1 built:
-
-- Backend-owned workspace state with `workspace.getState`.
-- `workspace.openDirectory` returning refreshed state plus non-recursive listing.
-- `workspaceRoot` / `currentDirectory` semantics for root-internal navigation, root-external navigation, ancestors, and invalid previous roots.
-- macOS sidebar entries for common locations.
-- macOS navigation controls for back, forward, and parent directory.
-- Path input that resolves relative paths from the current backend directory.
-- Double-click/open action for directories and default-app file opening when backend reports `not_directory`.
-- Hidden-file filtering with a client-side toggle; this is presentation filtering over backend entries.
-- Toolbar/browser UI that avoids item counts and visible-count-of-total text.
-- `MacOSTests` target with `WorkspaceBrowserViewModelTests`.
-- Rust tests covering directory listing, symlinked directories, timestamp formatting, and workspaceRoot selection semantics.
-
-Initial request shape:
-
-```json
-{
-  "method": "workspace.listDirectory",
-  "params": {
-    "path": "/Users/mac"
-  }
-}
-```
-
-Initial response shape:
-
-```json
-{
-  "ok": true,
-  "result": {
-    "path": "/Users/mac",
-    "entries": [
-      {
-        "name": "Desktop",
-        "path": "/Users/mac/Desktop",
-        "kind": "directory",
-        "isDirectory": true,
-        "size": null,
-        "modifiedAt": "2026-06-01T08:00:00Z"
-      }
-    ]
-  }
-}
-```
-
-Full Phase 1 build:
-
-- Backend workspace state.
-- `workspace.getState`.
-- `workspace.openDirectory`.
-- `workspace.listDirectory`.
-- Basic file metadata: name, path, kind, size, modified date, directory flag.
-- macOS Finder-like main window.
-- Sidebar with common locations.
-- File list using `NSTableView`.
-- Double-click folder to open.
-- Double-click file to ask macOS to open with default app.
-- Automated tests for every new backend/client behavior added in this phase.
-
-Remaining Phase 1 hardening:
+Remaining Phase 1 work:
 
 - Directory scan should explicitly skip `NotFound` entry races and fail on permission or other metadata errors.
 - Workspace state should recover from poisoned `RwLock` with warning logs.
-- Service logs should avoid full paths and detailed params at info/warn level.
+- Service and RPC logs should avoid full paths and detailed params at info/warn level.
 - Add backend tests for failed `openDirectory` preserving previous root/current once service-level test hooks exist.
-- Continue replacing proof-of-flow SwiftUI pieces with native AppKit behavior where it materially improves Finder-like usage.
+- Refine Finder-like behavior: context menus, keyboard behavior, selection stability, and native table details.
+- Revisit production launch details: signing, packaging, port discovery, and graceful shutdown verification.
 
 Implementation note:
 
-The first slice may use SwiftUI `List` or `Table` to prove the backend-to-client data loop quickly. Move to AppKit `NSTableView` once the data shape and navigation behavior are stable.
+Keep AppKit where it materially improves Finder-like usage. SwiftUI can remain around state-driven composition and layout glue.
 
 Rust stack used:
 
@@ -462,17 +329,24 @@ Client owns:
 - UI focus.
 - Table sorting display state if it does not affect backend state.
 
-Deliverables:
+Remaining deliverables:
 
-- Native macOS window resembling Finder.
-- Sidebar selection loads file list through Rust backend.
-- File list is populated by backend data, not Swift `FileManager`.
-- Basic error UI for permission or missing directory.
+- Finder-like browsing refinements that close native behavior gaps.
+- Hardened backend edge-case behavior for scanning, state recovery, and logging.
+- Automated coverage for the remaining backend state and failure-path semantics.
+
+Already implemented:
+
+- Independent `/events` WebSocket route outside `/rpc`.
+- `backend.ready` and heartbeat envelopes.
+- Backend-side socket reads for close/error/eof detection and cleaner connection teardown.
+- Heartbeat logs filtered from normal info noise.
+- macOS event client, event connection status display, alert-based error reporting, and client heartbeat timeout detection for half-open streams.
 
 Do not build yet:
 
 - Delete/move/rename
-- Real terminal
+- Full terminal UX beyond the PTY minimum loop
 - File watching
 - Search
 - Git
@@ -481,10 +355,17 @@ Do not build yet:
 
 Goal: make the backend active instead of only request/response.
 
-Build:
+Status: partially complete. The minimal WebSocket event transport is implemented and usable for backend lifecycle events. Directory file watching and automatic list refresh remain future Phase 2 work.
+
+Already built:
 
 - WebSocket event channel.
-- `events.subscribe`.
+- `backend.ready` and heartbeat events.
+- Backend event logs are inspectable without heartbeat noise.
+- Client detects dropped event connections and missing heartbeats.
+
+Still build:
+
 - Directory watcher for current directory.
 - Refresh file list when files change.
 - Backend emits `directory.updated`.
@@ -510,8 +391,7 @@ NSTableView reload/diff updates
 Deliverables:
 
 - Create/delete/rename files externally and see the client update.
-- Backend event logs are inspectable.
-- Client reconnects if event connection drops.
+- File watcher events reuse the existing event transport without changing `/events` into PTY or high-volume `terminal.output` traffic.
 
 Do not build yet:
 
@@ -521,17 +401,19 @@ Do not build yet:
 
 ## Phase 3: Terminal Sessions
 
-Goal: add the Slot-like execution layer: terminal sessions are backend resources bound to workspace/directories.
+Goal: add the Slot-like execution layer through a narrow PTY minimum loop. Terminal sessions are backend resources bound to workspace/directories.
 
-Build:
+Build first:
 
-- `terminal.createSession`.
-- `terminal.write`.
-- `terminal.resize`.
+- `terminal.create`.
+- A PTY-specific `/terminal` WebSocket/session channel, separate from `/events`.
+- `terminal.input`.
+- `terminal.output`.
 - `terminal.close`.
-- `terminal.output` event.
+- `terminal.resize`.
+- `terminal.exit`.
 - Terminal cwd follows selected/opened directory when configured.
-- macOS terminal panel at bottom of the Finder-like window.
+- Connect the existing macOS bottom panel to real backend terminal sessions.
 
 Rust stack used:
 
@@ -539,7 +421,7 @@ Rust stack used:
 portable-pty
 tokio task management
 uuid
-axum WebSocket events
+axum WebSocket
 ```
 
 macOS stack used:
@@ -570,6 +452,13 @@ Deliverables:
 - Type commands and receive output.
 - Resize terminal panel and propagate PTY size.
 - Close session cleanly.
+
+Minimum acceptance:
+
+- PTY traffic does not use `/events`.
+- Backend owns session registry, shell process, PTY IO, resize, exit state, and cleanup.
+- Client owns only input forwarding, output rendering, viewport/rows/cols measurement, focus, and alert/status presentation.
+- Dropped PTY channels and missing heartbeats have explicit cleanup/timeout behavior.
 
 Do not build yet:
 
@@ -842,23 +731,22 @@ Do not build early:
 - Marketplace
 - Untrusted plugin execution without a permission model
 
-## 6. First Milestone Definition
+## 6. Next Milestone Definition
 
-The first useful milestone should be:
+The next useful milestone should be:
 
 ```text
-Rust backend starts.
-macOS AppKit client starts.
-Client connects to backend.
-Sidebar has Home/Desktop/Downloads/Documents.
-Clicking a sidebar item calls backend.
-Backend returns directory entries.
-NSTableView renders entries.
-Double-click folder opens folder.
-Bottom terminal panel exists as a placeholder showing current cwd.
+Phase 1 hardening is complete and PTY minimum loop is ready to start.
+Directory scan races are handled intentionally.
+Workspace state survives lock poisoning with warning logs.
+Info/warn logs avoid full paths and request params.
+Failed openDirectory paths preserve previous backend state.
+Finder-like table, sidebar, toolbar, context menu, and keyboard behavior feel coherent.
+The `/events` lifecycle channel remains stable and separate from future PTY traffic.
+The PTY boundary is defined as backend session/process ownership plus a dedicated channel.
 ```
 
-This proves the architecture without getting trapped in terminal complexity too early.
+This closes the remaining browsing hardening while keeping the next terminal step narrow and backend-owned.
 
 ## 7. Engineering Rules
 
@@ -874,10 +762,12 @@ This proves the architecture without getting trapped in terminal complexity too 
 
 ## 8. Recommended Immediate Next Steps
 
-1. Add backend launch and port-discovery flow from the macOS client.
-2. Add `workspace.getState` and `workspace.openDirectory` so the backend owns current workspace state instead of only listing arbitrary paths.
-3. Replace the current SwiftUI proof-of-flow with a Finder-like AppKit shell: sidebar, toolbar, and `NSTableView`.
-4. Add sidebar locations for Home, Desktop, Downloads, and Documents.
-5. Add file open/reveal actions through backend-approved commands and macOS `NSWorkspace`.
-6. Add a placeholder terminal panel bound to the current backend cwd.
-7. Add event transport planning for Phase 2 before implementing file watching.
+1. Harden backend directory scanning around `NotFound`, permission, and metadata errors.
+2. Add `RwLock` poison recovery for workspace state and cover it with Rust tests.
+3. Minimize full paths and request params in service/RPC info and warn logs.
+4. Add service-level coverage for failed `openDirectory` preserving previous root/current.
+5. Refine Finder-like context menus, keyboard behavior, and native table interactions.
+6. Define the PTY minimum-loop protocol and backend ownership model before writing client UI glue.
+7. Implement backend PTY `terminal.create` / `terminal.input` / `terminal.output` / `terminal.resize` / `terminal.close` / `terminal.exit` with cleanup tests.
+8. Connect the macOS pseudo-terminal panel to the PTY channel only after the backend loop is testable.
+9. Revisit production backend launch details: signing, packaging, port discovery, and graceful shutdown verification.

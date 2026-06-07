@@ -12,40 +12,43 @@ Rust backend 是产品核心和 source of truth。macOS、未来 web、Windows�
 
 ## 当前阶段
 
-当前处于 Phase 1: Workspace And Directory Browsing。
+当前处于 Phase 1: Workspace And Directory Browsing，并已完成支撑后续能力的 WebSocket event lifecycle 最小闭环。
 
-Phase 1 的边界要收紧：本阶段只证明 workspace state、目录打开、目录列表、macOS Finder-like 浏览体验和 backend/client 协议可以稳定工作。不要因为相邻功能看起来顺手，就扩大到搜索、真实 shell/PTY 会话、文件监听、文件变更、git、插件、AI、索引或多平台客户端实现。
+Phase 1 的边界要收紧：本阶段只证明 workspace state、目录打开、目录列表、macOS Finder-like 浏览体验、backend/client 协议和 backend lifecycle event channel 可以稳定工作。不要因为相邻功能看起来顺手，就扩大到搜索、完整 shell/PTY 会话、文件监听、文件变更、git、插件、AI、索引或多平台客户端实现。
 
 优先完成：
 
 - 继续稳定 backend workspace state、`workspace.getState`、`workspace.openDirectory` 和 `workspace.listDirectory`
 - 继续完善 macOS Finder-like 主窗口、sidebar、toolbar、文件列表和键盘行为
 - 保持隐藏文件切换、导航历史、路径输入、打开文件、刷新和状态栏展示等 Phase 1 行为可测试
+- 保持 `/events` WebSocket 的 backend.ready、heartbeat、断开检测、优雅关闭和客户端 heartbeat watchdog 可测试
 - 收敛已知后端风险：目录扫描竞争、workspace state 锁中毒恢复、日志路径脱敏、必要的状态并发测试
 
 暂时不要做：
 
-- real shell/PTY sessions
+- 完整 real shell/PTY sessions
 - search / indexing
 - git awareness
 - plugins
 - AI features
-- file watching / event stream
+- file watching
 - delete / move / rename 等文件变更操作
 
 ## 架构边界
 
-- Core owns workspace state, current directory, directory validation, filesystem facts, path open/list operations, future file operations, and future search/git/events/plugins/automation.
-- Client owns AppKit windows, rendering, selection state, focus, visual/layout state, interaction, platform-native open-file behavior, alerts, and viewport measurement.
+- Core owns workspace state, current directory, directory validation, filesystem facts, process/session lifecycle, protocol semantics, path open/list operations, future file operations, and future search/git/events/plugins/automation.
+- Client owns AppKit windows, rendering, selection state, focus, visual/layout state, interaction, platform-native open-file behavior, reusable alerts, connection presentation, and viewport measurement.
 - 文件数据、目录状态、路径打开/列目录和未来文件操作必须通过 backend API 表达，不要把产品核心逻辑搬进客户端。
 - 客户端可以做 UI 临时状态、视觉排序、焦点、选择和窗口内伪终端面板布局；不要在客户端私自维护与 backend 冲突的 canonical workspace state、目录栈或文件系统真相。
 - 后端可以暴露平台无关的文件/目录能力；不要让后端依赖 macOS AppKit、Finder 私有体验或某个客户端的 UI 形状。
 - 打开文件和系统默认应用是客户端平台行为，但目录导航、路径打开和目录 listing 的事实必须来自 backend；不要绕过 backend 构造核心状态。
 - 无效或缺失目录导航失败时，客户端负责呈现可复用 AppKit alert，并保持当前目录语义；需要刷新 listing 时仍通过 backend 查询当前目录。
 - 当前伪终端面板只是窗口内 UI：Command+K、压缩目录 view、拖拽高度和 viewport 测量都属于客户端视觉/布局状态，不代表已有 shell/PTY runtime。
-- PTY 接入前，不要把 shell process、PTY session、命令执行生命周期或终端状态机塞进客户端；需要接入时先定义 backend 协议、core 生命周期和跨层测试。
+- PTY 接入前，不要把 shell process、PTY session、命令执行生命周期或终端协议语义塞进客户端；需要接入时先定义 backend 协议、core 生命周期和跨层测试。
 - 客户端 resize 只能维护 `isOpen`、`height`、`viewportSize` 等 UI 状态，并 debounce/coalesce viewport 变化；未来 backend 只接受合并后的终端可用尺寸或 rows/cols，不接收原始拖拽事件、AppKit view 尺寸细节或客户端布局高度。
-- API 优先保持简单可调试：本地 HTTP JSON RPC 先行，WebSocket 事件后置。
+- API 优先保持简单可调试：本地 HTTP JSON RPC 负责请求/响应式操作；WebSocket event channel 只负责 backend lifecycle/event stream，不走 RPC 分流。
+- `/events` 是独立 WebSocket 事件通道，用 envelope 表达 `backend.ready`、`heartbeat` 等低频生命周期事件；它必须读取 socket、处理 close/read failure，并保持优雅关闭。
+- PTY 是高频双向字节/终端流，必须单独设计通道和 session lifecycle；不要把 `terminal.input`、`terminal.output`、`terminal.resize`、`terminal.exit` 或 `terminal.error` 混入 `/events`。
 - 修改 API 行为或 workspace state 语义时，必须同步更新 backend、客户端调用、测试和 `protocol/README.md`，不要让任一层保留旧规则。
 
 ## Workspace 状态语义
@@ -81,10 +84,12 @@ Phase 1 的边界要收紧：本阶段只证明 workspace state、目录打开�
 - 根目录 `agent.md` 是 agent 工作约束文件；默认不要顺手 stage 或 commit，只有用户明确要求更新 agent 规范时才纳入版本控制。
 - 子目录内的 `agent.md` 可以补充更具体的 backend/client 规则；编辑对应目录时同时遵守更近的规则。
 - 子目录内的 `agent.md` 同样是局部工作约束；默认不要顺手 stage 或 commit，只有用户明确要求更新对应规范时才纳入版本控制。
-- 所有新增加的代码文件必须由 git 统一管理；新增源码、测试、配置、协议或项目文档后，要确认它们出现在 `git status` 中，并在交付前说明是否需要纳入版本控制。
+- 所有新增加的代码文件必须由 git 统一管理；新增源码、测试、配置、协议或项目文档后，要确认它们出现在 `git status` 中，并按用户要求 stage/commit，不能留下未跟踪的新文件当作已完成交付。
+- 拆分 backend/client commit 时，只 stage 对应边界内的文件；不要把无关文档、另一个子系统或其他 agent 的修改混进同一个 commit。
 - 使用 subagent、后台 agent 或并行协作者后，完成对应任务必须确认其已停止/关闭；不要留下继续运行的 subagent、后台会话或未收束的长期任务。
-- 不要还原或覆盖其他 agent/用户的并行改动。
-- 修改前先查看相关文件和 `git status`，只改任务需要的文件。
+- 多个 subagent 并行修改时，每个 subagent 只编辑被分配的文件或目录；主 agent 负责整合路线图、跨目录一致性和最终验证。
+- 不要还原、覆盖、格式化或顺手整理其他 agent/用户的并行改动；如果同一文件已有无关修改，只在必要范围内做最小 patch。
+- 修改前先查看相关文件和 `git status`，只改任务需要的文件；交付前再次查看 `git status`，明确哪些改动属于自己、哪些是既有脏工作区。
 - 保持改动小而清晰，避免顺手重构无关区域。
 - 文档和代码不一致时，优先修正与当前行为直接相关的文档。
 
@@ -101,6 +106,13 @@ Phase 1 的边界要收紧：本阶段只证明 workspace state、目录打开�
 ## 验证习惯
 
 重大运行环境假设必须先验证再据此行动，包括但不限于端口、当前工作目录、服务是否已运行、Xcode scheme、Rust toolchain、macOS app bundle 路径、sandbox 权限、网络可用性和目标文件是否已被其他 agent 修改。不要基于记忆或上一次会话状态直接下结论。
+
+## 日志与可观测性
+
+- info/warn 日志只记录定位问题需要的稳定摘要：事件类型、连接 id、状态、计数和简短原因；不要记录完整路径、完整 params、原始 payload、终端输出或详细错误链。
+- 详细错误、完整异常文本和底层 I/O 细节只能放 debug 级别，除非用户明确要求提升可见性。
+- 常态化高频事件默认不要刷 info：heartbeat 成功发送/接收、watchdog 正常重置、PTY output/input 数据流都应过滤或降级，否则会掩盖真正的断开、超时和协议错误。
+- WebSocket 断开日志要能区分 client close、read failure、write failure、heartbeat timeout 和 graceful shutdown，便于后续联调 PTY 时定位边界。
 
 Backend 相关改动优先运行：
 

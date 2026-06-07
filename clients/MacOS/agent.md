@@ -14,17 +14,19 @@
 ## 当前阶段
 
 - 当前优先 Phase 1：workspace、目录浏览体验和窗口内伪终端面板的 UI 外壳。
-- 当前已有 `MacOSTests` target、`WorkspaceBrowserViewModelTests` 和 `PseudoTerminalPanelLayoutStateTests`，后续客户端行为改动必须优先用这些测试锁定。
+- 当前已有 `MacOSTests` target、`WorkspaceBrowserViewModelTests`、`BackendConnectionViewModelTests` 和 `PseudoTerminalPanelLayoutStateTests`，后续客户端行为改动必须优先用这些测试锁定。
 - 可以继续保留 SwiftUI proof-of-flow，用于验证 backend 通信、目录列表和基础交互。
 - Finder-like 主界面应逐步转向更原生的 macOS 结构：AppKit、`NSTableView`、sidebar、toolbar、native behavior。
 - 隐藏文件切换、后退/前进/上级目录、路径输入、刷新、打开文件、连接恢复后重新同步、以及不在状态栏/底栏显示项目数量等当前行为都属于 Phase 1 受保护行为。
-- Phase 1 内不要在客户端实现真实 PTY/shell 生命周期、search、git、plugins，也不要为了未来功能提前扩大客户端架构。
+- WebSocket `/events` 已作为 backend lifecycle/event channel 接入客户端，用于 `backend.ready`、`heartbeat` 和未来低频状态事件；它不是 PTY 数据通道。
+- Phase 1 内不要在客户端实现真实 PTY/shell 生命周期、search、git、plugins，也不要为了未来功能提前扩大客户端架构。后续进入 PTY 时先做最小 UI 闭环，不把真实会话事实放进客户端。
 
 ## 分层职责
 
 - `Views`：只负责布局、展示、用户交互和原生控件组合。不要直接发 HTTP/RPC，不要启动 `Process`，不要做文件系统事实判断；用户动作应通过闭包或 ViewModel action 传出。
-- `ViewModels`：只做 UI state、async actions、API orchestration、任务取消、loading/error/selection 状态管理。不承载 backend 业务规则，不把多个 backend endpoint 的结果改造成新的产品真相。
-- `API`：负责 HTTP/RPC 调用、请求响应 DTO、错误映射、timeout 和 backend endpoint 适配。API 层不启动 backend，不持有 AppKit/SwiftUI 类型，不决定 UI 展示。
+- `ViewModels`：只做 UI state、async actions、API orchestration、任务取消、loading/error/selection/connection 状态管理。不承载 backend 业务规则，不把多个 backend endpoint 的结果改造成新的产品真相。WebSocket 连接状态、heartbeat 超时和 alert 协调可以放在 ViewModel，但 backend 是否 ready、PTY session 是否存在等事实仍以 backend/protocol 为准。
+- `API`：负责 HTTP/RPC/WebSocket 调用、请求响应 DTO、错误映射、timeout 和 backend endpoint 适配。API 层不启动 backend，不持有 AppKit/SwiftUI 类型，不决定 UI 展示。
+- `EventClient` 属于传输层：只负责连接 `/events`、解析 event envelope、过滤常态 heartbeat info 日志、向上回调事件/错误；不要在 `EventClient` 内更新 SwiftUI 状态、弹 alert、判断 workspace 或 PTY 业务语义。
 - `Services`：负责客户端系统集成能力，例如通过 `Process` 启动 bundled backend、定位可执行文件、设置 environment/currentDirectory 和桥接 macOS 平台能力。Services 不应理解 workspace/目录业务语义。
 - `Models`：保存客户端视图状态和展示模型，避免复制 backend 领域模型的决策逻辑。DTO 字段应贴近协议；展示模型只能添加 UI 所需的轻量派生值。
 
@@ -41,6 +43,8 @@
 - 禁止通过父 PID 环境变量、PID 存活轮询或定时探测管理 backend 生命周期；也禁止把正确退出仅寄托于 Swift `deinit` 中调用 `Process.terminate()`。`deinit` 可以主动关闭写端，但 EOF/操作系统关闭 pipe 才是覆盖异常退出的生命周期机制。
 - 不要假设 `Process.run()` 成功等于 backend 可用；端口绑定失败、sandbox 继承、cwd 错误、环境变量错误都可能让进程存在但 API 不可用。
 - backend 地址、health endpoint、RPC endpoint 要集中在 API/Service 边界，避免散落在 Views 或 ViewModels。
+- 后端未连接、启动失败、health 超时或 event stream 断开时，客户端不得裸抛或只打印错误；必须通过现有 `WorkspaceAlertPresenter`/`WorkspaceAlertPresenting` 展示用户可理解的 alert，并保留 ViewModel 状态文本用于界面反馈。
+- `/events` 连接只能在 backend health 已确认后建立；重连或断开时要清理旧 event task、heartbeat watchdog 和 UI 状态，避免多个 WebSocket 连接同时存活。
 
 ## Sandbox 与文件系统语义
 
@@ -69,6 +73,15 @@
 - 错误展示可以由客户端决定，但错误含义、文件系统权限、路径有效性等判断应来自 backend。
 - 任何为了 UI 方便而新增的字段，如果代表产品事实，应先加到 backend/protocol；不要只在 Swift DTO 或 ViewModel 中拼出来。
 
+## WebSocket 事件通道
+
+- `/events` 是独立于 `/rpc` 的 backend lifecycle/event channel，不走 RPC 分流，也不承载高频 PTY 字节流。
+- 客户端当前只消费 `backend.ready`、`heartbeat` 和可诊断的 unknown event；新增事件前必须先确认协议归属，避免在 Swift 侧发明隐式契约。
+- `heartbeat` 是常态判活事件：收到时可以更新内部时间戳和必要的连接状态，但 info 日志必须过滤，避免 debug 时被高频常态消息淹没。
+- 客户端必须有自己的半开连接判活策略。event channel connected 后启动 heartbeat watchdog；超过约定时间未收到 heartbeat 时主动断开 event client、更新 `eventStatusText`，并走 `WorkspaceAlertPresenter`。
+- WebSocket error、close 或 watchdog timeout 都只能说明 event stream 不可用；不要据此在客户端推断 workspace、目录或未来 PTY session 的事实状态。需要事实时重新通过 backend API/protocol 查询。
+- ViewModel 负责把 event client 回调折叠成 UI 可观察状态，例如 `eventStatusText`、连接中/断开提示和 alert；Views 只展示这些状态，不直接持有 WebSocket task。
+
 ## 导航与打开边界
 
 - 路径打开、目录事实判断、目录切换和列目录必须走 Rust backend RPC；客户端不得用 `FileManager`、字符串前缀或本地 stat 结果决定路径是否为目录、是否存在或是否可进入。
@@ -78,11 +91,13 @@
 
 ## 伪终端面板边界
 
-- 伪终端面板是主窗口内部布局，不使用外部 `NSPanel`、child window 或附着窗口。Command+K 打开时主窗口大小保持不变，由窗口内 directory browser 让出空间；面板保留右上角关闭按钮，用于收起当前窗口内伪终端 UI。
+- 伪终端面板是主窗口内部布局，不使用外部 `NSPanel`、child window 或附着窗口。Command+K 打开时主窗口大小保持不变，由窗口内 directory browser 让出空间；面板保留右上角关闭按钮，真实 PTY 接入后该按钮必须发送 `terminal.close` 销毁 session，并在协议事件收尾后收起当前窗口内伪终端 UI。
 - 客户端可以管理纯 UI 状态：panel open/closed、面板高度、拖拽布局、viewport 像素测量、focus 和动画。
 - `PseudoTerminalPanelLayoutState` 应保持为独立 UI 状态；`TerminalResizeHandle` 应保持为独立拖拽分割条；`PseudoTerminalPanelView` 通过 `onViewportChanged` 测量可用尺寸。
 - viewport 变化要 debounce/coalesce，后续只把合并后的尺寸转换成 backend 需要的 resize 请求。不要把每次 SwiftUI layout 抖动都直接当作 terminal 业务事件。
 - 客户端不得实现 PTY、shell、进程生命周期、terminal cwd、命令执行、环境变量、buffer/backscroll 或 resize 语义。真实 terminal 会话事实和生命周期归 Rust backend/protocol 所有。
+- 下一阶段 PTY 客户端只做最小闭环 UI：输入、输出展示、resize 上报和 close action。不要在客户端创建 PTY session 权威状态，也不要把 shell 是否退出、当前 cwd、命令成功失败等事实从终端文本里解析出来。
+- PTY WebSocket 必须是独立通道，例如后续约定的 terminal/pty endpoint，不得混入 `/events`。PTY 通道同样需要客户端侧 heartbeat/超时/断开策略，避免半开连接让 UI 误以为终端仍可用。
 
 ## 原生体验方向
 
@@ -114,6 +129,7 @@
 - 任何 Swift 生产代码变更都必须配套新增或更新 `MacOSTests`，或者给出明确的自动化验证；不能只依赖手动点击。
 - ViewModel 行为改动优先写单元测试，使用 mock backend/opener 锁定 state、history、selection、loading、error text 和 backend 调用顺序。
 - API/RPC 解码改动要覆盖兼容字段、错误 code/message、缺失字段和 backend 返回 shape 变化。
+- WebSocket 客户端改动要覆盖 event connect/disconnect、`backend.ready`、`heartbeat`、unknown event、error callback、heartbeat timeout 和 alert presenter 调用；不要只用手动启动 app 验证。
 - UI 状态改动如果难以直接测试，应至少通过 ViewModel 可观察状态或轻量组件边界测试覆盖；无法自动化时必须说明手动验证步骤和剩余风险。
 - 当前 `WorkspaceBrowserViewModelTests` 至少应持续覆盖：
   - 隐藏文件过滤与显示切换。
