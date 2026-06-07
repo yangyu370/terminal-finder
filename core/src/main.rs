@@ -9,6 +9,7 @@ mod api;
 mod clock;
 mod error;
 mod state;
+mod terminal;
 mod workspace;
 
 use state::AppState;
@@ -21,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
         .with_timer(clock::KualaLumpurTimer)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "terminal_finder_core=info,core=info,rpc=info,workspace=info,events=info,tower_http=info".into()
+                "terminal_finder_core=info,core=info,rpc=info,workspace=info,events=info,terminal=info,tower_http=info".into()
             }),
         )
         .init();
