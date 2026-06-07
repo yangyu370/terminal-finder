@@ -145,42 +145,6 @@ xcodebuild test -project clients/MacOS/MacOS.xcodeproj \
 - 文件 watcher、搜索、索引、Git awareness、插件和多平台客户端仍在路线图中。
 - macOS app 名称、AppIcon、分发签名和打包体验仍需要 polish。
 
-## 展示建议
-
-如果给懂代码的人展示，建议先讲清楚三件事：
-
-1. Rust backend 是产品核心，client 不直接维护文件系统事实。
-2. HTTP RPC 和 WebSocket channel 是跨平台客户端复用的协议边界。
-3. 当前 demo 重点是 workspace browsing 和 backend/client 生命周期，不是完整 Finder 替代品。
-
-推荐演示路径：
-
-1. 启动 macOS app，展示自动连接 backend。
-2. 打开目录、返回、前进、上级目录、刷新。
-3. 输入相对路径或 `~` 路径。
-4. 切换隐藏文件。
-5. 打开窗口内终端面板。
-6. 最后展示测试命令和协议文档。
-
-## Roadmap
-
-当前优先级：
-
-- 补齐本地 API 鉴权和 WebSocket handshake 安全。
-- 收敛 terminal session 的归属校验、资源上限和尺寸校验。
-- 继续打磨 Finder-like 浏览体验。
-- 降低 info/warn 日志里的路径和参数暴露。
-- 加强目录扫描竞争、锁中毒恢复和并发状态测试。
-
-更长期的方向：
-
-- 文件 watcher 和自动刷新
-- 搜索和索引
-- Git 状态集成
-- 文件变更操作
-- Web / Windows / Linux 客户端
-- 插件和自动化能力
-
 ## License
 
 MIT License. See [`LICENSE`](LICENSE).
