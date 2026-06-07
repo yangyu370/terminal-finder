@@ -11,3 +11,10 @@ xcuserdata/
 *.xcuserstate
 DerivedData/
 .derivedData/
+
+# Local agent/project planning notes
+agent.md
+DEVELOPMENT_PLAN.md
+clients/MacOS/agent.md
+core/agent.md
+core/CODE_REVIEW.md
