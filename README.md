@@ -180,3 +180,7 @@ xcodebuild test -project clients/MacOS/MacOS.xcodeproj \
 - 文件变更操作
 - Web / Windows / Linux 客户端
 - 插件和自动化能力
+
+## License
+
+MIT License. See [`LICENSE`](LICENSE).
