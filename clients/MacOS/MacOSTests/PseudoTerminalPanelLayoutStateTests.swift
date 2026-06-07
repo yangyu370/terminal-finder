@@ -12,6 +12,15 @@ final class PseudoTerminalPanelLayoutStateTests: XCTestCase {
         XCTAssertTrue(layout.isOpen)
     }
 
+    func testCloseMarksPanelHidden() {
+        let layout = PseudoTerminalPanelLayoutState()
+
+        layout.open()
+        layout.close()
+
+        XCTAssertFalse(layout.isOpen)
+    }
+
     func testResizeDragAdjustsHeightWithinBounds() {
         let layout = PseudoTerminalPanelLayoutState(height: 184)
 

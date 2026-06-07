@@ -8,9 +8,14 @@
 import SwiftUI
 
 struct PseudoTerminalPanelView: View {
+    let onClose: () -> Void
     let onViewportChanged: (CGSize) -> Void
 
-    init(onViewportChanged: @escaping (CGSize) -> Void = { _ in }) {
+    init(
+        onClose: @escaping () -> Void = {},
+        onViewportChanged: @escaping (CGSize) -> Void = { _ in }
+    ) {
+        self.onClose = onClose
         self.onViewportChanged = onViewportChanged
     }
 
@@ -33,6 +38,20 @@ struct PseudoTerminalPanelView: View {
             Rectangle()
                 .fill(Color.white.opacity(0.12))
                 .frame(height: 1)
+        }
+        .overlay(alignment: .topTrailing) {
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.72))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close Terminal")
+            .accessibilityLabel("Close Terminal")
+            .padding(.top, 8)
+            .padding(.trailing, 10)
         }
         .background {
             GeometryReader { geometry in

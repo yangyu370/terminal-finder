@@ -78,7 +78,7 @@
 
 ## 伪终端面板边界
 
-- 伪终端面板是主窗口内部布局，不使用外部 `NSPanel`、child window 或附着窗口。Command+K 打开时主窗口大小保持不变，由窗口内 directory browser 让出空间；当前不提供关闭控件。
+- 伪终端面板是主窗口内部布局，不使用外部 `NSPanel`、child window 或附着窗口。Command+K 打开时主窗口大小保持不变，由窗口内 directory browser 让出空间；面板保留右上角关闭按钮，用于收起当前窗口内伪终端 UI。
 - 客户端可以管理纯 UI 状态：panel open/closed、面板高度、拖拽布局、viewport 像素测量、focus 和动画。
 - `PseudoTerminalPanelLayoutState` 应保持为独立 UI 状态；`TerminalResizeHandle` 应保持为独立拖拽分割条；`PseudoTerminalPanelView` 通过 `onViewportChanged` 测量可用尺寸。
 - viewport 变化要 debounce/coalesce，后续只把合并后的尺寸转换成 backend 需要的 resize 请求。不要把每次 SwiftUI layout 抖动都直接当作 terminal 业务事件。

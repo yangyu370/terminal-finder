@@ -43,6 +43,10 @@ final class PseudoTerminalPanelLayoutState: ObservableObject {
         isOpen = true
     }
 
+    func close() {
+        isOpen = false
+    }
+
     func resize(
         byVerticalDrag verticalDrag: CGFloat,
         availableContentHeight: CGFloat? = nil

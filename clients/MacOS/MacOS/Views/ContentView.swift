@@ -98,9 +98,16 @@ struct ContentView: View {
                         )
                     }
 
-                    PseudoTerminalPanelView { viewportSize in
-                        terminalPanelLayout.noteViewportSize(viewportSize)
-                    }
+                    PseudoTerminalPanelView(
+                        onClose: {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                terminalPanelLayout.close()
+                            }
+                        },
+                        onViewportChanged: { viewportSize in
+                            terminalPanelLayout.noteViewportSize(viewportSize)
+                        }
+                    )
                     .frame(
                         maxWidth: .infinity,
                         minHeight: terminalPanelLayout.height,
