@@ -48,9 +48,12 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     }
 
     var currentDirectoryName: String {
-        let currentPath = workspaceState?.currentDirectory ?? listing?.path ?? path
-        let name = URL(fileURLWithPath: currentPath).lastPathComponent
-        return name.isEmpty ? currentPath : name
+        let name = URL(fileURLWithPath: terminalCwdPath).lastPathComponent
+        return name.isEmpty ? terminalCwdPath : name
+    }
+
+    var terminalCwdPath: String {
+        currentDirectoryPath ?? path
     }
 
     var entries: [DirectoryEntry] {

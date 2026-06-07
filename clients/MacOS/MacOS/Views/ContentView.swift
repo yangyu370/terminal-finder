@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var connectionViewModel = BackendConnectionViewModel()
     @StateObject private var browserViewModel = WorkspaceBrowserViewModel()
     @StateObject private var terminalPanelLayout = PseudoTerminalPanelLayoutState()
+    @StateObject private var terminalSessionViewModel = TerminalSessionViewModel()
 
     var body: some View {
         Group {
@@ -25,15 +26,24 @@ struct ContentView: View {
         .task {
             connectionViewModel.connect()
         }
+        .onAppear {
+            terminalSessionViewModel.onSessionEnded = {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    terminalPanelLayout.close()
+                }
+            }
+        }
         .overlay {
             terminalPanelShortcut
         }
         .onChange(of: connectionViewModel.status) { _, status in
-            guard status == .connected else {
+            if status == .connected {
+                browserViewModel.loadInitialState()
                 return
             }
 
-            browserViewModel.loadInitialState()
+            terminalSessionViewModel.disconnect()
+            terminalPanelLayout.close()
         }
         .alert(
             "Unable to Open File",
@@ -56,9 +66,7 @@ struct ContentView: View {
 
     private var terminalPanelShortcut: some View {
         Button {
-            withAnimation(.easeOut(duration: 0.18)) {
-                terminalPanelLayout.open()
-            }
+            openTerminalPanel()
         } label: {
             EmptyView()
         }
@@ -99,10 +107,9 @@ struct ContentView: View {
                     }
 
                     PseudoTerminalPanelView(
+                        terminalSessionViewModel: terminalSessionViewModel,
                         onClose: {
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                terminalPanelLayout.close()
-                            }
+                            terminalSessionViewModel.close()
                         },
                         onViewportChanged: { viewportSize in
                             terminalPanelLayout.noteViewportSize(viewportSize)
@@ -119,6 +126,13 @@ struct ContentView: View {
             }
         }
         .clipped()
+    }
+
+    private func openTerminalPanel() {
+        withAnimation(.easeOut(duration: 0.18)) {
+            terminalPanelLayout.open()
+        }
+        terminalSessionViewModel.start(cwd: browserViewModel.terminalCwdPath)
     }
 
     private var startupView: some View {

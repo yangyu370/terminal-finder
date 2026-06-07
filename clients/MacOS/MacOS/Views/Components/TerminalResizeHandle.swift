@@ -24,7 +24,7 @@ struct TerminalResizeHandle: View {
                     .frame(width: 48, height: 3)
             }
             .contentShape(Rectangle())
-            .cursor(.resizeUpDown)
+            .background(CursorTrackingView(cursor: .resizeUpDown))
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
@@ -41,14 +41,40 @@ struct TerminalResizeHandle: View {
     }
 }
 
-private extension View {
-    func cursor(_ cursor: NSCursor) -> some View {
-        onHover { isHovering in
-            if isHovering {
-                cursor.push()
-            } else {
-                NSCursor.pop()
-            }
+private struct CursorTrackingView: NSViewRepresentable {
+    let cursor: NSCursor
+
+    func makeNSView(context: Context) -> CursorTrackingNSView {
+        CursorTrackingNSView(cursor: cursor)
+    }
+
+    func updateNSView(_ nsView: CursorTrackingNSView, context: Context) {
+        nsView.cursor = cursor
+    }
+}
+
+private final class CursorTrackingNSView: NSView {
+    var cursor: NSCursor {
+        didSet {
+            window?.invalidateCursorRects(for: self)
         }
+    }
+
+    init(cursor: NSCursor) {
+        self.cursor = cursor
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: cursor)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }
