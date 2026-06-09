@@ -224,6 +224,17 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         selectedEntryPath = path
     }
 
+    /// Lazily fetches the contents of a subdirectory for inline expansion in the
+    /// outline view. Applies the same hidden-file filtering as the top-level list.
+    func loadChildren(path: String) async throws -> [DirectoryEntry] {
+        let result = try await backendClient.listDirectory(path: path)
+        guard !showsHiddenFiles else {
+            return result.entries
+        }
+
+        return result.entries.filter { !$0.name.hasPrefix(".") }
+    }
+
     private var currentDirectoryPath: String? {
         workspaceState?.currentDirectory ?? listing?.path
     }

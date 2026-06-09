@@ -13,65 +13,77 @@ struct DirectoryTableView: NSViewRepresentable {
     let selectedPath: String?
     let onSelect: (String?) -> Void
     let onOpen: (DirectoryEntry) -> Void
+    let loadChildren: (String) async throws -> [DirectoryEntry]
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSelect: onSelect, onOpen: onOpen)
+        Coordinator(onSelect: onSelect, onOpen: onOpen, loadChildren: loadChildren)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tableView = NSTableView()
-        tableView.usesAlternatingRowBackgroundColors = false
-        tableView.allowsMultipleSelection = false
-        tableView.allowsEmptySelection = true
-        tableView.rowHeight = 28
-        tableView.headerView = NSTableHeaderView()
-        tableView.target = context.coordinator
-        tableView.doubleAction = #selector(Coordinator.handleDoubleClick(_:))
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
+        let outlineView = NSOutlineView()
+        outlineView.usesAlternatingRowBackgroundColors = false
+        outlineView.allowsMultipleSelection = false
+        outlineView.allowsEmptySelection = true
+        outlineView.rowHeight = 32
+        outlineView.intercellSpacing = NSSize(width: 0, height: 0)
+        outlineView.gridStyleMask = []
+        outlineView.backgroundColor = .clear
+        outlineView.selectionHighlightStyle = .regular
+        outlineView.indentationPerLevel = 14
+        outlineView.autoresizesOutlineColumn = false
+        if #available(macOS 11.0, *) {
+            outlineView.style = .inset
+        }
+        outlineView.headerView = NSTableHeaderView()
+        outlineView.target = context.coordinator
+        outlineView.doubleAction = #selector(Coordinator.handleDoubleClick(_:))
+        outlineView.delegate = context.coordinator
+        outlineView.dataSource = context.coordinator
 
         let nameColumn = NSTableColumn(identifier: Column.name.identifier)
         nameColumn.title = "Name"
         nameColumn.minWidth = 220
-        nameColumn.width = 320
-        tableView.addTableColumn(nameColumn)
+        nameColumn.width = 360
+        outlineView.addTableColumn(nameColumn)
+        outlineView.outlineTableColumn = nameColumn
 
         let kindColumn = NSTableColumn(identifier: Column.kind.identifier)
         kindColumn.title = "Kind"
         kindColumn.minWidth = 90
-        kindColumn.width = 110
-        tableView.addTableColumn(kindColumn)
+        kindColumn.width = 120
+        outlineView.addTableColumn(kindColumn)
 
         let modifiedColumn = NSTableColumn(identifier: Column.modified.identifier)
-        modifiedColumn.title = "Modified"
-        modifiedColumn.minWidth = 120
-        modifiedColumn.width = 150
-        tableView.addTableColumn(modifiedColumn)
+        modifiedColumn.title = "Date Modified"
+        modifiedColumn.minWidth = 140
+        modifiedColumn.width = 180
+        outlineView.addTableColumn(modifiedColumn)
 
         let sizeColumn = NSTableColumn(identifier: Column.size.identifier)
         sizeColumn.title = "Size"
         sizeColumn.minWidth = 80
         sizeColumn.width = 96
-        tableView.addTableColumn(sizeColumn)
+        outlineView.addTableColumn(sizeColumn)
 
         let scrollView = NSScrollView()
         scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
-        scrollView.documentView = tableView
+        scrollView.documentView = outlineView
 
-        context.coordinator.tableView = tableView
-        context.coordinator.entries = entries
+        context.coordinator.outlineView = outlineView
+        context.coordinator.rebuildRoots(with: entries)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.entries = entries
         context.coordinator.onSelect = onSelect
         context.coordinator.onOpen = onOpen
+        context.coordinator.loadChildren = loadChildren
 
-        guard let tableView = scrollView.documentView as? NSTableView else {
+        guard let outlineView = scrollView.documentView as? NSOutlineView else {
             return
         }
 
@@ -80,51 +92,179 @@ struct DirectoryTableView: NSViewRepresentable {
             context.coordinator.isApplyingSelection = false
         }
 
-        tableView.reloadData()
-        if let selectedPath,
-           let selectedIndex = entries.firstIndex(where: { $0.path == selectedPath }) {
-            let selectedRows = tableView.selectedRowIndexes
-            if selectedRows.count != 1 || !selectedRows.contains(selectedIndex) {
-                tableView.selectRowIndexes(IndexSet(integer: selectedIndex), byExtendingSelection: false)
+        // Only rebuild the tree (and collapse everything) when the top-level
+        // listing actually changes — e.g. navigating or refreshing. Pure
+        // selection updates must preserve the user's expanded folders.
+        if context.coordinator.topLevelSignature(for: entries) != context.coordinator.currentSignature {
+            context.coordinator.rebuildRoots(with: entries)
+        }
+
+        applySelection(on: outlineView, coordinator: context.coordinator)
+    }
+
+    private func applySelection(on outlineView: NSOutlineView, coordinator: Coordinator) {
+        guard let selectedPath,
+              let node = coordinator.findNode(path: selectedPath) else {
+            if outlineView.selectedRow != -1 {
+                outlineView.deselectAll(nil)
             }
-        } else {
-            if tableView.selectedRow != -1 {
-                tableView.deselectAll(nil)
+            return
+        }
+
+        let row = outlineView.row(forItem: node)
+        guard row >= 0 else {
+            if outlineView.selectedRow != -1 {
+                outlineView.deselectAll(nil)
             }
+            return
+        }
+
+        let selectedRows = outlineView.selectedRowIndexes
+        if selectedRows.count != 1 || !selectedRows.contains(row) {
+            outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
     }
 
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-        var entries: [DirectoryEntry] = []
+    final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
         var onSelect: (String?) -> Void
         var onOpen: (DirectoryEntry) -> Void
+        var loadChildren: (String) async throws -> [DirectoryEntry]
         var isApplyingSelection = false
-        weak var tableView: NSTableView?
+        weak var outlineView: NSOutlineView?
+
+        private(set) var currentSignature: [String] = []
+        private var rootNodes: [OutlineNode] = []
 
         init(
             onSelect: @escaping (String?) -> Void,
-            onOpen: @escaping (DirectoryEntry) -> Void
+            onOpen: @escaping (DirectoryEntry) -> Void,
+            loadChildren: @escaping (String) async throws -> [DirectoryEntry]
         ) {
             self.onSelect = onSelect
             self.onOpen = onOpen
+            self.loadChildren = loadChildren
         }
 
-        func numberOfRows(in tableView: NSTableView) -> Int {
-            entries.count
+        func topLevelSignature(for entries: [DirectoryEntry]) -> [String] {
+            entries.map(\.path)
         }
 
-        func tableView(
-            _ tableView: NSTableView,
-            viewFor tableColumn: NSTableColumn?,
-            row: Int
-        ) -> NSView? {
-            guard row < entries.count,
-                  let column = Column(identifier: tableColumn?.identifier)
-            else {
+        func rebuildRoots(with entries: [DirectoryEntry]) {
+            rootNodes = entries.map { OutlineNode(entry: $0) }
+            currentSignature = topLevelSignature(for: entries)
+            outlineView?.reloadData()
+        }
+
+        fileprivate func findNode(path: String) -> OutlineNode? {
+            func search(_ nodes: [OutlineNode]) -> OutlineNode? {
+                for node in nodes {
+                    if node.entry.path == path {
+                        return node
+                    }
+                    if let children = node.children, let match = search(children) {
+                        return match
+                    }
+                }
                 return nil
             }
 
-            let entry = entries[row]
+            return search(rootNodes)
+        }
+
+        // MARK: - Data source
+
+        func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+            guard let node = item as? OutlineNode else {
+                return rootNodes.count
+            }
+
+            if let children = node.children {
+                return children.count
+            }
+
+            // Directory whose children have not been loaded yet: keep a single
+            // placeholder row so the disclosure triangle stays available and a
+            // "Loading…" hint appears while fetching.
+            return node.isDirectory ? 1 : 0
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+            guard let node = item as? OutlineNode else {
+                return rootNodes[index]
+            }
+
+            if let children = node.children {
+                return children[index]
+            }
+
+            return node.placeholder
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+            guard let node = item as? OutlineNode else {
+                return false
+            }
+
+            return node.isDirectory
+        }
+
+        func outlineViewItemWillExpand(_ notification: Notification) {
+            guard let node = notification.userInfo?["NSObject"] as? OutlineNode,
+                  node.isDirectory,
+                  node.children == nil,
+                  !node.isLoading else {
+                return
+            }
+
+            node.isLoading = true
+            let path = node.entry.path
+
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    return
+                }
+
+                do {
+                    let entries = try await self.loadChildren(path)
+                    node.children = entries.map { OutlineNode(entry: $0) }
+                } catch {
+                    node.children = []
+                }
+
+                node.isLoading = false
+                self.reloadExpanded(node)
+            }
+        }
+
+        private func reloadExpanded(_ node: OutlineNode) {
+            guard let outlineView, outlineView.row(forItem: node) >= 0 else {
+                return
+            }
+
+            outlineView.reloadItem(node, reloadChildren: true)
+            outlineView.expandItem(node)
+        }
+
+        // MARK: - Delegate
+
+        func outlineView(
+            _ outlineView: NSOutlineView,
+            viewFor tableColumn: NSTableColumn?,
+            item: Any
+        ) -> NSView? {
+            guard let column = Column(identifier: tableColumn?.identifier) else {
+                return nil
+            }
+
+            if item is LoadingPlaceholder {
+                return column == .name ? makeTextCell(text: "Loading…", alignment: .left) : NSView()
+            }
+
+            guard let node = item as? OutlineNode else {
+                return nil
+            }
+
+            let entry = node.entry
             switch column {
             case .name:
                 return makeNameCell(entry: entry)
@@ -137,42 +277,49 @@ struct DirectoryTableView: NSViewRepresentable {
             }
         }
 
-        func tableViewSelectionDidChange(_ notification: Notification) {
+        func outlineViewSelectionDidChange(_ notification: Notification) {
             guard !isApplyingSelection else {
                 return
             }
 
-            guard let tableView else {
+            guard let outlineView else {
                 onSelect(nil)
                 return
             }
 
-            let selectedRow = tableView.selectedRow
-            guard selectedRow >= 0, selectedRow < entries.count else {
+            let selectedRow = outlineView.selectedRow
+            guard selectedRow >= 0,
+                  let node = outlineView.item(atRow: selectedRow) as? OutlineNode else {
                 onSelect(nil)
                 return
             }
 
-            onSelect(entries[selectedRow].path)
+            onSelect(node.entry.path)
         }
 
-        @objc func handleDoubleClick(_ sender: NSTableView) {
+        @objc func handleDoubleClick(_ sender: NSOutlineView) {
             let row = sender.clickedRow >= 0 ? sender.clickedRow : sender.selectedRow
-            guard row >= 0, row < entries.count else {
+            guard row >= 0,
+                  let node = sender.item(atRow: row) as? OutlineNode else {
                 return
             }
 
-            onOpen(entries[row])
+            onOpen(node.entry)
         }
 
         private func makeNameCell(entry: DirectoryEntry) -> NSTableCellView {
-            let cell = NSTableCellView()
+            let cell = NameCell()
+            let icon = entry.iconAppearance
+            cell.normalTintColor = icon.color
+
             let imageView = NSImageView()
-            imageView.image = entry.iconImage
-            imageView.contentTintColor = entry.isDirectory ? .controlAccentColor : .secondaryLabelColor
+            imageView.image = icon.image
+            imageView.imageScaling = .scaleProportionallyUpOrDown
+            imageView.contentTintColor = icon.color
             imageView.translatesAutoresizingMaskIntoConstraints = false
 
             let textField = NSTextField(labelWithString: entry.name)
+            textField.font = .systemFont(ofSize: 13)
             textField.lineBreakMode = .byTruncatingMiddle
             textField.translatesAutoresizingMaskIntoConstraints = false
 
@@ -182,10 +329,10 @@ struct DirectoryTableView: NSViewRepresentable {
             cell.textField = textField
 
             NSLayoutConstraint.activate([
-                imageView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+                imageView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
                 imageView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                imageView.widthAnchor.constraint(equalToConstant: 18),
-                imageView.heightAnchor.constraint(equalToConstant: 18),
+                imageView.widthAnchor.constraint(equalToConstant: 20),
+                imageView.heightAnchor.constraint(equalToConstant: 20),
                 textField.leadingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: 8),
                 textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
                 textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
@@ -195,8 +342,9 @@ struct DirectoryTableView: NSViewRepresentable {
         }
 
         private func makeTextCell(text: String, alignment: NSTextAlignment) -> NSTableCellView {
-            let cell = NSTableCellView()
+            let cell = SecondaryTextCell()
             let textField = NSTextField(labelWithString: text)
+            textField.font = .systemFont(ofSize: 13)
             textField.alignment = alignment
             textField.textColor = .secondaryLabelColor
             textField.lineBreakMode = .byTruncatingTail
@@ -212,6 +360,51 @@ struct DirectoryTableView: NSViewRepresentable {
             ])
 
             return cell
+        }
+    }
+}
+
+/// A node in the directory outline tree. `children == nil` means the folder's
+/// contents have not been fetched yet; an empty array means it was loaded and
+/// is empty.
+private final class OutlineNode {
+    let entry: DirectoryEntry
+    var children: [OutlineNode]?
+    var isLoading = false
+    private(set) lazy var placeholder = LoadingPlaceholder()
+
+    init(entry: DirectoryEntry) {
+        self.entry = entry
+    }
+
+    var isDirectory: Bool {
+        entry.isDirectory
+    }
+}
+
+/// Sentinel row shown under a folder while its children are being fetched.
+private final class LoadingPlaceholder {}
+
+/// Name-column cell that flips its icon tint to white while the row is selected.
+private final class NameCell: NSTableCellView {
+    var normalTintColor: NSColor = .secondaryLabelColor
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            imageView?.contentTintColor = backgroundStyle == .emphasized
+                ? .alternateSelectedControlTextColor
+                : normalTintColor
+        }
+    }
+}
+
+/// Secondary text cell that flips its label to white while the row is selected.
+private final class SecondaryTextCell: NSTableCellView {
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet {
+            textField?.textColor = backgroundStyle == .emphasized
+                ? .alternateSelectedControlTextColor
+                : .secondaryLabelColor
         }
     }
 }
@@ -265,21 +458,69 @@ private enum Column {
     }
 }
 
+private struct IconAppearance {
+    let image: NSImage?
+    let color: NSColor
+}
+
 private extension DirectoryEntry {
-    var iconImage: NSImage? {
+    var iconAppearance: IconAppearance {
         let symbolName: String
+        let color: NSColor
+
         switch kind {
         case .directory:
-            symbolName = "folder"
-        case .file:
-            symbolName = "doc"
+            symbolName = "folder.fill"
+            color = .controlAccentColor
         case .symlink:
-            symbolName = "arrowshape.turn.up.right"
+            symbolName = "arrowshape.turn.up.right.fill"
+            color = .systemTeal
         case .other:
-            symbolName = "questionmark.square"
+            symbolName = "questionmark.square.fill"
+            color = .systemGray
+        case .file:
+            let descriptor = Self.descriptor(forExtension: (name as NSString).pathExtension.lowercased())
+            symbolName = descriptor.symbol
+            color = descriptor.color
         }
 
-        return NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+        let configuration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration)
+        return IconAppearance(image: image, color: color)
+    }
+
+    private static func descriptor(forExtension ext: String) -> (symbol: String, color: NSColor) {
+        switch ext {
+        case "doc", "docx", "pages", "rtf":
+            return ("doc.text.fill", .systemBlue)
+        case "xls", "xlsx", "csv", "numbers":
+            return ("tablecells.fill", .systemGreen)
+        case "ppt", "pptx", "key":
+            return ("rectangle.on.rectangle.angled.fill", .systemOrange)
+        case "pdf":
+            return ("doc.richtext.fill", .systemRed)
+        case "txt", "md", "markdown", "log":
+            return ("doc.plaintext.fill", .systemGray)
+        case "swift":
+            return ("swift", .systemOrange)
+        case "py", "rs", "go", "c", "h", "cpp", "java", "js", "ts", "rb", "sh", "json", "yaml", "yml", "toml":
+            return ("chevron.left.forwardslash.chevron.right", .systemPurple)
+        case "png", "jpg", "jpeg", "gif", "heic", "webp", "tiff", "bmp", "svg":
+            return ("photo.fill", .systemTeal)
+        case "mp4", "mov", "avi", "mkv", "m4v":
+            return ("film.fill", .systemPink)
+        case "mp3", "wav", "aac", "flac", "m4a":
+            return ("music.note", .systemPink)
+        case "zip", "tar", "gz", "rar", "7z":
+            return ("doc.zipper", .systemBrown)
+        case "dmg", "iso", "img":
+            return ("externaldrive.fill", .systemGray)
+        case "app":
+            return ("app.fill", .systemBlue)
+        default:
+            return ("doc.fill", .secondaryLabelColor)
+        }
     }
 
     var displaySize: String {
@@ -310,9 +551,62 @@ private extension EntryKind {
     }
 }
 
+private enum FinderDateFormatter {
+    private static let isoFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let iso: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let time: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.setLocalizedDateFormatFromTemplate("HHmm")
+        return formatter
+    }()
+
+    private static let monthDay: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.setLocalizedDateFormatFromTemplate("MMMd HHmm")
+        return formatter
+    }()
+
+    private static let fullDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.setLocalizedDateFormatFromTemplate("yMMMd HHmm")
+        return formatter
+    }()
+
+    static func display(_ raw: String) -> String {
+        guard let date = isoFractional.date(from: raw) ?? iso.date(from: raw) else {
+            return raw.replacingOccurrences(of: "T", with: " ")
+                .replacingOccurrences(of: "Z", with: "")
+        }
+
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return String(format: NSLocalizedString("Today %@", comment: ""), time.string(from: date))
+        }
+        if calendar.isDateInYesterday(date) {
+            return String(format: NSLocalizedString("Yesterday %@", comment: ""), time.string(from: date))
+        }
+        if calendar.isDate(date, equalTo: Date(), toGranularity: .year) {
+            return monthDay.string(from: date)
+        }
+        return fullDate.string(from: date)
+    }
+}
+
 private extension String {
     var finderDisplayDate: String {
-        replacingOccurrences(of: "T", with: " ")
-            .replacingOccurrences(of: "Z", with: "")
+        FinderDateFormatter.display(self)
     }
 }

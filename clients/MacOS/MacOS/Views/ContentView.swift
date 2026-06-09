@@ -5,7 +5,27 @@
 //  Created by Wang on 2026/6/1.
 //
 
+import AppKit
 import SwiftUI
+
+/// Bridges `NSVisualEffectView` so the sidebar gets the native translucent Finder material.
+private struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .sidebar
+    var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
+}
 
 struct ContentView: View {
     @StateObject private var connectionViewModel = BackendConnectionViewModel()
@@ -70,7 +90,7 @@ struct ContentView: View {
         } label: {
             EmptyView()
         }
-        .keyboardShortcut("k", modifiers: .command)
+        .keyboardShortcut("j", modifiers: .command)
         .frame(width: 0, height: 0)
         .opacity(0)
         .accessibilityHidden(true)
@@ -160,14 +180,33 @@ struct ContentView: View {
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Favorites")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 18)
+                .padding(.top, 16)
+                .padding(.bottom, 6)
+
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(browserViewModel.sidebarLocations) { location in
+                    sidebarRow(for: location)
+                }
+            }
+            .padding(.horizontal, 10)
+
+            Spacer()
+
+            Divider()
+                .padding(.horizontal, 12)
+
             BackendStatusView(
                 status: connectionViewModel.status,
                 detailText: connectionViewModel.detailText,
                 eventStatusText: connectionViewModel.eventStatusText
             )
             .padding(.horizontal, 14)
-            .padding(.top, 16)
+            .padding(.top, 10)
 
             Button {
                 connectionViewModel.reconnect()
@@ -175,47 +214,48 @@ struct ContentView: View {
                 Label("Reconnect", systemImage: "bolt.horizontal.circle")
             }
             .buttonStyle(.borderless)
+            .controlSize(.small)
             .disabled(connectionViewModel.isConnecting)
             .padding(.horizontal, 14)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Favorites")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 4)
-
-                ForEach(browserViewModel.sidebarLocations) { location in
-                    Button {
-                        browserViewModel.open(location)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: location.systemImageName)
-                                .frame(width: 18)
-                                .foregroundStyle(.secondary)
-
-                            Text(location.title)
-                                .lineLimit(1)
-
-                            Spacer()
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(sidebarSelectionBackground(for: location))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 8)
-                    .disabled(browserViewModel.isLoading)
-                }
-            }
-
-            Spacer()
+            .padding(.top, 4)
+            .padding(.bottom, 14)
         }
-        .frame(width: 220)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .frame(width: 210)
+        .background(VisualEffectView())
+    }
+
+    private func sidebarRow(for location: WorkspaceSidebarLocation) -> some View {
+        let isSelected = isSidebarLocationSelected(location)
+
+        return Button {
+            browserViewModel.open(location)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: location.systemImageName)
+                    .font(.system(size: 14))
+                    .frame(width: 20)
+                    .foregroundStyle(isSelected ? Color.white : Color.accentColor)
+
+                Text(location.title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(isSelected ? Color.accentColor : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .disabled(browserViewModel.isLoading)
+    }
+
+    private func isSidebarLocationSelected(_ location: WorkspaceSidebarLocation) -> Bool {
+        let currentPath = browserViewModel.workspaceState?.currentDirectory ?? browserViewModel.path
+        return currentPath == location.path
     }
 
     private var toolbar: some View {
@@ -318,6 +358,9 @@ struct ContentView: View {
                 },
                 onOpen: { entry in
                     browserViewModel.open(entry)
+                },
+                loadChildren: { path in
+                    try await browserViewModel.loadChildren(path: path)
                 }
             )
 
@@ -341,10 +384,5 @@ struct ContentView: View {
                 )
             }
         }
-    }
-
-    private func sidebarSelectionBackground(for location: WorkspaceSidebarLocation) -> some ShapeStyle {
-        let currentPath = browserViewModel.workspaceState?.currentDirectory ?? browserViewModel.path
-        return currentPath == location.path ? Color.accentColor.opacity(0.16) : Color.clear
     }
 }
