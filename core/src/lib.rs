@@ -4,9 +4,13 @@
 //! 也能被可选的 `server` feature（axum HTTP/WebSocket 适配层）复用。
 
 pub mod error;
+pub mod ffi;
 pub mod state;
 pub mod terminal;
 pub mod workspace;
+
+// 生成 UniFFI 跨语言脚手架（proc-macro 模式，命名空间默认取 crate 名）。
+uniffi::setup_scaffolding!();
 
 /// 日志时间格式化器，仅服务 server bin 的 tracing 订阅器，故只在 `server` feature 下编译。
 #[cfg(feature = "server")]
