@@ -3,18 +3,43 @@ name = "core"
 version = "0.1.0"
 edition = "2024"
 
+# core 既是被 Swift 经 FFI 链接的库（staticlib/cdylib），也提供 lib 供 server bin 链接。
+[lib]
+name = "terminal_finder_core"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+# 可选的 axum HTTP/WebSocket 服务端，留给未来 Web / 多客户端。
+[[bin]]
+name = "core"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+[features]
+# Phase 1 期间 server 仍默认开启，保证现有 `cargo run` / 子进程工作流不破。
+# Phase 2 完成业务层与 axum 的源码级解耦后，会把它从 default 中移除。
+default = ["server"]
+server = [
+    "dep:axum",
+    "dep:base64",
+    "dep:futures-util",
+    "dep:tokio-tungstenite",
+    "dep:tracing-subscriber",
+]
+
 [dependencies]
+# 库通用依赖（workspace / terminal 业务层与 FFI 都要用）。
 anyhow = "1"
-axum = { version = "0.7", features = ["ws"] }
-base64 = "0.22"
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
 portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
-tokio-tungstenite = "0.24"
+# server 专用依赖：只在 `server` feature（axum HTTP/WS 适配层）下编译。
+axum = { version = "0.7", features = ["ws"], optional = true }
+base64 = { version = "0.22", optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+tokio-tungstenite = { version = "0.24", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
