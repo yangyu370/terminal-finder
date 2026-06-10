@@ -153,28 +153,24 @@ Swift App ──UniFFI(进程内)──> libterminal_finder_core (CoreHandle fac
 
 > 目的：用回调接口替代 `/events` 与 `/terminal` 两条 WebSocket 下行流。
 
-- [ ] **T4.1 定义 `CoreEventListener` 回调接口**
-  - 文件：`core/src/ffi/events.rs`：新增
-  - 关键改动：`#[uniffi::export(callback_interface)] trait CoreEventListener { fn on_ready(..); fn on_heartbeat(); fn on_error(code,message); }`；`CoreHandle` 提供 `register_event_listener(listener)`。
-  - 关键技术点：回调由 Swift 实现，Rust 侧从 `AppState.events` broadcast 桥接到回调；回调内不可阻塞。
-  - 验收：注册后能收到一次 `on_ready` 与周期 `on_heartbeat`。
-- [ ] **T4.2 定义 `TerminalEventListener` 回调接口**
+- [x] **T4.1 ~~定义 `CoreEventListener` 回调接口~~（决定：跳过）**
+  - 决定与理由：`backend.ready` / `heartbeat` 是连接级传输概念，进程内 FFI 没有「连接」可判活——库随进程存活，Swift 直接持有 `CoreHandle` 即代表 ready。按 agent.md「新模块应先服务真实需求」原则不实现；未来若有 workspace 变更广播等真实事件，再引入领域事件监听器。
+- [x] **T4.2 定义 `TerminalEventListener` 回调接口**
   - 文件：`core/src/ffi/terminal.rs`：新增
-  - 关键改动：`trait TerminalEventListener { fn on_output(data: Vec<u8>); fn on_exit(code: Option<i32>, signal: Option<i32>); fn on_error(code,message); }`。
-  - 验收：trait 被 uniffi 识别，可在 Rust 侧持有并调用。
-- [ ] **T4.3 终端生命周期方法**
-  - 文件：`core/src/ffi/terminal.rs`：修改；桥接 `terminal::registry`/`session`
-  - 关键改动：
-    - `create_terminal(cwd, cols, rows, shell, listener) -> SessionId`
-    - `send_input(session_id, data: Vec<u8>)`（高频、同步、快返回）
-    - `resize_terminal(session_id, cols, rows)`
-    - `close_terminal(session_id)`
-    - 在 runtime 上把现有 `TerminalEvent`（tokio mpsc）转发到对应 `TerminalEventListener`。
-  - 关键技术点：每个 session 绑定一个 listener；`Uuid` 经 FFI 用 `String` 表示；字节直接 `Vec<u8>`，删去 base64。
-  - 验收：创建 session → 输入 `ls\n` → 收到 `on_output` → `close` → 收到 `on_exit`。
-- [ ] **T4.4 关停与资源回收**
-  - 关键改动：`CoreHandle` Drop 时优雅关闭所有 session 与 runtime；确认无悬挂线程（PTY reader thread / exit poll）。
-  - 验收：反复 create/close 无 fd / 线程泄漏。
+  - 实际改动：`#[uniffi::export(with_foreign)] trait TerminalEventListener: Send + Sync { fn on_output(data: Vec<u8>); fn on_exit(code, signal); fn on_error(code, message); }`（uniffi 0.31 用 `with_foreign`，非旧式 `callback_interface`）。
+  - 验收：✅ Swift 侧生成 `protocol TerminalEventListener`，`Vec<u8>` 映射为 `Data`。
+- [x] **T4.3 终端生命周期方法**
+  - 文件：`core/src/ffi/terminal.rs` + `core/src/ffi/mod.rs`
+  - 实际改动：
+    - `create_terminal(cwd: Option<String>, cols, rows, listener) -> sessionId`（`shell` 参数与 websocket 路径一致暂不支持，未加入签名）
+    - `send_terminal_input(session_id, data: Vec<u8>)`（同步快返回，无 base64）
+    - `resize_terminal` / `close_terminal`
+    - 事件桥接用**每 session 一个转发线程**（`blocking_recv` 循环），非 tokio runtime——FFI 方法全同步，无需常驻 runtime。
+    - 语义镜像 websocket 路径：cwd 缺省取 workspace 当前目录；`Exit` 时从 registry 移除；错误码 `create_failed`/`unknown_session`/`invalid_params` 对齐协议。
+  - 验收：✅ 测试覆盖 create → input(printf) → on_output → resize → close → on_exit → registry 清理。
+- [x] **T4.4 关停与资源回收**
+  - 实际行为：`CoreHandle`（AppState/registry）Drop 时 `SessionHandle` 释放 → 命令通道断开 → control 线程 kill 子进程并上报 Exit → 转发线程随之退出，链式自清理，无需显式 Drop 实现。
+  - 验收：✅ `repeated_create_close_does_not_leak_sessions` 测试通过；发现并记录：坏 cwd 不在创建时校验（PTY 层 chdir 失败被忽略，shell 在继承目录启动）。
 
 ---
 

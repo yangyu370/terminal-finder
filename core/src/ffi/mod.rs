@@ -5,6 +5,7 @@
 
 pub mod dto;
 pub mod error;
+pub mod terminal;
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -18,6 +19,7 @@ pub use dto::{
     WorkspaceStateDto,
 };
 pub use error::CoreError;
+pub use terminal::TerminalEventListener;
 
 /// 服务标识，与 `protocol/README.md` 及旧 `core::ping` 保持一致。
 const SERVICE_NAME: &str = "terminal-finder-core";
@@ -49,6 +51,39 @@ impl CoreHandle {
     /// 当前工作区状态，对应 `workspace.getState`。同步、只读内存状态。
     pub fn workspace_state(&self) -> WorkspaceStateDto {
         workspace::get_state(&self.state).state.into()
+    }
+
+    /// 创建 PTY 会话，对应 `terminal.create`。返回 sessionId；
+    /// 输出 / 退出 / 错误经 `listener` 回调送达（替代 `/terminal` WebSocket 下行流）。
+    pub fn create_terminal(
+        &self,
+        cwd: Option<String>,
+        cols: u16,
+        rows: u16,
+        listener: Arc<dyn TerminalEventListener>,
+    ) -> Result<String, CoreError> {
+        terminal::create_terminal(&self.state, cwd, cols, rows, listener)
+    }
+
+    /// 写入终端输入，对应 `terminal.input`。高频路径：同步、快返回、无 base64。
+    pub fn send_terminal_input(&self, session_id: String, data: Vec<u8>) -> Result<(), CoreError> {
+        terminal::send_terminal_input(&self.state, session_id, data)
+    }
+
+    /// 调整 PTY 尺寸，对应 `terminal.resize`。
+    pub fn resize_terminal(
+        &self,
+        session_id: String,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), CoreError> {
+        terminal::resize_terminal(&self.state, session_id, cols, rows)
+    }
+
+    /// 关闭会话并终止 PTY 进程，对应 `terminal.close`。
+    /// 进程的实际结束仍由 `listener` 的 `on_exit` 报告。
+    pub fn close_terminal(&self, session_id: String) -> Result<(), CoreError> {
+        terminal::close_terminal(&self.state, session_id)
     }
 }
 
