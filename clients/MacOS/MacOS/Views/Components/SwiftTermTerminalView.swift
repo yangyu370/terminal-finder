@@ -105,7 +105,12 @@ struct SwiftTermTerminalView: NSViewRepresentable {
             }
 
             lastSize = size
-            viewModel.resize(cols: cols, rows: rows)
+            // Defer the publish out of the current view/layout update cycle to
+            // avoid "Publishing changes from within view updates" warnings when
+            // SwiftTerm reports a new size during layout.
+            Task { @MainActor [viewModel] in
+                viewModel.resize(cols: cols, rows: rows)
+            }
         }
     }
 }
