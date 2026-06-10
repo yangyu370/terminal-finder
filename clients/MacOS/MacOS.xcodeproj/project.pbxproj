@@ -85,7 +85,6 @@
 				0446F6F82FCD6A930030FD4E /* Sources */,
 				0446F6F92FCD6A930030FD4E /* Frameworks */,
 				0446F6FA2FCD6A930030FD4E /* Resources */,
-				7F5A01AF2FD0E74100E1C001 /* Build Rust Core */,
 			);
 			buildRules = (
 			);
@@ -183,31 +182,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		7F5A01AF2FD0E74100E1C001 /* Build Rust Core */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(SRCROOT)/../../core/Cargo.toml",
-				"$(SRCROOT)/../../core/src",
-			);
-			name = "Build Rust Core";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/core",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n\nREPO_ROOT=\"${SRCROOT}/../..\"\nCORE_MANIFEST=\"${REPO_ROOT}/core/Cargo.toml\"\nBUNDLED_CORE=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/core\"\nCARGO_BIN=\"\"\n\nif [ -x \"${HOME}/.cargo/bin/cargo\" ]; then\n    CARGO_BIN=\"${HOME}/.cargo/bin/cargo\"\nelif command -v cargo >/dev/null 2>&1; then\n    CARGO_BIN=\"$(command -v cargo)\"\nfi\n\nif [ -n \"${CARGO_BIN}\" ]; then\n    CARGO_TARGET_DIR=\"${TARGET_TEMP_DIR}/RustCoreTarget\"\n    \"${CARGO_BIN}\" build --manifest-path \"${CORE_MANIFEST}\" --target-dir \"${CARGO_TARGET_DIR}\"\n    CORE_BINARY=\"${CARGO_TARGET_DIR}/debug/core\"\nelif [ -x \"${REPO_ROOT}/core/target/debug/core\" ]; then\n    CORE_BINARY=\"${REPO_ROOT}/core/target/debug/core\"\nelse\n    echo \"error: cargo was not found and no existing core debug binary is available\" >&2\n    exit 1\nfi\n\nmkdir -p \"$(dirname \"${BUNDLED_CORE}\")\"\ncp \"${CORE_BINARY}\" \"${BUNDLED_CORE}\"\nchmod +x \"${BUNDLED_CORE}\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		0446F6F82FCD6A930030FD4E /* Sources */ = {
