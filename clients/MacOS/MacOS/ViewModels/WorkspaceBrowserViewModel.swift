@@ -36,7 +36,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         workspaceAlertPresenter: (any WorkspaceAlertPresenting)? = nil,
         initialPath: String = WorkspaceBrowserViewModel.defaultInitialPath()
     ) {
-        self.backendClient = backendClient ?? BackendClient()
+        self.backendClient = backendClient ?? FFIBackendClient()
         self.workspaceItemOpener = workspaceItemOpener ?? WorkspaceItemOpener()
         self.workspaceAlertPresenter = workspaceAlertPresenter ?? WorkspaceAlertPresenter()
         self.path = initialPath
