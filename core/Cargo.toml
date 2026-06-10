@@ -3,18 +3,55 @@ name = "core"
 version = "0.1.0"
 edition = "2024"
 
+# core 既是被 Swift 经 FFI 链接的库（staticlib/cdylib），也提供 lib 供 server bin 链接。
+[lib]
+name = "terminal_finder_core"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+# 可选的 axum HTTP/WebSocket 服务端，留给未来 Web / 多客户端。
+[[bin]]
+name = "core"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
+# 生成 Swift 绑定的开发工具，仅在 `bindgen` feature 下编译（不进发布给 Swift 的库）。
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+# server 暂时默认开启：Swift 端目前仍用 `cargo run`（不带 --features）拉起子进程后端，
+# 现在摘掉会直接弄坏该工作流。业务层与 axum 已在 Phase 2 完成源码级解耦
+# （`cargo build --no-default-features --lib` 可独立编译），但把 server 移出 default
+# 的动作推迟到 Phase 6——届时 Swift 改走 FFI、不再 spawn cargo，再翻转。
+default = ["server"]
+server = [
+    "dep:axum",
+    "dep:base64",
+    "dep:futures-util",
+    "dep:tokio-tungstenite",
+    "dep:tracing-subscriber",
+]
+# 开启 uniffi 的 CLI（含 uniffi_bindgen_main），仅用于生成 Swift 绑定。
+bindgen = ["uniffi/cli"]
+
 [dependencies]
+# 库通用依赖（workspace / terminal 业务层与 FFI 都要用）。
 anyhow = "1"
-axum = { version = "0.7", features = ["ws"] }
-base64 = "0.22"
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# UniFFI：从 Rust 接口生成 Swift 绑定；tokio feature 用于跨边界 async 方法。
+uniffi = { version = "0.31", features = ["tokio"] }
 portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
-tokio-tungstenite = "0.24"
+# server 专用依赖：只在 `server` feature（axum HTTP/WS 适配层）下编译。
+axum = { version = "0.7", features = ["ws"], optional = true }
+base64 = { version = "0.22", optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+tokio-tungstenite = { version = "0.24", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }

@@ -7,7 +7,6 @@ final class BackendConnectionViewModelTests: XCTestCase {
         let eventClient = MockEventClient()
         let viewModel = BackendConnectionViewModel(
             backendClient: MockBackendClient(),
-            backendProcessLauncher: MockBackendProcessLauncher(),
             eventClient: eventClient
         )
 
@@ -22,7 +21,6 @@ final class BackendConnectionViewModelTests: XCTestCase {
         let eventClient = MockEventClient()
         let viewModel = BackendConnectionViewModel(
             backendClient: MockBackendClient(),
-            backendProcessLauncher: MockBackendProcessLauncher(),
             eventClient: eventClient
         )
 
@@ -38,11 +36,9 @@ final class BackendConnectionViewModelTests: XCTestCase {
 
     func testConnectionFailureShowsWorkspaceAlert() async throws {
         let backendClient = MockBackendClient(healthError: MockConnectionError.healthFailed)
-        let launcher = MockBackendProcessLauncher(launchError: MockConnectionError.launchFailed)
         let alerts = MockWorkspaceAlertPresenter()
         let viewModel = BackendConnectionViewModel(
             backendClient: backendClient,
-            backendProcessLauncher: launcher,
             eventClient: MockEventClient(),
             workspaceAlertPresenter: alerts
         )
@@ -51,10 +47,10 @@ final class BackendConnectionViewModelTests: XCTestCase {
         try await waitUntil { !viewModel.isConnecting }
 
         XCTAssertEqual(viewModel.status, .disconnected)
-        XCTAssertEqual(viewModel.detailText, MockConnectionError.launchFailed.localizedDescription)
+        XCTAssertEqual(viewModel.detailText, MockConnectionError.healthFailed.localizedDescription)
         XCTAssertEqual(alerts.warnings.count, 1)
         XCTAssertEqual(alerts.warnings.first?.message, "Core can’t be reached.")
-        XCTAssertEqual(alerts.warnings.first?.detailText, MockConnectionError.launchFailed.localizedDescription)
+        XCTAssertEqual(alerts.warnings.first?.detailText, MockConnectionError.healthFailed.localizedDescription)
     }
 
     func testEventConnectionFailureShowsWorkspaceAlert() async throws {
@@ -62,7 +58,6 @@ final class BackendConnectionViewModelTests: XCTestCase {
         let alerts = MockWorkspaceAlertPresenter()
         let viewModel = BackendConnectionViewModel(
             backendClient: MockBackendClient(),
-            backendProcessLauncher: MockBackendProcessLauncher(),
             eventClient: eventClient,
             workspaceAlertPresenter: alerts
         )
@@ -83,7 +78,6 @@ final class BackendConnectionViewModelTests: XCTestCase {
         let alerts = MockWorkspaceAlertPresenter()
         let viewModel = BackendConnectionViewModel(
             backendClient: MockBackendClient(),
-            backendProcessLauncher: MockBackendProcessLauncher(),
             eventClient: eventClient,
             workspaceAlertPresenter: alerts,
             eventHeartbeatTimeoutNanoseconds: 10_000_000
@@ -151,23 +145,6 @@ private final class MockBackendClient: BackendClientProtocol {
 }
 
 @MainActor
-private final class MockBackendProcessLauncher: BackendProcessLaunching {
-    private(set) var didLaunch = false
-    private let launchError: Error?
-
-    init(launchError: Error? = nil) {
-        self.launchError = launchError
-    }
-
-    func launchBackendIfNeeded() throws {
-        didLaunch = true
-        if let launchError {
-            throw launchError
-        }
-    }
-}
-
-@MainActor
 private final class MockEventClient: EventClientProtocol {
     private(set) var didConnect = false
     private(set) var didDisconnect = false
@@ -207,15 +184,12 @@ private final class MockWorkspaceAlertPresenter: WorkspaceAlertPresenting {
 
 private enum MockConnectionError: LocalizedError {
     case healthFailed
-    case launchFailed
     case eventDisconnected
 
     var errorDescription: String? {
         switch self {
         case .healthFailed:
             return "Health check failed."
-        case .launchFailed:
-            return "Backend launch failed."
         case .eventDisconnected:
             return "Event socket disconnected."
         }

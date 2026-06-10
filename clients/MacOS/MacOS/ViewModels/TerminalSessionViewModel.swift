@@ -54,7 +54,7 @@ final class TerminalSessionViewModel: ObservableObject {
         terminalClient: (any TerminalClientProtocol)? = nil,
         requestIdGenerator: @escaping () -> String = { UUID().uuidString }
     ) {
-        self.terminalClient = terminalClient ?? TerminalClient()
+        self.terminalClient = terminalClient ?? FFITerminalClient()
         self.requestIdGenerator = requestIdGenerator
     }
 

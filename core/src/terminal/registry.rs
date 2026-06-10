@@ -77,6 +77,11 @@ impl TerminalRegistry {
     }
 
     #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[cfg(test)]
     pub fn is_shared_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.sessions, &other.sessions)
     }

@@ -6,6 +6,9 @@
 target/
 core/target/
 
+# Vendored Rust static library (rebuilt by clients/MacOS/scripts/refresh-core-ffi.sh)
+clients/MacOS/Vendor/CoreFFI/*.a
+
 # Xcode user-local state
 xcuserdata/
 *.xcuserstate

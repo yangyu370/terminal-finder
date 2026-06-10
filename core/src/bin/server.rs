@@ -1,20 +1,10 @@
 use std::net::SocketAddr;
 
+use terminal_finder_core::{CORE_VERSION, api, clock, state::AppState};
 use tokio::io::{AsyncReadExt, stdin};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::info;
-
-mod api;
-mod clock;
-mod error;
-mod state;
-mod terminal;
-mod workspace;
-
-use state::AppState;
-
-const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

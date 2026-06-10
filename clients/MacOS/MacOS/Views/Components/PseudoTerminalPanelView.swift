@@ -1,7 +1,6 @@
 //
 //  PseudoTerminalPanelView.swift
 //  MacOS
-//
 //  Created by Codex on 2026/6/6.
 //
 
@@ -13,7 +12,6 @@ struct PseudoTerminalPanelView: View {
 
     let onClose: () -> Void
     let onViewportChanged: (CGSize) -> Void
-
     init(
         terminalSessionViewModel: TerminalSessionViewModel,
         onClose: @escaping () -> Void = {},
