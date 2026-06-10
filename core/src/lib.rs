@@ -3,11 +3,14 @@
 //! 业务逻辑（workspace / terminal / state）以库形式提供：既能被 Swift 经 FFI 调用，
 //! 也能被可选的 `server` feature（axum HTTP/WebSocket 适配层）复用。
 
-pub mod clock;
 pub mod error;
 pub mod state;
 pub mod terminal;
 pub mod workspace;
+
+/// 日志时间格式化器，仅服务 server bin 的 tracing 订阅器，故只在 `server` feature 下编译。
+#[cfg(feature = "server")]
+pub mod clock;
 
 /// axum HTTP/WebSocket 适配层，仅在 `server` feature 下编译。
 #[cfg(feature = "server")]

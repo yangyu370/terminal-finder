@@ -1,13 +1,11 @@
 use std::{io, path::PathBuf};
 
-use axum::{
-    Json,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-};
-use serde::Serialize;
 use thiserror::Error;
 
+/// 领域错误类型，传输无关。
+///
+/// `code()` / `message()` 是稳定的领域语义；HTTP 状态码映射与 JSON 响应体
+/// 属于传输关注点，放在 `server` feature 下的 `crate::api::error` 适配层。
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error("unknown method: {0}")]
@@ -55,44 +53,5 @@ impl ApiError {
                 format!("background task failed during {operation}: {message}")
             }
         }
-    }
-
-    pub fn status_code(&self) -> StatusCode {
-        match self {
-            ApiError::UnknownMethod(_) => StatusCode::NOT_FOUND,
-            ApiError::InvalidParams { .. } | ApiError::NotDirectory(_) => StatusCode::BAD_REQUEST,
-            ApiError::FileSystemRead { source, .. } => match source.kind() {
-                io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
-                io::ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            },
-            ApiError::BackgroundTask { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorResponse {
-    ok: bool,
-    error: ApiErrorBody,
-}
-
-#[derive(Debug, Serialize)]
-struct ApiErrorBody {
-    code: &'static str,
-    message: String,
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let body = ErrorResponse {
-            ok: false,
-            error: ApiErrorBody {
-                code: self.code(),
-                message: self.message(),
-            },
-        };
-
-        (self.status_code(), Json(body)).into_response()
     }
 }

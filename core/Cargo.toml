@@ -15,8 +15,10 @@ path = "src/bin/server.rs"
 required-features = ["server"]
 
 [features]
-# Phase 1 期间 server 仍默认开启，保证现有 `cargo run` / 子进程工作流不破。
-# Phase 2 完成业务层与 axum 的源码级解耦后，会把它从 default 中移除。
+# server 暂时默认开启：Swift 端目前仍用 `cargo run`（不带 --features）拉起子进程后端，
+# 现在摘掉会直接弄坏该工作流。业务层与 axum 已在 Phase 2 完成源码级解耦
+# （`cargo build --no-default-features --lib` 可独立编译），但把 server 移出 default
+# 的动作推迟到 Phase 6——届时 Swift 改走 FFI、不再 spawn cargo，再翻转。
 default = ["server"]
 server = [
     "dep:axum",

@@ -1,7 +1,6 @@
 //
 //  SwiftTermTerminalView.swift
 //  MacOS
-//
 //  Created by Codex on 2026/6/7.
 //
 
