@@ -14,6 +14,12 @@ name = "core"
 path = "src/bin/server.rs"
 required-features = ["server"]
 
+# 生成 Swift 绑定的开发工具，仅在 `bindgen` feature 下编译（不进发布给 Swift 的库）。
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
 [features]
 # server 暂时默认开启：Swift 端目前仍用 `cargo run`（不带 --features）拉起子进程后端，
 # 现在摘掉会直接弄坏该工作流。业务层与 axum 已在 Phase 2 完成源码级解耦
@@ -27,6 +33,8 @@ server = [
     "dep:tokio-tungstenite",
     "dep:tracing-subscriber",
 ]
+# 开启 uniffi 的 CLI（含 uniffi_bindgen_main），仅用于生成 Swift 绑定。
+bindgen = ["uniffi/cli"]
 
 [dependencies]
 # 库通用依赖（workspace / terminal 业务层与 FFI 都要用）。
