@@ -9,14 +9,15 @@ import AppKit
 import SwiftUI
 
 enum FinderGalleryMetrics {
-    static let previewIconSize: CGFloat = 128
+    static let previewIconSize: CGFloat = 260
+    static let inspectorIconSize: CGFloat = 44
+    static let inspectorWidth: CGFloat = 240
     static let filmstripHeight: CGFloat = 118
     static let filmstripItemWidth: CGFloat = 92
     static let filmstripItemHeight: CGFloat = 88
     static let filmstripIconSize: CGFloat = 40
     static let filmstripItemSpacing: CGFloat = 8
     static let filmstripSectionInset = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
-    static let previewMetadataWidth: CGFloat = 360
 }
 
 struct FinderGalleryView: NSViewRepresentable {
@@ -211,13 +212,17 @@ struct FinderGalleryView: NSViewRepresentable {
 final class FinderGalleryBrowserNSView: NSView {
     let collectionView: NSCollectionView
 
+    private let scrollView = NSScrollView()
     private let previewArea = NSView()
-    private let previewStack = NSStackView()
     private let iconView = NSImageView()
-    private let titleField = NSTextField(labelWithString: "")
-    private let kindField = NSTextField(labelWithString: "")
-    private let detailField = NSTextField(labelWithString: "")
-    private let separator = NSBox()
+    private let horizontalSeparator = NSBox()
+    private let verticalSeparator = NSBox()
+    private let inspectorView = NSView()
+    private let inspectorIconView = NSImageView()
+    private let inspectorTitleField = NSTextField(labelWithString: "")
+    private let inspectorKindField = NSTextField(labelWithString: "")
+    private let inspectorModifiedField = NSTextField(labelWithString: "")
+    private let inspectorSizeField = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         let layout = NSCollectionViewFlowLayout()
@@ -245,12 +250,65 @@ final class FinderGalleryBrowserNSView: NSView {
         nil
     }
 
+    override func layout() {
+        super.layout()
+
+        let inspectorWidth = min(FinderGalleryMetrics.inspectorWidth, bounds.width * 0.38)
+        let separatorWidth: CGFloat = 1
+        let filmstripHeight = min(FinderGalleryMetrics.filmstripHeight, bounds.height * 0.26)
+        let leftWidth = max(0, bounds.width - inspectorWidth - separatorWidth)
+        let previewHeight = max(0, bounds.height - filmstripHeight - separatorWidth)
+
+        scrollView.frame = NSRect(x: 0, y: 0, width: leftWidth, height: filmstripHeight)
+        horizontalSeparator.frame = NSRect(
+            x: 0,
+            y: filmstripHeight,
+            width: leftWidth,
+            height: separatorWidth
+        )
+        previewArea.frame = NSRect(
+            x: 0,
+            y: filmstripHeight + separatorWidth,
+            width: leftWidth,
+            height: previewHeight
+        )
+        verticalSeparator.frame = NSRect(
+            x: leftWidth,
+            y: 0,
+            width: separatorWidth,
+            height: bounds.height
+        )
+        inspectorView.frame = NSRect(
+            x: leftWidth + separatorWidth,
+            y: 0,
+            width: inspectorWidth,
+            height: bounds.height
+        )
+
+        let iconSize = max(
+            96,
+            min(
+                FinderGalleryMetrics.previewIconSize,
+                previewArea.bounds.width - 56,
+                previewArea.bounds.height - 56
+            )
+        )
+        iconView.frame = NSRect(
+            x: (previewArea.bounds.width - iconSize) / 2,
+            y: (previewArea.bounds.height - iconSize) / 2,
+            width: iconSize,
+            height: iconSize
+        )
+    }
+
     func configurePreview(entry: DirectoryEntry?) {
         guard let entry else {
             iconView.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
-            titleField.stringValue = "没有项目"
-            kindField.stringValue = "文件夹为空"
-            detailField.stringValue = ""
+            inspectorIconView.image = iconView.image
+            inspectorTitleField.stringValue = "没有项目"
+            inspectorKindField.stringValue = "文件夹为空"
+            inspectorModifiedField.stringValue = "--"
+            inspectorSizeField.stringValue = "--"
             return
         }
 
@@ -260,20 +318,18 @@ final class FinderGalleryBrowserNSView: NSView {
             height: FinderGalleryMetrics.previewIconSize
         )
         iconView.image = icon
-        titleField.stringValue = FinderListFormatters.displayName(for: entry)
-        kindField.stringValue = FinderListFormatters.kindDisplayText(for: entry)
+        inspectorIconView.image = icon
+        inspectorTitleField.stringValue = FinderListFormatters.displayName(for: entry)
+        inspectorKindField.stringValue = FinderListFormatters.kindDisplayText(for: entry)
 
-        let dateText = FinderListFormatters.dateDisplayText(isoString: entry.modifiedAt)
-        let sizeText = FinderListFormatters.sizeDisplayText(isDirectory: entry.isDirectory, size: entry.size)
-        detailField.stringValue = "修改日期: \(dateText)    大小: \(sizeText)"
+        inspectorModifiedField.stringValue = FinderListFormatters.dateDisplayText(isoString: entry.modifiedAt)
+        inspectorSizeField.stringValue = FinderListFormatters.sizeDisplayText(isDirectory: entry.isDirectory, size: entry.size)
     }
 
     private func setup() {
         wantsLayer = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
 
-        let scrollView = NSScrollView()
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .controlBackgroundColor
@@ -282,69 +338,131 @@ final class FinderGalleryBrowserNSView: NSView {
         scrollView.autohidesScrollers = true
         scrollView.documentView = collectionView
 
-        previewArea.translatesAutoresizingMaskIntoConstraints = false
-        previewStack.translatesAutoresizingMaskIntoConstraints = false
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        separator.translatesAutoresizingMaskIntoConstraints = false
-
-        previewStack.orientation = .vertical
-        previewStack.alignment = .centerX
-        previewStack.distribution = .gravityAreas
-        previewStack.spacing = 8
-
         iconView.imageScaling = .scaleProportionallyDown
-        titleField.font = .systemFont(ofSize: 16, weight: .semibold)
-        titleField.alignment = .center
-        titleField.lineBreakMode = .byTruncatingMiddle
-        titleField.maximumNumberOfLines = 1
-        kindField.font = .systemFont(ofSize: 12)
-        kindField.alignment = .center
-        kindField.textColor = .secondaryLabelColor
-        detailField.font = .systemFont(ofSize: 12)
-        detailField.alignment = .center
-        detailField.textColor = .secondaryLabelColor
-        detailField.lineBreakMode = .byTruncatingTail
 
-        previewArea.addSubview(previewStack)
-        previewStack.addArrangedSubview(iconView)
-        previewStack.addArrangedSubview(titleField)
-        previewStack.addArrangedSubview(kindField)
-        previewStack.addArrangedSubview(detailField)
+        previewArea.addSubview(iconView)
+        setupInspector()
 
-        separator.boxType = .separator
+        horizontalSeparator.boxType = .separator
+        verticalSeparator.boxType = .separator
 
         addSubview(previewArea)
-        addSubview(separator)
+        addSubview(horizontalSeparator)
         addSubview(scrollView)
+        addSubview(verticalSeparator)
+        addSubview(inspectorView)
+    }
+
+    private func setupInspector() {
+        inspectorView.wantsLayer = true
+        inspectorView.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.88).cgColor
+
+        let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 14
+
+        let header = NSStackView()
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 10
+
+        inspectorIconView.imageScaling = .scaleProportionallyDown
+        inspectorIconView.translatesAutoresizingMaskIntoConstraints = false
+        inspectorTitleField.font = .systemFont(ofSize: 13, weight: .semibold)
+        inspectorTitleField.lineBreakMode = .byTruncatingMiddle
+        inspectorKindField.font = .systemFont(ofSize: 12)
+        inspectorKindField.textColor = .secondaryLabelColor
+
+        let titleStack = NSStackView()
+        titleStack.orientation = .vertical
+        titleStack.alignment = .leading
+        titleStack.spacing = 3
+        titleStack.addArrangedSubview(inspectorTitleField)
+        titleStack.addArrangedSubview(inspectorKindField)
+
+        header.addArrangedSubview(inspectorIconView)
+        header.addArrangedSubview(titleStack)
+
+        let infoTitle = makeInspectorSectionTitle("信息")
+        let modifiedRow = makeInspectorRow(label: "修改时间", valueField: inspectorModifiedField)
+        let sizeRow = makeInspectorRow(label: "大小", valueField: inspectorSizeField)
+        let tagTitle = makeInspectorSectionTitle("标签")
+        let tagField = NSTextField(labelWithString: "添加标签...")
+        tagField.font = .systemFont(ofSize: 12)
+        tagField.textColor = .tertiaryLabelColor
+        tagField.drawsBackground = true
+        tagField.backgroundColor = .textBackgroundColor
+        tagField.isBezeled = false
+        tagField.alignment = .left
+
+        let spacer = NSView()
+        let moreStack = NSStackView()
+        moreStack.orientation = .vertical
+        moreStack.alignment = .centerX
+        moreStack.spacing = 4
+        let moreButton = NSButton(
+            image: NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "更多") ?? NSImage(),
+            target: nil,
+            action: nil
+        )
+        moreButton.isBordered = false
+        let moreText = NSTextField(labelWithString: "更多...")
+        moreText.font = .systemFont(ofSize: 12)
+        moreText.textColor = .secondaryLabelColor
+        moreStack.addArrangedSubview(moreButton)
+        moreStack.addArrangedSubview(moreText)
+
+        stack.addArrangedSubview(header)
+        stack.addArrangedSubview(infoTitle)
+        stack.addArrangedSubview(modifiedRow)
+        stack.addArrangedSubview(sizeRow)
+        stack.addArrangedSubview(tagTitle)
+        stack.addArrangedSubview(tagField)
+        stack.addArrangedSubview(spacer)
+        stack.addArrangedSubview(moreStack)
+
+        inspectorView.addSubview(stack)
 
         NSLayoutConstraint.activate([
-            previewArea.leadingAnchor.constraint(equalTo: leadingAnchor),
-            previewArea.trailingAnchor.constraint(equalTo: trailingAnchor),
-            previewArea.topAnchor.constraint(equalTo: topAnchor),
+            inspectorIconView.widthAnchor.constraint(equalToConstant: FinderGalleryMetrics.inspectorIconSize),
+            inspectorIconView.heightAnchor.constraint(equalToConstant: FinderGalleryMetrics.inspectorIconSize),
+            tagField.heightAnchor.constraint(equalToConstant: 34),
+            tagField.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            spacer.heightAnchor.constraint(greaterThanOrEqualToConstant: 220),
 
-            previewStack.centerXAnchor.constraint(equalTo: previewArea.centerXAnchor),
-            previewStack.centerYAnchor.constraint(equalTo: previewArea.centerYAnchor, constant: -4),
-            previewStack.widthAnchor.constraint(lessThanOrEqualToConstant: FinderGalleryMetrics.previewMetadataWidth),
-            previewStack.widthAnchor.constraint(lessThanOrEqualTo: previewArea.widthAnchor, constant: -48),
-
-            iconView.widthAnchor.constraint(equalToConstant: FinderGalleryMetrics.previewIconSize),
-            iconView.heightAnchor.constraint(equalToConstant: FinderGalleryMetrics.previewIconSize),
-
-            titleField.widthAnchor.constraint(equalTo: previewStack.widthAnchor),
-            kindField.widthAnchor.constraint(equalTo: previewStack.widthAnchor),
-            detailField.widthAnchor.constraint(equalTo: previewStack.widthAnchor),
-
-            separator.leadingAnchor.constraint(equalTo: leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: trailingAnchor),
-            separator.topAnchor.constraint(equalTo: previewArea.bottomAnchor),
-            separator.heightAnchor.constraint(equalToConstant: 1),
-
-            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: separator.bottomAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            scrollView.heightAnchor.constraint(equalToConstant: FinderGalleryMetrics.filmstripHeight)
+            stack.leadingAnchor.constraint(equalTo: inspectorView.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: inspectorView.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: inspectorView.topAnchor, constant: 28),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: inspectorView.bottomAnchor, constant: -18)
         ])
+    }
+
+    private func makeInspectorSectionTitle(_ title: String) -> NSTextField {
+        let field = NSTextField(labelWithString: title)
+        field.font = .systemFont(ofSize: 13, weight: .semibold)
+        return field
+    }
+
+    private func makeInspectorRow(label: String, valueField: NSTextField) -> NSStackView {
+        let labelField = NSTextField(labelWithString: label)
+        labelField.font = .systemFont(ofSize: 12, weight: .medium)
+        labelField.textColor = .secondaryLabelColor
+        valueField.font = .systemFont(ofSize: 12)
+        valueField.alignment = .right
+        valueField.lineBreakMode = .byTruncatingMiddle
+
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.addArrangedSubview(labelField)
+        row.addArrangedSubview(valueField)
+
+        labelField.widthAnchor.constraint(equalToConstant: 58).isActive = true
+        valueField.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
+        return row
     }
 }
 

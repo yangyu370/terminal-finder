@@ -3,7 +3,9 @@ import XCTest
 
 final class FinderGalleryViewTests: XCTestCase {
     func testGalleryMetricsUseFinderLikePreviewAndFilmstrip() {
-        XCTAssertEqual(FinderGalleryMetrics.previewIconSize, 128)
+        XCTAssertEqual(FinderGalleryMetrics.previewIconSize, 260)
+        XCTAssertEqual(FinderGalleryMetrics.inspectorWidth, 240)
+        XCTAssertEqual(FinderGalleryMetrics.inspectorIconSize, 44)
         XCTAssertEqual(FinderGalleryMetrics.filmstripHeight, 118)
         XCTAssertEqual(FinderGalleryMetrics.filmstripIconSize, 40)
         XCTAssertGreaterThan(FinderGalleryMetrics.filmstripItemWidth, FinderGalleryMetrics.filmstripIconSize)
