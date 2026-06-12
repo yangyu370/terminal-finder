@@ -120,11 +120,26 @@ struct FinderContentView: View {
                 }
             )
 
-        case .list, .column, .gallery:
+        case .list, .gallery:
             FinderListView(
                 entries: workspaceVM.entries,
                 selectedPath: workspaceVM.selectedEntryPath,
                 isLoading: workspaceVM.isLoading,
+                onSelect: { path in
+                    workspaceVM.selectEntry(path: path)
+                },
+                onOpen: { entry in
+                    workspaceVM.open(entry)
+                },
+                loadChildren: { path in
+                    try await workspaceVM.loadChildren(path: path)
+                }
+            )
+
+        case .column:
+            FinderColumnView(
+                entries: workspaceVM.entries,
+                selectedPath: workspaceVM.selectedEntryPath,
                 onSelect: { path in
                     workspaceVM.selectEntry(path: path)
                 },
