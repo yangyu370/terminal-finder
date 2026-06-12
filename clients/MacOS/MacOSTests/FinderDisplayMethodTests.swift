@@ -28,7 +28,7 @@ final class FinderDisplayMethodTests: XCTestCase {
         XCTAssertEqual(state.mode, .column)
 
         state.select(.gallery)
-        XCTAssertEqual(state.mode, .column)
+        XCTAssertEqual(state.mode, .gallery)
 
         state.select(.list)
         XCTAssertEqual(state.mode, .list)

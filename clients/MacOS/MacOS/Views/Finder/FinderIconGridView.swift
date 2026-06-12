@@ -57,7 +57,7 @@ struct FinderIconGridView: NSViewRepresentable {
         scrollView.documentView = collectionView
 
         context.coordinator.collectionView = collectionView
-        context.coordinator.entries = entries
+        context.coordinator.rebuild(with: entries)
         collectionView.reloadData()
         return scrollView
     }
@@ -65,13 +65,16 @@ struct FinderIconGridView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.onSelect = onSelect
         context.coordinator.onOpen = onOpen
-        context.coordinator.entries = entries
 
         guard let collectionView = scrollView.documentView as? NSCollectionView else {
             return
         }
 
-        collectionView.reloadData()
+        if context.coordinator.signature(for: entries) != context.coordinator.currentSignature {
+            context.coordinator.rebuild(with: entries)
+            collectionView.reloadData()
+        }
+
         applySelection(on: collectionView, coordinator: context.coordinator)
     }
 
@@ -100,6 +103,7 @@ struct FinderIconGridView: NSViewRepresentable {
         var onSelect: (String?) -> Void
         var onOpen: (DirectoryEntry) -> Void
         var isApplyingSelection = false
+        private(set) var currentSignature: [String] = []
 
         weak var collectionView: NSCollectionView?
 
@@ -109,6 +113,24 @@ struct FinderIconGridView: NSViewRepresentable {
         ) {
             self.onSelect = onSelect
             self.onOpen = onOpen
+        }
+
+        func signature(for entries: [DirectoryEntry]) -> [String] {
+            entries.map { entry in
+                [
+                    entry.path,
+                    entry.name,
+                    entry.kind.rawValue,
+                    entry.isDirectory ? "1" : "0",
+                    entry.size.map(String.init) ?? "",
+                    entry.modifiedAt ?? ""
+                ].joined(separator: "\u{1F}")
+            }
+        }
+
+        func rebuild(with entries: [DirectoryEntry]) {
+            self.entries = entries
+            currentSignature = signature(for: entries)
         }
 
         func numberOfSections(in collectionView: NSCollectionView) -> Int {

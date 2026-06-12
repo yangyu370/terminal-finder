@@ -44,12 +44,7 @@ enum FinderDisplayMode: Int, CaseIterable, Identifiable {
     }
 
     var isEnabledInToolbar: Bool {
-        switch self {
-        case .icon, .list, .column:
-            return true
-        case .gallery:
-            return false
-        }
+        true
     }
 
     var accessibilityDescription: String {
