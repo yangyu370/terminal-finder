@@ -18,13 +18,14 @@ struct FinderContentView: View {
     @ObservedObject var terminalVM: TerminalSessionViewModel
     @ObservedObject var panelLayout: PseudoTerminalPanelLayoutState
     @ObservedObject var contentState: FinderContentViewState
+    @ObservedObject var displayModeState: FinderDisplayModeState
 
     let onCloseTerminal: () -> Void
 
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                listArea
+                browserArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 if panelLayout.isOpen {
@@ -82,22 +83,9 @@ struct FinderContentView: View {
         }
     }
 
-    private var listArea: some View {
+    private var browserArea: some View {
         ZStack {
-            FinderListView(
-                entries: workspaceVM.entries,
-                selectedPath: workspaceVM.selectedEntryPath,
-                isLoading: workspaceVM.isLoading,
-                onSelect: { path in
-                    workspaceVM.selectEntry(path: path)
-                },
-                onOpen: { entry in
-                    workspaceVM.open(entry)
-                },
-                loadChildren: { path in
-                    try await workspaceVM.loadChildren(path: path)
-                }
-            )
+            activeBrowserView
 
             if workspaceVM.isLoading {
                 FinderLoadingOverlay()
@@ -114,6 +102,39 @@ struct FinderContentView: View {
                     message: workspaceVM.path
                 )
             }
+        }
+    }
+
+    @ViewBuilder
+    private var activeBrowserView: some View {
+        switch displayModeState.mode {
+        case .icon:
+            FinderIconGridView(
+                entries: workspaceVM.entries,
+                selectedPath: workspaceVM.selectedEntryPath,
+                onSelect: { path in
+                    workspaceVM.selectEntry(path: path)
+                },
+                onOpen: { entry in
+                    workspaceVM.open(entry)
+                }
+            )
+
+        case .list, .column, .gallery:
+            FinderListView(
+                entries: workspaceVM.entries,
+                selectedPath: workspaceVM.selectedEntryPath,
+                isLoading: workspaceVM.isLoading,
+                onSelect: { path in
+                    workspaceVM.selectEntry(path: path)
+                },
+                onOpen: { entry in
+                    workspaceVM.open(entry)
+                },
+                loadChildren: { path in
+                    try await workspaceVM.loadChildren(path: path)
+                }
+            )
         }
     }
 }
