@@ -26,20 +26,24 @@ extension NSToolbarItem.Identifier {
 final class FinderToolbarController: NSObject {
     private let workspaceVM: WorkspaceBrowserViewModel
     private let connectionVM: BackendConnectionViewModel
+    private let displayModeState: FinderDisplayModeState
     private weak var actionTarget: FinderWindowController?
 
     private weak var backItem: NSToolbarItem?
     private weak var forwardItem: NSToolbarItem?
+    private weak var viewSwitcherControl: NSSegmentedControl?
     private var moreMenu: NSMenu?
     private var cancellables: Set<AnyCancellable> = []
 
     init(
         workspaceVM: WorkspaceBrowserViewModel,
         connectionVM: BackendConnectionViewModel,
+        displayModeState: FinderDisplayModeState,
         actionTarget: FinderWindowController
     ) {
         self.workspaceVM = workspaceVM
         self.connectionVM = connectionVM
+        self.displayModeState = displayModeState
         self.actionTarget = actionTarget
         super.init()
 
@@ -47,6 +51,13 @@ final class FinderToolbarController: NSObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.refreshNavigationItemStates()
+            }
+            .store(in: &cancellables)
+
+        displayModeState.$mode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] mode in
+                self?.viewSwitcherControl?.selectedSegment = mode.segmentIndex
             }
             .store(in: &cancellables)
     }
@@ -166,22 +177,22 @@ extension FinderToolbarController: NSToolbarDelegate {
     }
 
     private func makeViewSwitcherItem() -> NSToolbarItem {
-        let symbolNames: [[String]] = [
-            ["square.grid.2x2"],
-            ["list.bullet"],
-            ["rectangle.split.3x1"],
-            ["play.square.stack", "squares.below.rectangle"]
-        ]
-
         let control = NSSegmentedControl()
-        control.segmentCount = symbolNames.count
+        control.segmentCount = FinderDisplayMode.allCases.count
         control.trackingMode = .selectOne
         control.segmentStyle = .automatic
-        for (index, names) in symbolNames.enumerated() {
-            control.setImage(Self.symbolImage(names, description: "显示方式"), forSegment: index)
-            control.setEnabled(index == 1, forSegment: index)
+        control.target = actionTarget
+        control.action = #selector(FinderWindowController.changeDisplayModeAction(_:))
+        for mode in FinderDisplayMode.allCases {
+            control.setImage(
+                Self.symbolImage(mode.symbolNames, description: mode.accessibilityDescription),
+                forSegment: mode.segmentIndex
+            )
+            control.setEnabled(mode.isEnabledInToolbar, forSegment: mode.segmentIndex)
+            control.setToolTip(mode.accessibilityDescription, forSegment: mode.segmentIndex)
         }
-        control.selectedSegment = 1
+        control.selectedSegment = displayModeState.mode.segmentIndex
+        viewSwitcherControl = control
 
         let item = NSToolbarItem(itemIdentifier: .finderViewSwitcher)
         item.view = control

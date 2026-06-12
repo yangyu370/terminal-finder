@@ -17,6 +17,7 @@ final class FinderWindowController: NSWindowController {
     let terminalVM: TerminalSessionViewModel
     let panelLayout: PseudoTerminalPanelLayoutState
     let contentState: FinderContentViewState
+    let displayModeState: FinderDisplayModeState
 
     private var toolbarController: FinderToolbarController?
     private var cancellables: Set<AnyCancellable> = []
@@ -28,6 +29,7 @@ final class FinderWindowController: NSWindowController {
         terminalVM = TerminalSessionViewModel()
         panelLayout = PseudoTerminalPanelLayoutState()
         contentState = FinderContentViewState()
+        displayModeState = FinderDisplayModeState()
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 920, height: 620),
@@ -49,6 +51,7 @@ final class FinderWindowController: NSWindowController {
                 terminalVM: terminalVM,
                 panelLayout: panelLayout,
                 contentState: contentState,
+                displayModeState: displayModeState,
                 onCloseTerminal: { [weak self] in
                     self?.closeTerminalSession()
                 }
@@ -67,6 +70,7 @@ final class FinderWindowController: NSWindowController {
         let toolbarController = FinderToolbarController(
             workspaceVM: workspaceVM,
             connectionVM: connectionVM,
+            displayModeState: displayModeState,
             actionTarget: self
         )
         self.toolbarController = toolbarController
@@ -118,6 +122,16 @@ final class FinderWindowController: NSWindowController {
 
     @objc func toggleHiddenFilesAction(_ sender: Any?) {
         workspaceVM.toggleHiddenFiles()
+    }
+
+    @objc func changeDisplayModeAction(_ sender: Any?) {
+        guard let control = sender as? NSSegmentedControl,
+              let mode = FinderDisplayMode(segmentIndex: control.selectedSegment)
+        else {
+            return
+        }
+
+        displayModeState.select(mode)
     }
 
     @objc func goToFolderAction(_ sender: Any?) {
