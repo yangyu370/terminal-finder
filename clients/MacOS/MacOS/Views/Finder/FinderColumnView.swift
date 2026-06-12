@@ -419,8 +419,7 @@ private struct FinderColumnState {
 
 final class FinderColumnBrowserNSView: NSView {
     private let scrollView = NSScrollView()
-    private let documentView = NSView()
-    private let stackView = NSStackView()
+    private let documentView = FinderColumnDocumentView()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -432,26 +431,26 @@ final class FinderColumnBrowserNSView: NSView {
         nil
     }
 
+    override func layout() {
+        super.layout()
+        updateDocumentFrame()
+    }
+
     func removeColumns() {
-        for view in stackView.arrangedSubviews {
-            stackView.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
+        documentView.removeColumns()
+        updateDocumentFrame()
     }
 
     func addColumn(_ tableView: NSTableView) {
         let columnView = FinderColumnContainerView(tableView: tableView)
-        stackView.addArrangedSubview(columnView)
-        columnView.widthAnchor.constraint(equalToConstant: FinderColumnMetrics.columnWidth).isActive = true
+        documentView.addColumn(columnView)
+        updateDocumentFrame()
     }
 
     func scrollToTrailingColumn() {
         layoutSubtreeIfNeeded()
-        guard let documentView = scrollView.documentView else {
-            return
-        }
 
-        let maxX = max(0, documentView.bounds.width - scrollView.contentView.bounds.width)
+        let maxX = max(0, documentView.frame.width - scrollView.contentView.bounds.width)
         scrollView.contentView.scroll(to: NSPoint(x: maxX, y: 0))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
@@ -468,31 +467,62 @@ final class FinderColumnBrowserNSView: NSView {
         scrollView.hasVerticalScroller = false
         scrollView.autohidesScrollers = true
 
-        documentView.translatesAutoresizingMaskIntoConstraints = false
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        stackView.orientation = .horizontal
-        stackView.alignment = .height
-        stackView.distribution = .fill
-        stackView.spacing = 0
-
         addSubview(scrollView)
         scrollView.documentView = documentView
-        documentView.addSubview(stackView)
 
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
-
-            documentView.heightAnchor.constraint(equalTo: scrollView.contentView.heightAnchor),
-            documentView.widthAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.widthAnchor),
-
-            stackView.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
-            stackView.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
-            stackView.topAnchor.constraint(equalTo: documentView.topAnchor),
-            stackView.bottomAnchor.constraint(equalTo: documentView.bottomAnchor)
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+    }
+
+    private func updateDocumentFrame() {
+        let columnsWidth = CGFloat(documentView.columnCount) * FinderColumnMetrics.columnWidth
+        let width = max(scrollView.contentView.bounds.width, columnsWidth)
+        let height = scrollView.contentView.bounds.height
+        documentView.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        documentView.needsLayout = true
+    }
+}
+
+private final class FinderColumnDocumentView: NSView {
+    private var columnViews: [NSView] = []
+
+    var columnCount: Int {
+        columnViews.count
+    }
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    func removeColumns() {
+        for columnView in columnViews {
+            columnView.removeFromSuperview()
+        }
+        columnViews.removeAll()
+        needsLayout = true
+    }
+
+    func addColumn(_ columnView: NSView) {
+        columnViews.append(columnView)
+        addSubview(columnView)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+
+        for (index, columnView) in columnViews.enumerated() {
+            columnView.frame = NSRect(
+                x: CGFloat(index) * FinderColumnMetrics.columnWidth,
+                y: 0,
+                width: FinderColumnMetrics.columnWidth,
+                height: bounds.height
+            )
+        }
     }
 }
 
@@ -508,7 +538,7 @@ private final class FinderColumnContainerView: NSView {
     }
 
     private func setup(tableView: NSTableView) {
-        translatesAutoresizingMaskIntoConstraints = false
+        translatesAutoresizingMaskIntoConstraints = true
 
         let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
