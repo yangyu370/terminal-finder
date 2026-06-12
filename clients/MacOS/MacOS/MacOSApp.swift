@@ -9,9 +9,11 @@ import SwiftUI
 
 @main
 struct MacOSApp: App {
+    @NSApplicationDelegateAdaptor(FinderAppDelegate.self) private var appDelegate
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        Settings {
+            EmptyView()
         }
     }
 }
