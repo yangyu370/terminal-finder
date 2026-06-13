@@ -1,17 +1,18 @@
 # 文件预览功能设计文档（Finder-like Content Preview）
 
-> 状态：设计稿（待评审，未开始实现）
+> 状态：实施规格（2026-06-13 已补齐技术细节，可按阶段实现）
 > 范围：`clients/MacOS/` 客户端 presentation layer
 > 关联文档：[THEME_DECOUPLING_DESIGN.md](THEME_DECOUPLING_DESIGN.md)、`clients/MacOS/agent.md`
 
 ## 1. 目标与范围
 
-让 Finder 风格窗口在 gallery / column / icon / list 等视图里，显示文件**真实首页内容**的缩略图与大图预览，替代当前一律使用的文件类型通用图标。
+让 Finder 风格窗口在 gallery / column 视图里，显示文件**真实首页内容**的大图预览，替代当前一律使用的文件类型通用图标。
 
 对标效果：
 
-- Gallery 中央大图：可滚动、可交互的真实文档渲染（多页 docx / pdf）。
-- Gallery filmstrip、Column 小预览、Icon 网格、List 行图标：异步生成的内容缩略图，失败回退到类型图标。
+- Gallery 中央大图：真实首页内容的大图预览，必须按比例完整适配预览窗口，不允许裁掉首页边缘。
+- Column 右侧预览栏：只在选中文件后的 preview 槽位显示真实首页内容和元信息；左侧各 column 文件列表行只显示类型图标，不生成内容缩略图，以降低滚动卡顿。
+- Gallery filmstrip、Icon 网格、List 行图标：本期保持类型图标，不生成内容缩略图。未来如要扩展再单独评审缓存和性能预算。
 
 **不在本期范围**：自定义预览插件、预览内编辑、Quick Look 浮层（空格大窗）不实现。
 
@@ -24,7 +25,7 @@
 | 文件 | 行号 | 用途 |
 | --- | --- | --- |
 | `clients/MacOS/MacOS/Views/Finder/FinderGalleryView.swift` | 315、518 | 中央大图 + filmstrip 小图 |
-| `clients/MacOS/MacOS/Views/Finder/FinderColumnView.swift` | 618 | column 行图标 |
+| `clients/MacOS/MacOS/Views/Finder/FinderColumnView.swift` | 618 | column 行图标；右侧预览槽位尚未实现 |
 | `clients/MacOS/MacOS/Views/Finder/FinderIconGridView.swift` | 269 | icon 网格 |
 | `clients/MacOS/MacOS/Views/Finder/FinderListView.swift` | — | list 行图标（live 列表，预览接入点之一） |
 
@@ -32,18 +33,21 @@
 
 ## 3. 技术栈选型
 
-全部使用 macOS 原生 **QuickLook** 框架，分两套 API 对应两类需求：
+全部使用 macOS 原生 **QuickLook** 框架，但本期固定槽位预览优先使用 `QLThumbnailGenerator` 生成“首页完整适配”的静态位图，而不是把可滚动 `QLPreviewView` 嵌进小槽位。这样能精确控制 aspect-fit，避免截图中标注的“预览窗口无法显示完整内容”问题。
 
 | 需求 | API | 框架 | 性质 |
 | --- | --- | --- | --- |
-| 缩略图（filmstrip / column / icon / list） | `QLThumbnailGenerator` + `QLThumbnailGenerator.Request` | `QuickLookThumbnailing` | 异步生成静态 `NSImage` 位图 |
-| 中央大图（gallery 主预览） | `QLPreviewView` | `QuickLook`（`QuickLookUI`） | 实时、可滚动、可交互渲染 |
+| 大槽位首页预览（gallery 中央 / column 右侧） | `QLThumbnailGenerator` + `QLThumbnailGenerator.Request` | `QuickLookThumbnailing` | 异步生成静态 `NSImage` 位图，视图用 `.scaleProportionallyUpOrDown` 完整适配 |
+| 未来交互预览（非本期） | `QLPreviewView` | `QuickLook`（`QuickLookUI`） | 可滚动、可交互渲染，适合独立大面板或 Quick Look 浮层 |
 
 要点：
 
-- `QLThumbnailGenerator` 最低 macOS 10.15，可指定 `representationTypes`（`.icon` / `.lowQuality` / `.thumbnail`），支持按需要先快后精的两段回调。
+- `QLThumbnailGenerator` 最低 macOS 10.15，可指定 `representationTypes`（`.icon` / `.lowQualityThumbnail` / `.thumbnail`）。本期固定槽位请求 `.thumbnail`，失败再回退类型图标；不在列表行请求内容 thumbnail。
+- 本机 Xcode `MacOSX26.5.sdk` 头文件确认旧 `QuickLook/QLThumbnail` C API 已弃用，应使用 `QuickLookThumbnailing/QLThumbnailGenerator`。
+- `QLThumbnailGenerator.Request(fileAt:size:scale:representationTypes:)` 的 `size` 是目标 point 尺寸，`scale` 应使用窗口 `backingScaleFactor`。对 gallery / column 预览栏按槽位实际尺寸发起请求。
+- 生成请求用 `generateBestRepresentation(for:completion:)` 获取最具代表性的单张图，回调完成后主线程设置 `NSImage`。
 - 生成在系统的 out-of-process 扩展中完成，docx / pdf / 图片 / 文本 / 代码等系统已知类型开箱即用。
-- `QLPreviewView` 需要一个 `QLPreviewItem`（用文件 `URL` 即可），切换选中项时复用同一个 view、只换 `previewItem`。
+- `QLPreviewView` 的 `previewItem` 是异步加载；`close()` 后该 view 不再接受新 item。若未来使用，只能在 view 生命周期结束时 close，不能在每次切换选中项时 close。
 
 > 进程/沙箱前提：客户端与 backend 当前都**未沙箱化**（见 `clients/MacOS/agent.md` 第 12、49 节），QuickLook 读取真实路径无权限障碍。若未来引入 App Sandbox，需重新评估缩略图扩展的文件访问。
 
@@ -56,6 +60,14 @@
 - 缩略图逻辑不放进 Views，抽成独立服务，避免四个视图各写一份异步代码（呼应 agent.md 第 125 行"避免跨层捷径"）。
 
 放置位置：`clients/MacOS/MacOS/Services/Thumbnail/`（新增）。归 Services 层（系统集成能力），不持有 backend client、不理解 workspace 业务语义。
+
+视图共享一个默认服务实例，避免 gallery / column 各自打满 QuickLook：
+
+```swift
+enum ThumbnailProviders {
+    static let shared: ThumbnailProviding = QuickLookThumbnailProvider()
+}
+```
 
 ## 5. 接口设计
 
@@ -102,22 +114,33 @@ struct ThumbnailDescriptor: Hashable {
 }
 ```
 
+实际实现新增一个轻量用途维度，避免 column 小槽位和 gallery 大槽位误复用错误尺寸：
+
+```swift
+enum ThumbnailPurpose: String, Hashable {
+    case galleryPreview
+    case columnPreview
+}
+```
+
+`ThumbnailDescriptor` 最终字段为 `path / modifiedAt / size / pointSize / scale / purpose`。目录不请求内容 preview，调用方直接显示文件夹图标。
+
 ### 5.2 缓存键
 
 ```
-key = path + modifiedAt + size + roundedPointSize + scale
+key = path + modifiedAt + size + roundedPointSize + scale + purpose
 ```
 
 - `modifiedAt + size`：文件变了就换 key，旧图自然失效，不显示过期内容。
-- `pointSize + scale`：不同视图、不同 Retina 倍率各存一份，避免拉伸糊图。
+- `pointSize + scale + purpose`：不同视图、不同 Retina 倍率各存一份，避免拉伸糊图或误复用。
 - **不含 theme 维度**：文档位图（docx/pdf 页面）在亮/暗下相同，主题无关（详见 [THEME_DECOUPLING_DESIGN.md](THEME_DECOUPLING_DESIGN.md) 第 5 节）。
 - 透明类型（PNG with alpha / SVG / 纯文本）的特判见 §8。
 
-实现用 `NSCache<NSString, NSImage>`（自动内存压力回收）+ 一个并发上限的串行调度，避免滚动时瞬间打满 QuickLook。
+实现用 `NSCache<NSString, NSImage>`（自动内存压力回收）+ 轻量并发门控，避免快速切换选择时瞬间打满 QuickLook。建议同时缓存进行中的请求：相同 descriptor 的多个 caller 共享同一个 QuickLook request，完成后分发回调。
 
-### 5.3 视图侧消费模式（cell 复用安全）
+### 5.3 视图侧消费模式（复用 / 快速切换安全）
 
-每个 cell 持有当前 token，复用前取消：
+每个预览槽位或未来 cell 持有当前 token，复用 / 切换前取消：
 
 ```swift
 final class XxxCell: NSCollectionViewItem /* 或 NSView */ {
@@ -151,16 +174,38 @@ final class XxxCell: NSCollectionViewItem /* 或 NSView */ {
 
 回退链：**加载中 / 失败 / 不支持 → `NSWorkspace.shared.icon(forFile:)`**（保留现有调用作为兜底）。
 
-## 6. Gallery 中央大图：QLPreviewView
+本期只有 gallery 中央预览和 column 右侧预览栏调用该服务。Column 的 `FinderColumnItemCell`、Gallery filmstrip、Icon grid、List row 继续只用 `NSWorkspace.shared.icon(forFile:)`。
 
-把 `FinderGalleryView.swift` 中央 `previewArea` 的 `iconView`（`NSImageView`）替换/补充为 `QLPreviewView`：
+## 6. Gallery 中央大图：完整首页 preview
 
-- 选中项变化时，复用同一个 `QLPreviewView`，只赋值 `previewView.previewItem = url as NSURL`。
-- 目录、不可预览类型、无选中：隐藏 `QLPreviewView`，回退到当前 `iconView`（folder symbol 等）。
-- 注意生命周期：`QLPreviewView(frame:style:.normal)`，在视图移除时调用 `close()`。
-- appearance：见 §8 与主题文档，预览内容跟随 `NSAppearance`。
+把 `FinderGalleryView.swift` 中央 `previewArea` 的 `iconView`（`NSImageView`）升级为可显示 QuickLook 首页位图的大预览：
+
+- 选中普通文件：先显示类型图标，再请求 `ThumbnailPurpose.galleryPreview`，请求尺寸取 `previewArea.bounds.insetBy(dx: 32, dy: 28)` 后的可用尺寸，最小不低于 `160x120`。
+- `NSImageView.imageScaling = .scaleProportionallyUpOrDown`，并用 `FinderPreviewImageLayout.aspectFitRect(imageSize:container:maximumScale:)` 计算 frame，确保首页完整内容在窗口内可见，不裁切。
+- 选中目录、不可预览类型、无选中、生成失败：回退到当前类型图标居中展示。
+- 选中变化 / resize 后重新计算大图 frame；若尺寸变化超过 16pt，再发起新 descriptor 请求，避免每次 layout 抖动都重新生成。
+- appearance：见 §8 与主题文档，预览位图用固定中性底合成，避免亮暗主题缓存混用后观感突变。
 
 接入点：`clients/MacOS/MacOS/Views/Finder/FinderGalleryView.swift` 第 216–343 行（`previewArea` / `iconView` 区域）。
+
+## 6.1 Column 右侧预览栏
+
+Column 视图需要仿 Finder 分栏右侧 preview pane：
+
+- 左侧各 column 仍是固定宽度列表，行高 / 16px 类型图标保持不变，不生成内容 thumbnail。
+- 当选中目录：行为保持现状，继续追加下一列子目录，不显示 preview pane。
+- 当选中文件：在最后一个列表 column 后追加一个 preview pane。preview pane 是固定槽位而不是 table row，包含：
+  - 顶部大图：`ThumbnailPurpose.columnPreview` 的首页完整适配图，失败时显示类型图标。
+  - 标题：文件 display name，13-14pt semibold，长文件名 middle truncation。
+  - 副标题：kind + size。
+  - 信息区：修改时间、大小；未来可补创建时间/标签，但本期不伪造 backend 未提供的事实。
+  - 底部“更多...”占位，匹配当前 gallery inspector 风格。
+- Layout 自适应：
+  - `FinderColumnDocumentView` 中 column 总宽 = `columns.count * columnWidth + previewPaneWidthIfNeeded`。
+  - `previewPaneWidth = max(FinderColumnMetrics.previewMinWidth, visibleWidth - columnsWidth)`，同时 `min(previewMaxWidth, ...)` 只作为舒适上限；若窗口很宽，preview pane 应占满剩余空间，不留空白。
+  - 若 columns 已经超过可视宽度，preview pane 宽度使用 `previewMinWidth`，横向滚动到末尾时可见。
+  - preview pane 高度始终等于 documentView 高度，内部顶部图随宽高重排，不能因为内容尺寸撑大/压缩主布局。
+- 预览栏只依赖 `DirectoryEntry`，不触发 backend list/open；路径事实仍来自 ViewModel/core。
 
 ## 7. Core / 协议改动
 
@@ -195,9 +240,16 @@ final class XxxCell: NSCollectionViewItem /* 或 NSView */ {
 
 按 `clients/MacOS/agent.md` 第 129 行，生产代码须配套 `MacOSTests`：
 
-- **可单测**：`ThumbnailDescriptor` 缓存键的相等/失效逻辑（同路径不同 mtime → 不同 key；同输入 → 同 key）；透明类型判定分支；token 取消后 completion 不回调。
-- **难自动化**：QuickLook 实际出图、QLPreviewView 渲染 → 写明手动验证步骤（见 §10）与剩余风险。
-- 用 mock `ThumbnailProviding` 验证 cell 在复用 / 快速滚动时的取消与防串图。
+- **必须单测**：
+  - `ThumbnailDescriptor` 缓存键的相等/失效逻辑（同路径不同 mtime → 不同 key；同输入 → 同 key；不同 purpose / pointSize / scale → 不同 key）。
+  - `ThumbnailRequestToken.cancel()` 后 completion 不再回调；相同 descriptor 的请求共享结果时，取消单个 token 不影响其他 caller。
+  - `FinderPreviewImageLayout.aspectFitRect`：横图 / 竖图 / 正方图 / 空尺寸都完整落在 container 内，不裁切、不产生 NaN。
+  - `FinderColumnMetrics`：preview min width 与 column width 的关系固定，列表行 icon size 仍为 16。
+- **可用 mock 服务测试**：
+  - Gallery 中央预览切换文件时取消旧 token，旧回调不会串到新文件。
+  - Column 选中文件时 document width 包含 preview pane；选中目录时不显示 preview pane、继续加载下一列。
+- **难自动化**：QuickLook 实际出图、系统预览扩展质量 → 写明手动验证步骤（见 §10）与剩余风险。
+- 测试 agent 只运行并评审本次新增/修改的测试样例；仓库中既有、与本功能无关的旧测试失败不得作为本次功能阻塞，但要在报告中标出。
 
 ## 10. 风险与手动验证
 
@@ -205,24 +257,27 @@ final class XxxCell: NSCollectionViewItem /* 或 NSView */ {
 
 - 滚动时大量并发请求 → 用并发上限 + cell 取消缓解。
 - cell 复用串图 → completion 回调校验 descriptor（§5.3 第 4 步）。
-- `QLPreviewView` 生命周期 / 选中抖动 → 复用单实例、只换 `previewItem`、移除时 `close()`。
+- 选中抖动 / 旧回调串图 → descriptor 校验 + token 取消 + 相同 descriptor 请求合并。
 - 大文件 / 损坏文件生成慢或失败 → 超时 + 回退图标。
 
 手动验证：
 
-1. 打开含 docx / pdf / png / 大图 / 代码文件的目录，切到 gallery，确认中央大图显示真实内容、可滚动。
-2. 快速上下滚动 filmstrip / icon 网格，确认无错位串图、无明显卡顿。
-3. 切到 column，确认选中文件右侧 / 行内出现内容缩略图。
-4. 切系统暗色，确认文档缩略图仍正常（白底文档不应变形），透明 png 背景合理。
-5. 选中目录 / 不支持类型，确认回退到类型图标，无崩溃。
+1. 打开含 pdf / png 或 jpg / 代码文件的目录，切到 gallery，确认中央大图显示真实首页内容且完整适配窗口。
+2. 快速切换 gallery 选中项，确认旧预览不会串图，失败时回退类型图标。
+3. 切到 column，选中普通文件，确认右侧 preview pane 显示首页完整内容；左侧列表行只显示 16px 类型图标。
+4. 在 column 中选中目录，确认仍追加下一列子目录，不显示文件 preview pane。
+5. 缩放窗口宽度，确认 column preview pane 占满剩余空间；当列很多时横向滚动到末尾能看到最小宽度 preview pane。
+6. 选中未知扩展或损坏/不可预览文件，确认回退到类型图标，无崩溃。
+7. 切系统暗色，确认文档缩略图仍正常，透明 png 背景合理。
 
 ## 11. 分阶段实施
 
 ```
-commit 1  Services/Thumbnail/ThumbnailProvider + 缓存/取消 + 单测
-commit 2  filmstrip / column / icon / list 接入缩略图（保留回退）
-commit 3  Gallery 中央大图替换为 QLPreviewView
-commit 4  透明类型特判 + 手动验证清单过一遍
+commit 1  文档补齐：明确 gallery / column 本期范围、QuickLook API 约束、测试验收标准
+commit 2  Services/Thumbnail/ThumbnailProvider + 布局 helper + 缓存/取消 + 单测
+commit 3  Gallery 中央大图接入首页完整 preview（保留类型图标回退）+ 测试
+commit 4  Column 右侧 preview pane + 自适应剩余空间布局 + 测试
+commit 5  透明类型固定底合成 / 未知类型回退 + 手动验证清单过一遍
 ```
 
 新增文件须纳入 git（agent.md 第 122 行）。预览功能与主题解耦相互独立，可先于主题落地（见 [THEME_DECOUPLING_DESIGN.md](THEME_DECOUPLING_DESIGN.md) §1 节奏说明）。
@@ -245,6 +300,6 @@ QuickLook（`QLThumbnailGenerator` / `QLPreviewView`）是 Apple 独占框架，
 
 **这给实现带来的约束（简化项）**：
 
-- 预览相关代码（`Services/Thumbnail/`、`QLPreviewView` 接入）天然只存在于 macOS client target，**不进 `core/`、不进 `protocol/`**。
+- 预览相关代码（`Services/Thumbnail/`、gallery / column 预览栏接入）天然只存在于 macOS client target，**不进 `core/`、不进 `protocol/`**。
 - `ThumbnailProviding` 协议仅为 macOS 内部测试 / 解耦服务，**无需**为"可替换 backend 数据源"预留设计；它就是 QuickLook 的本地封装。
 - 未来若某个新端确实要预览，再单独评审，**不被本设计约束**——届时是新决策，不是回填本文档。

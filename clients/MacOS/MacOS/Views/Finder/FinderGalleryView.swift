@@ -10,6 +10,11 @@ import SwiftUI
 
 enum FinderGalleryMetrics {
     static let previewIconSize: CGFloat = 260
+    static let previewContentInsetX: CGFloat = 32
+    static let previewContentInsetY: CGFloat = 28
+    static let previewMinimumThumbnailWidth: CGFloat = 160
+    static let previewMinimumThumbnailHeight: CGFloat = 120
+    static let previewResizeRequestThreshold: CGFloat = 16
     static let inspectorIconSize: CGFloat = 44
     static let inspectorWidth: CGFloat = 240
     static let filmstripHeight: CGFloat = 118
@@ -25,6 +30,7 @@ struct FinderGalleryView: NSViewRepresentable {
     let selectedPath: String?
     let onSelect: (String?) -> Void
     let onOpen: (DirectoryEntry) -> Void
+    var thumbnailProvider: ThumbnailProviding = ThumbnailProviders.shared
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onSelect: onSelect, onOpen: onOpen)
@@ -47,6 +53,7 @@ struct FinderGalleryView: NSViewRepresentable {
         browserView.collectionView.addGestureRecognizer(doubleClick)
 
         context.coordinator.browserView = browserView
+        browserView.thumbnailProvider = thumbnailProvider
         context.coordinator.rebuild(with: entries)
         browserView.collectionView.reloadData()
         updatePreview(in: browserView)
@@ -58,6 +65,7 @@ struct FinderGalleryView: NSViewRepresentable {
         context.coordinator.browserView = browserView
         context.coordinator.onSelect = onSelect
         context.coordinator.onOpen = onOpen
+        browserView.thumbnailProvider = thumbnailProvider
 
         if context.coordinator.signature(for: entries) != context.coordinator.currentSignature {
             context.coordinator.rebuild(with: entries)
@@ -211,6 +219,7 @@ struct FinderGalleryView: NSViewRepresentable {
 
 final class FinderGalleryBrowserNSView: NSView {
     let collectionView: NSCollectionView
+    var thumbnailProvider: ThumbnailProviding = ThumbnailProviders.shared
 
     private let scrollView = NSScrollView()
     private let previewArea = NSView()
@@ -223,6 +232,10 @@ final class FinderGalleryBrowserNSView: NSView {
     private let inspectorKindField = NSTextField(labelWithString: "")
     private let inspectorModifiedField = NSTextField(labelWithString: "")
     private let inspectorSizeField = NSTextField(labelWithString: "")
+    private var previewEntry: DirectoryEntry?
+    private var previewThumbnailToken: ThumbnailRequestToken?
+    private var currentThumbnailDescriptor: ThumbnailDescriptor?
+    private var previewMaximumScale: CGFloat = 1
 
     override init(frame frameRect: NSRect) {
         let layout = NSCollectionViewFlowLayout()
@@ -285,25 +298,28 @@ final class FinderGalleryBrowserNSView: NSView {
             height: bounds.height
         )
 
-        let iconSize = max(
-            96,
-            min(
-                FinderGalleryMetrics.previewIconSize,
-                previewArea.bounds.width - 56,
-                previewArea.bounds.height - 56
-            )
-        )
-        iconView.frame = NSRect(
-            x: (previewArea.bounds.width - iconSize) / 2,
-            y: (previewArea.bounds.height - iconSize) / 2,
-            width: iconSize,
-            height: iconSize
-        )
+        layoutPreviewImage()
+        requestThumbnailForCurrentEntryIfNeeded()
     }
 
     func configurePreview(entry: DirectoryEntry?) {
+        let previousSignature = previewEntry.map(previewSignature)
+        let nextSignature = entry.map(previewSignature)
+        let entryChanged = previousSignature != nextSignature
+        if entryChanged {
+            previewThumbnailToken?.cancel()
+            previewThumbnailToken = nil
+            currentThumbnailDescriptor = nil
+        }
+        previewEntry = entry
+
         guard let entry else {
+            previewThumbnailToken?.cancel()
+            previewThumbnailToken = nil
+            currentThumbnailDescriptor = nil
+            previewMaximumScale = 1
             iconView.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+            layoutPreviewImage()
             inspectorIconView.image = iconView.image
             inspectorTitleField.stringValue = "没有项目"
             inspectorKindField.stringValue = "文件夹为空"
@@ -312,18 +328,142 @@ final class FinderGalleryBrowserNSView: NSView {
             return
         }
 
-        let icon = NSWorkspace.shared.icon(forFile: entry.path)
-        icon.size = NSSize(
-            width: FinderGalleryMetrics.previewIconSize,
-            height: FinderGalleryMetrics.previewIconSize
+        if entryChanged {
+            showFallbackIcon(for: entry)
+        }
+
+        if entry.isDirectory {
+            previewThumbnailToken?.cancel()
+            previewThumbnailToken = nil
+            currentThumbnailDescriptor = nil
+            showFallbackIcon(for: entry)
+        } else {
+            requestThumbnailForCurrentEntryIfNeeded()
+        }
+
+        let inspectorIcon = NSWorkspace.shared.icon(forFile: entry.path)
+        inspectorIcon.size = NSSize(
+            width: FinderGalleryMetrics.inspectorIconSize,
+            height: FinderGalleryMetrics.inspectorIconSize
         )
-        iconView.image = icon
-        inspectorIconView.image = icon
+        inspectorIconView.image = inspectorIcon
         inspectorTitleField.stringValue = FinderListFormatters.displayName(for: entry)
         inspectorKindField.stringValue = FinderListFormatters.kindDisplayText(for: entry)
 
         inspectorModifiedField.stringValue = FinderListFormatters.dateDisplayText(isoString: entry.modifiedAt)
         inspectorSizeField.stringValue = FinderListFormatters.sizeDisplayText(isDirectory: entry.isDirectory, size: entry.size)
+    }
+
+    var previewImageForTesting: NSImage? {
+        iconView.image
+    }
+
+    private func requestThumbnailForCurrentEntryIfNeeded() {
+        guard let entry = previewEntry, !entry.isDirectory else {
+            return
+        }
+
+        let descriptor = ThumbnailDescriptor(
+            entry: entry,
+            pointSize: requestedThumbnailPointSize(),
+            scale: window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2,
+            purpose: .galleryPreview
+        )
+        guard shouldRequestThumbnail(next: descriptor) else {
+            return
+        }
+
+        previewThumbnailToken?.cancel()
+        currentThumbnailDescriptor = descriptor
+
+        if let cachedImage = thumbnailProvider.cachedThumbnail(for: descriptor) {
+            previewThumbnailToken = nil
+            showThumbnailImage(cachedImage)
+            return
+        }
+
+        previewThumbnailToken = thumbnailProvider.thumbnail(for: descriptor) { [weak self] image in
+            guard let self,
+                  self.currentThumbnailDescriptor == descriptor,
+                  let image
+            else {
+                return
+            }
+
+            self.showThumbnailImage(image)
+        }
+    }
+
+    private func shouldRequestThumbnail(next descriptor: ThumbnailDescriptor) -> Bool {
+        guard let current = currentThumbnailDescriptor else {
+            return true
+        }
+
+        guard current.path == descriptor.path,
+              current.modifiedAt == descriptor.modifiedAt,
+              current.size == descriptor.size,
+              current.scale == descriptor.scale,
+              current.purpose == descriptor.purpose
+        else {
+            return true
+        }
+
+        return abs(current.pointSize.width - descriptor.pointSize.width) > FinderGalleryMetrics.previewResizeRequestThreshold
+            || abs(current.pointSize.height - descriptor.pointSize.height) > FinderGalleryMetrics.previewResizeRequestThreshold
+    }
+
+    private func requestedThumbnailPointSize() -> CGSize {
+        let availableWidth = previewArea.bounds.width - FinderGalleryMetrics.previewContentInsetX * 2
+        let availableHeight = previewArea.bounds.height - FinderGalleryMetrics.previewContentInsetY * 2
+        return CGSize(
+            width: max(FinderGalleryMetrics.previewMinimumThumbnailWidth, availableWidth),
+            height: max(FinderGalleryMetrics.previewMinimumThumbnailHeight, availableHeight)
+        )
+    }
+
+    private func showFallbackIcon(for entry: DirectoryEntry) {
+        let icon = NSWorkspace.shared.icon(forFile: entry.path)
+        icon.size = NSSize(
+            width: FinderGalleryMetrics.previewIconSize,
+            height: FinderGalleryMetrics.previewIconSize
+        )
+        previewMaximumScale = 1
+        iconView.image = icon
+        layoutPreviewImage()
+    }
+
+    private func showThumbnailImage(_ image: NSImage) {
+        previewMaximumScale = .greatestFiniteMagnitude
+        iconView.image = image
+        layoutPreviewImage()
+    }
+
+    private func layoutPreviewImage() {
+        let container = previewArea.bounds.insetBy(
+            dx: FinderGalleryMetrics.previewContentInsetX,
+            dy: FinderGalleryMetrics.previewContentInsetY
+        )
+        guard let image = iconView.image else {
+            iconView.frame = .zero
+            return
+        }
+
+        iconView.frame = FinderPreviewImageLayout.aspectFitRect(
+            imageSize: image.size,
+            container: container,
+            maximumScale: previewMaximumScale
+        )
+    }
+
+    private func previewSignature(for entry: DirectoryEntry) -> String {
+        [
+            entry.path,
+            entry.name,
+            entry.kind.rawValue,
+            entry.isDirectory ? "1" : "0",
+            entry.size.map(String.init) ?? "",
+            entry.modifiedAt ?? ""
+        ].joined(separator: "\u{1F}")
     }
 
     private func setup() {
@@ -338,7 +478,7 @@ final class FinderGalleryBrowserNSView: NSView {
         scrollView.autohidesScrollers = true
         scrollView.documentView = collectionView
 
-        iconView.imageScaling = .scaleProportionallyDown
+        iconView.imageScaling = .scaleProportionallyUpOrDown
 
         previewArea.addSubview(iconView)
         setupInspector()
