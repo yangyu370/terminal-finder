@@ -12,6 +12,31 @@ enum FinderColumnMetrics {
     static let columnWidth: CGFloat = 220
     static let rowHeight: CGFloat = 24
     static let iconSize: CGFloat = 16
+    static let previewMinWidth: CGFloat = 260
+    static let previewMaxComfortWidth: CGFloat = 360
+    static let previewImageMinWidth: CGFloat = 160
+    static let previewImageMinHeight: CGFloat = 120
+    static let previewFallbackIconSize: CGFloat = 220
+    static let previewResizeRequestThreshold: CGFloat = 16
+    static let previewHorizontalInset: CGFloat = 18
+}
+
+enum FinderColumnLayout {
+    static func previewPaneWidth(columnsWidth: CGFloat, visibleWidth: CGFloat) -> CGFloat {
+        max(FinderColumnMetrics.previewMinWidth, visibleWidth - columnsWidth)
+    }
+
+    static func documentWidth(columnCount: Int, visibleWidth: CGFloat, hasPreviewPane: Bool) -> CGFloat {
+        let columnsWidth = CGFloat(columnCount) * FinderColumnMetrics.columnWidth
+        guard hasPreviewPane else {
+            return max(visibleWidth, columnsWidth)
+        }
+
+        return max(
+            visibleWidth,
+            columnsWidth + previewPaneWidth(columnsWidth: columnsWidth, visibleWidth: visibleWidth)
+        )
+    }
 }
 
 struct FinderColumnView: NSViewRepresentable {
@@ -20,6 +45,7 @@ struct FinderColumnView: NSViewRepresentable {
     let onSelect: (String?) -> Void
     let onOpen: (DirectoryEntry) -> Void
     let loadChildren: (String) async throws -> [DirectoryEntry]
+    var thumbnailProvider: ThumbnailProviding = ThumbnailProviders.shared
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -31,6 +57,7 @@ struct FinderColumnView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> FinderColumnBrowserNSView {
         let browserView = FinderColumnBrowserNSView()
+        browserView.thumbnailProvider = thumbnailProvider
         context.coordinator.browserView = browserView
         context.coordinator.rebuildRoot(with: entries)
         context.coordinator.syncSelection(to: selectedPath)
@@ -42,6 +69,7 @@ struct FinderColumnView: NSViewRepresentable {
         context.coordinator.onSelect = onSelect
         context.coordinator.onOpen = onOpen
         context.coordinator.loadChildren = loadChildren
+        browserView.thumbnailProvider = thumbnailProvider
 
         if context.coordinator.rootSignature(for: entries) != context.coordinator.currentRootSignature {
             context.coordinator.rebuildRoot(with: entries)
@@ -63,6 +91,7 @@ struct FinderColumnView: NSViewRepresentable {
         private var tableViews: [NSTableView] = []
         private var isApplyingSelection = false
         private var loadTask: Task<Void, Never>?
+        private var previewEntry: DirectoryEntry?
 
         init(
             onSelect: @escaping (String?) -> Void,
@@ -84,6 +113,7 @@ struct FinderColumnView: NSViewRepresentable {
 
         func rebuildRoot(with entries: [DirectoryEntry]) {
             loadTask?.cancel()
+            previewEntry = nil
             currentRootSignature = rootSignature(for: entries)
             columns = [
                 FinderColumnState(
@@ -143,6 +173,7 @@ struct FinderColumnView: NSViewRepresentable {
             }
 
             if let root = columns.first {
+                previewEntry = nil
                 columns = [
                     FinderColumnState(
                         parentPath: root.parentPath,
@@ -184,6 +215,7 @@ struct FinderColumnView: NSViewRepresentable {
             }
 
             if entry.isDirectory, loadDirectory {
+                previewEntry = nil
                 columns.append(
                     FinderColumnState(
                         parentPath: entry.path,
@@ -195,7 +227,8 @@ struct FinderColumnView: NSViewRepresentable {
                 renderColumns(scrollToEnd: true)
                 loadChildren(for: entry, selectedColumnIndex: columnIndex)
             } else {
-                renderColumns(scrollToEnd: false)
+                previewEntry = entry.isDirectory ? nil : entry
+                renderColumns(scrollToEnd: !entry.isDirectory)
             }
         }
 
@@ -224,6 +257,7 @@ struct FinderColumnView: NSViewRepresentable {
                 }
 
                 columns = Array(columns.prefix(selectedColumnIndex + 1))
+                previewEntry = nil
                 columns.append(
                     FinderColumnState(
                         parentPath: selectedPath,
@@ -255,6 +289,7 @@ struct FinderColumnView: NSViewRepresentable {
                 browserView.addColumn(tableView)
                 tableView.reloadData()
             }
+            browserView.setPreviewEntry(previewEntry)
 
             applySelections()
 
@@ -418,6 +453,8 @@ private struct FinderColumnState {
 }
 
 final class FinderColumnBrowserNSView: NSView {
+    var thumbnailProvider: ThumbnailProviding = ThumbnailProviders.shared
+
     private let scrollView = NSScrollView()
     private let documentView = FinderColumnDocumentView()
 
@@ -438,12 +475,26 @@ final class FinderColumnBrowserNSView: NSView {
 
     func removeColumns() {
         documentView.removeColumns()
+        documentView.setPreviewPane(nil)
         updateDocumentFrame()
     }
 
     func addColumn(_ tableView: NSTableView) {
         let columnView = FinderColumnContainerView(tableView: tableView)
         documentView.addColumn(columnView)
+        updateDocumentFrame()
+    }
+
+    func setPreviewEntry(_ entry: DirectoryEntry?) {
+        guard let entry, !entry.isDirectory else {
+            documentView.setPreviewPane(nil)
+            updateDocumentFrame()
+            return
+        }
+
+        documentView.setPreviewPane(
+            FinderColumnPreviewPane(entry: entry, thumbnailProvider: thumbnailProvider)
+        )
         updateDocumentFrame()
     }
 
@@ -479,19 +530,59 @@ final class FinderColumnBrowserNSView: NSView {
     }
 
     private func updateDocumentFrame() {
-        let columnsWidth = CGFloat(documentView.columnCount) * FinderColumnMetrics.columnWidth
-        let width = max(scrollView.contentView.bounds.width, columnsWidth)
+        let visibleWidth = scrollView.contentView.bounds.width
+        let width = FinderColumnLayout.documentWidth(
+            columnCount: documentView.columnCount,
+            visibleWidth: visibleWidth,
+            hasPreviewPane: documentView.hasPreviewPane
+        )
+        documentView.previewPaneWidth = documentView.hasPreviewPane
+            ? FinderColumnLayout.previewPaneWidth(
+                columnsWidth: CGFloat(documentView.columnCount) * FinderColumnMetrics.columnWidth,
+                visibleWidth: visibleWidth
+            )
+            : 0
         let height = scrollView.contentView.bounds.height
         documentView.frame = NSRect(x: 0, y: 0, width: width, height: height)
         documentView.needsLayout = true
+    }
+
+    var documentWidthForTesting: CGFloat {
+        documentView.frame.width
+    }
+
+    var previewPaneWidthForTesting: CGFloat {
+        documentView.previewPaneWidth
+    }
+
+    var hasPreviewPaneForTesting: Bool {
+        documentView.hasPreviewPane
+    }
+
+    var previewPaneForTesting: FinderColumnPreviewPane? {
+        documentView.previewPaneForTesting
+    }
+
+    var documentColumnCountForTesting: Int {
+        documentView.columnCount
     }
 }
 
 private final class FinderColumnDocumentView: NSView {
     private var columnViews: [NSView] = []
+    private var previewPane: FinderColumnPreviewPane?
+    var previewPaneWidth: CGFloat = 0
 
     var columnCount: Int {
         columnViews.count
+    }
+
+    var hasPreviewPane: Bool {
+        previewPane != nil
+    }
+
+    var previewPaneForTesting: FinderColumnPreviewPane? {
+        previewPane
     }
 
     override var isFlipped: Bool {
@@ -503,6 +594,16 @@ private final class FinderColumnDocumentView: NSView {
             columnView.removeFromSuperview()
         }
         columnViews.removeAll()
+        needsLayout = true
+    }
+
+    func setPreviewPane(_ pane: FinderColumnPreviewPane?) {
+        previewPane?.cancelThumbnail()
+        previewPane?.removeFromSuperview()
+        previewPane = pane
+        if let pane {
+            addSubview(pane)
+        }
         needsLayout = true
     }
 
@@ -523,6 +624,282 @@ private final class FinderColumnDocumentView: NSView {
                 height: bounds.height
             )
         }
+
+        if let previewPane {
+            previewPane.frame = NSRect(
+                x: CGFloat(columnViews.count) * FinderColumnMetrics.columnWidth,
+                y: 0,
+                width: previewPaneWidth,
+                height: bounds.height
+            )
+        }
+    }
+}
+
+final class FinderColumnPreviewPane: NSView {
+    private let entry: DirectoryEntry
+    private let thumbnailProvider: ThumbnailProviding
+    private let separator = NSBox()
+    private let imageView = NSImageView()
+    private let titleField = NSTextField(labelWithString: "")
+    private let subtitleField = NSTextField(labelWithString: "")
+    private let infoTitleField = NSTextField(labelWithString: "信息")
+    private let modifiedLabelField = NSTextField(labelWithString: "修改时间")
+    private let modifiedValueField = NSTextField(labelWithString: "")
+    private let sizeLabelField = NSTextField(labelWithString: "大小")
+    private let sizeValueField = NSTextField(labelWithString: "")
+    private let moreButton = NSButton(
+        image: NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "更多") ?? NSImage(),
+        target: nil,
+        action: nil
+    )
+    private let moreField = NSTextField(labelWithString: "更多...")
+    private var thumbnailToken: ThumbnailRequestToken?
+    private var currentDescriptor: ThumbnailDescriptor?
+    private var imageContainer: CGRect = .zero
+    private var imageMaximumScale: CGFloat = 1
+
+    init(entry: DirectoryEntry, thumbnailProvider: ThumbnailProviding) {
+        self.entry = entry
+        self.thumbnailProvider = thumbnailProvider
+        super.init(frame: .zero)
+        setup()
+        showFallbackIcon()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    deinit {
+        thumbnailToken?.cancel()
+    }
+
+    override var isFlipped: Bool {
+        true
+    }
+
+    override func layout() {
+        super.layout()
+
+        let inset = FinderColumnMetrics.previewHorizontalInset
+        separator.frame = NSRect(x: 0, y: 0, width: 1, height: bounds.height)
+
+        let contentX = inset
+        let contentWidth = max(0, bounds.width - inset * 2)
+        let imageHeight = max(
+            140,
+            min(bounds.height * 0.42, bounds.height - 210)
+        )
+        imageContainer = NSRect(
+            x: contentX,
+            y: 24,
+            width: contentWidth,
+            height: max(80, imageHeight)
+        )
+        layoutPreviewImage()
+
+        let titleY = imageContainer.maxY + 18
+        titleField.frame = NSRect(x: contentX, y: titleY, width: contentWidth, height: 20)
+        subtitleField.frame = NSRect(x: contentX, y: titleY + 22, width: contentWidth, height: 18)
+        infoTitleField.frame = NSRect(x: contentX, y: titleY + 58, width: contentWidth, height: 20)
+        layoutInfoRow(
+            labelField: modifiedLabelField,
+            valueField: modifiedValueField,
+            y: titleY + 86,
+            contentX: contentX,
+            contentWidth: contentWidth
+        )
+        layoutInfoRow(
+            labelField: sizeLabelField,
+            valueField: sizeValueField,
+            y: titleY + 114,
+            contentX: contentX,
+            contentWidth: contentWidth
+        )
+
+        moreButton.frame = NSRect(
+            x: max(contentX, bounds.midX - 14),
+            y: max(titleY + 150, bounds.height - 72),
+            width: 28,
+            height: 28
+        )
+        moreField.frame = NSRect(
+            x: contentX,
+            y: moreButton.frame.maxY + 2,
+            width: contentWidth,
+            height: 18
+        )
+
+        requestThumbnailIfNeeded()
+    }
+
+    func cancelThumbnail() {
+        thumbnailToken?.cancel()
+        thumbnailToken = nil
+    }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+
+        separator.boxType = .separator
+
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+
+        titleField.stringValue = FinderListFormatters.displayName(for: entry)
+        titleField.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleField.lineBreakMode = .byTruncatingMiddle
+        titleField.alignment = .center
+
+        subtitleField.stringValue = [
+            FinderListFormatters.kindDisplayText(for: entry),
+            FinderListFormatters.sizeDisplayText(isDirectory: entry.isDirectory, size: entry.size)
+        ].filter { !$0.isEmpty }.joined(separator: " - ")
+        subtitleField.font = .systemFont(ofSize: 12)
+        subtitleField.textColor = .secondaryLabelColor
+        subtitleField.lineBreakMode = .byTruncatingMiddle
+        subtitleField.alignment = .center
+
+        infoTitleField.font = .systemFont(ofSize: 13, weight: .semibold)
+        modifiedLabelField.font = .systemFont(ofSize: 12, weight: .medium)
+        modifiedLabelField.textColor = .secondaryLabelColor
+        modifiedValueField.stringValue = FinderListFormatters.dateDisplayText(isoString: entry.modifiedAt)
+        modifiedValueField.font = .systemFont(ofSize: 12)
+        modifiedValueField.alignment = .right
+        modifiedValueField.lineBreakMode = .byTruncatingMiddle
+        sizeLabelField.font = .systemFont(ofSize: 12, weight: .medium)
+        sizeLabelField.textColor = .secondaryLabelColor
+        sizeValueField.stringValue = FinderListFormatters.sizeDisplayText(isDirectory: entry.isDirectory, size: entry.size)
+        sizeValueField.font = .systemFont(ofSize: 12)
+        sizeValueField.alignment = .right
+        sizeValueField.lineBreakMode = .byTruncatingMiddle
+        moreButton.isBordered = false
+        moreField.font = .systemFont(ofSize: 12)
+        moreField.textColor = .secondaryLabelColor
+        moreField.alignment = .center
+
+        [
+            separator,
+            imageView,
+            titleField,
+            subtitleField,
+            infoTitleField,
+            modifiedLabelField,
+            modifiedValueField,
+            sizeLabelField,
+            sizeValueField,
+            moreButton,
+            moreField
+        ].forEach(addSubview)
+    }
+
+    private func layoutInfoRow(
+        labelField: NSTextField,
+        valueField: NSTextField,
+        y: CGFloat,
+        contentX: CGFloat,
+        contentWidth: CGFloat
+    ) {
+        labelField.frame = NSRect(x: contentX, y: y, width: 70, height: 18)
+        valueField.frame = NSRect(
+            x: contentX + 78,
+            y: y,
+            width: max(0, contentWidth - 78),
+            height: 18
+        )
+    }
+
+    private func showFallbackIcon() {
+        let icon = NSWorkspace.shared.icon(forFile: entry.path)
+        icon.size = NSSize(
+            width: FinderColumnMetrics.previewFallbackIconSize,
+            height: FinderColumnMetrics.previewFallbackIconSize
+        )
+        imageMaximumScale = 1
+        imageView.image = icon
+        layoutPreviewImage()
+    }
+
+    private func showThumbnail(_ image: NSImage) {
+        imageMaximumScale = .greatestFiniteMagnitude
+        imageView.image = image
+        layoutPreviewImage()
+    }
+
+    private func layoutPreviewImage() {
+        guard let image = imageView.image else {
+            imageView.frame = .zero
+            return
+        }
+
+        imageView.frame = FinderPreviewImageLayout.aspectFitRect(
+            imageSize: image.size,
+            container: imageContainer,
+            maximumScale: imageMaximumScale
+        )
+    }
+
+    private func requestThumbnailIfNeeded() {
+        guard imageContainer.width > 0, imageContainer.height > 0 else {
+            return
+        }
+
+        let descriptor = ThumbnailDescriptor(
+            entry: entry,
+            pointSize: CGSize(
+                width: max(FinderColumnMetrics.previewImageMinWidth, imageContainer.width),
+                height: max(FinderColumnMetrics.previewImageMinHeight, imageContainer.height)
+            ),
+            scale: window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2,
+            purpose: .columnPreview
+        )
+        guard shouldRequestThumbnail(next: descriptor) else {
+            return
+        }
+
+        thumbnailToken?.cancel()
+        currentDescriptor = descriptor
+
+        if let cachedImage = thumbnailProvider.cachedThumbnail(for: descriptor) {
+            thumbnailToken = nil
+            showThumbnail(cachedImage)
+            return
+        }
+
+        thumbnailToken = thumbnailProvider.thumbnail(for: descriptor) { [weak self] image in
+            guard let self,
+                  self.currentDescriptor == descriptor,
+                  let image
+            else {
+                return
+            }
+
+            self.showThumbnail(image)
+        }
+    }
+
+    private func shouldRequestThumbnail(next descriptor: ThumbnailDescriptor) -> Bool {
+        guard let current = currentDescriptor else {
+            return true
+        }
+
+        guard current.path == descriptor.path,
+              current.modifiedAt == descriptor.modifiedAt,
+              current.size == descriptor.size,
+              current.scale == descriptor.scale,
+              current.purpose == descriptor.purpose
+        else {
+            return true
+        }
+
+        return abs(current.pointSize.width - descriptor.pointSize.width) > FinderColumnMetrics.previewResizeRequestThreshold
+            || abs(current.pointSize.height - descriptor.pointSize.height) > FinderColumnMetrics.previewResizeRequestThreshold
+    }
+
+    var previewImageForTesting: NSImage? {
+        imageView.image
     }
 }
 
