@@ -12,12 +12,14 @@ struct FinderListView: NSViewRepresentable {
     let entries: [DirectoryEntry]
     let selectedPath: String?
     let isLoading: Bool
+    let themeProvider: FinderThemeProvider
     let onSelect: (String?) -> Void
     let onOpen: (DirectoryEntry) -> Void
     let loadChildren: (String) async throws -> [DirectoryEntry]
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
+            themeProvider: themeProvider,
             onSelect: onSelect,
             onOpen: onOpen,
             loadChildren: loadChildren
@@ -41,7 +43,7 @@ struct FinderListView: NSViewRepresentable {
         outlineView.selectionHighlightStyle = .regular
         outlineView.usesAlternatingRowBackgroundColors = true
         outlineView.indentationPerLevel = 16
-        outlineView.backgroundColor = .controlBackgroundColor
+        outlineView.backgroundColor = themeProvider.current.listBackground
         if #available(macOS 11.0, *) {
             outlineView.style = .inset
         }
@@ -58,13 +60,14 @@ struct FinderListView: NSViewRepresentable {
         let scrollView = NSScrollView()
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = .controlBackgroundColor
+        scrollView.backgroundColor = themeProvider.current.listBackground
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.documentView = outlineView
 
         context.coordinator.outlineView = outlineView
+        context.coordinator.observeThemeChanges()
         context.coordinator.rebuildRoots(with: entries)
         return scrollView
     }
@@ -134,6 +137,7 @@ struct FinderListView: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+        let themeProvider: FinderThemeProvider
         var onSelect: (String?) -> Void
         var onOpen: (DirectoryEntry) -> Void
         var loadChildren: (String) async throws -> [DirectoryEntry]
@@ -147,15 +151,58 @@ struct FinderListView: NSViewRepresentable {
         private var originalEntries: [DirectoryEntry] = []
         private var sortKey: FinderListSortKey = .name
         private var sortAscending = false
+        private var themeObserver: NSObjectProtocol?
+
+        private var theme: FinderTheme {
+            themeProvider.current
+        }
 
         init(
+            themeProvider: FinderThemeProvider,
             onSelect: @escaping (String?) -> Void,
             onOpen: @escaping (DirectoryEntry) -> Void,
             loadChildren: @escaping (String) async throws -> [DirectoryEntry]
         ) {
+            self.themeProvider = themeProvider
             self.onSelect = onSelect
             self.onOpen = onOpen
             self.loadChildren = loadChildren
+        }
+
+        deinit {
+            if let themeObserver {
+                NotificationCenter.default.removeObserver(themeObserver)
+            }
+        }
+
+        /// 订阅主题广播：切换后重设缓存底色 + reloadData，让单元格按新 token 重建。
+        func observeThemeChanges() {
+            guard themeObserver == nil else {
+                return
+            }
+
+            themeObserver = NotificationCenter.default.addObserver(
+                forName: FinderThemeProvider.didChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else {
+                    return
+                }
+                Task { @MainActor in
+                    self.applyTheme()
+                }
+            }
+        }
+
+        private func applyTheme() {
+            guard let outlineView else {
+                return
+            }
+
+            outlineView.backgroundColor = theme.listBackground
+            outlineView.enclosingScrollView?.backgroundColor = theme.listBackground
+            outlineView.reloadData()
         }
 
         func topLevelSignature(for entries: [DirectoryEntry]) -> [String] {
@@ -301,7 +348,7 @@ struct FinderListView: NSViewRepresentable {
 
             if item is FinderLoadingPlaceholder {
                 return column == .name
-                    ? makeTextCell(text: "正在载入…", alignment: .left, color: .secondaryLabelColor)
+                    ? makeTextCell(text: "正在载入…", alignment: .left, color: theme.secondaryText)
                     : NSTableCellView()
             }
 
@@ -317,7 +364,7 @@ struct FinderListView: NSViewRepresentable {
                 return makeTextCell(
                     text: FinderListFormatters.dateDisplayText(isoString: entry.modifiedAt),
                     alignment: .left,
-                    color: .secondaryLabelColor
+                    color: theme.secondaryText
                 )
             case .size:
                 return makeTextCell(
@@ -326,13 +373,13 @@ struct FinderListView: NSViewRepresentable {
                         size: entry.size
                     ),
                     alignment: .right,
-                    color: .secondaryLabelColor
+                    color: theme.secondaryText
                 )
             case .kind:
                 return makeTextCell(
                     text: FinderListFormatters.kindDisplayText(for: entry),
                     alignment: .left,
-                    color: .secondaryLabelColor
+                    color: theme.secondaryText
                 )
             }
         }
@@ -383,12 +430,14 @@ struct FinderListView: NSViewRepresentable {
             imageView.translatesAutoresizingMaskIntoConstraints = false
 
             let textField = NSTextField(labelWithString: FinderListFormatters.displayName(for: entry))
-            textField.font = .systemFont(ofSize: 13)
+            textField.font = theme.rowFont
             textField.lineBreakMode = .byTruncatingMiddle
-            textField.textColor = .labelColor
+            textField.textColor = theme.primaryText
             textField.allowsDefaultTighteningForTruncation = true
             textField.translatesAutoresizingMaskIntoConstraints = false
 
+            cell.normalTextColor = theme.primaryText
+            cell.selectedTextColor = theme.selectedText
             cell.addSubview(imageView)
             cell.addSubview(textField)
             cell.imageView = imageView
@@ -412,9 +461,9 @@ struct FinderListView: NSViewRepresentable {
             alignment: NSTextAlignment,
             color: NSColor
         ) -> NSTableCellView {
-            let cell = FinderTextCell(normalTextColor: color)
+            let cell = FinderTextCell(normalTextColor: color, selectedTextColor: theme.selectedText)
             let textField = NSTextField(labelWithString: text)
-            textField.font = .systemFont(ofSize: 13)
+            textField.font = theme.rowFont
             textField.alignment = alignment
             textField.lineBreakMode = .byTruncatingTail
             textField.textColor = color
@@ -453,20 +502,25 @@ private final class FinderOutlineNode {
 private final class FinderLoadingPlaceholder {}
 
 private final class FinderNameCell: NSTableCellView {
+    var normalTextColor: NSColor = .labelColor
+    var selectedTextColor: NSColor = .alternateSelectedControlTextColor
+
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet {
             textField?.textColor = backgroundStyle == .emphasized
-                ? .alternateSelectedControlTextColor
-                : .labelColor
+                ? selectedTextColor
+                : normalTextColor
         }
     }
 }
 
 private final class FinderTextCell: NSTableCellView {
     private let normalTextColor: NSColor
+    private let selectedTextColor: NSColor
 
-    init(normalTextColor: NSColor) {
+    init(normalTextColor: NSColor, selectedTextColor: NSColor) {
         self.normalTextColor = normalTextColor
+        self.selectedTextColor = selectedTextColor
         super.init(frame: .zero)
     }
 
@@ -478,7 +532,7 @@ private final class FinderTextCell: NSTableCellView {
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet {
             textField?.textColor = backgroundStyle == .emphasized
-                ? .alternateSelectedControlTextColor
+                ? selectedTextColor
                 : normalTextColor
         }
     }
