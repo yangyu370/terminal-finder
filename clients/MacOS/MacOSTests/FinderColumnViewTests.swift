@@ -91,6 +91,30 @@ final class FinderColumnViewTests: XCTestCase {
         XCTAssertFalse(browserView.hasPreviewPaneForTesting)
     }
 
+    func testColumnPreviewPaneCancelsOldTokenAndIgnoresStaleCompletion() {
+        let provider = MockThumbnailProvider()
+        let browserView = makeBrowserView(provider: provider)
+        browserView.addColumn(NSTableView())
+        let firstEntry = makeEntry(name: "First.pdf", path: "/tmp/First.pdf", isDirectory: false)
+        let secondEntry = makeEntry(name: "Second.pdf", path: "/tmp/Second.pdf", isDirectory: false)
+        let staleImage = NSImage(size: NSSize(width: 80, height: 80))
+        let currentImage = NSImage(size: NSSize(width: 120, height: 90))
+
+        browserView.setPreviewEntry(firstEntry)
+        browserView.layoutSubtreeIfNeeded()
+        browserView.setPreviewEntry(secondEntry)
+        browserView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(provider.requests.count, 2)
+        XCTAssertTrue(provider.requests[0].token.isCancelled)
+
+        provider.completeRequest(at: 0, image: staleImage)
+        XCTAssertFalse(browserView.previewPaneForTesting?.previewImageForTesting === staleImage)
+
+        provider.completeRequest(at: 1, image: currentImage)
+        XCTAssertTrue(browserView.previewPaneForTesting?.previewImageForTesting === currentImage)
+    }
+
     private func makeBrowserView(provider: MockThumbnailProvider) -> FinderColumnBrowserNSView {
         let browserView = FinderColumnBrowserNSView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
         browserView.thumbnailProvider = provider

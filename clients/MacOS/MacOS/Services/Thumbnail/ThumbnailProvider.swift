@@ -116,9 +116,14 @@ final class QuickLookThumbnailProvider: ThumbnailProviding {
 
     private let cache = NSCache<NSString, NSImage>()
     private let generator: Generator
+    private let maxConcurrentRequests: Int
     private var inFlightRequests: [ThumbnailDescriptor: InFlightRequest] = [:]
+    private var pendingDescriptors: [ThumbnailDescriptor] = []
+    private var activeGenerationCount = 0
 
-    init(generator: Generator? = nil) {
+    @MainActor
+    init(maxConcurrentRequests: Int = 4, generator: Generator? = nil) {
+        self.maxConcurrentRequests = max(1, maxConcurrentRequests)
         self.generator = generator ?? Self.quickLookGenerator
         cache.countLimit = 128
     }
@@ -134,8 +139,8 @@ final class QuickLookThumbnailProvider: ThumbnailProviding {
     ) -> ThumbnailRequestToken {
         if let image = cachedThumbnail(for: descriptor) {
             let token = ThumbnailCallbackToken()
-            DispatchQueue.main.async { [weak token] in
-                guard token?.isCancelled == false else {
+            DispatchQueue.main.async {
+                guard !token.isCancelled else {
                     return
                 }
                 completion(image)
@@ -152,15 +157,12 @@ final class QuickLookThumbnailProvider: ThumbnailProviding {
             }
         }
 
-        let generation = generator(descriptor) { [weak self] image in
-            Task { @MainActor in
-                self?.complete(descriptor: descriptor, image: image)
-            }
-        }
         inFlightRequests[descriptor] = InFlightRequest(
-            generation: generation,
+            generation: nil,
+            isGenerationStarted: false,
             completions: [callbackID: completion]
         )
+        scheduleGeneration(for: descriptor)
 
         return ThumbnailCallbackToken { [weak self] in
             self?.cancelCallback(callbackID, for: descriptor)
@@ -174,8 +176,14 @@ final class QuickLookThumbnailProvider: ThumbnailProviding {
 
         inFlight.completions.removeValue(forKey: callbackID)
         if inFlight.completions.isEmpty {
-            inFlight.generation.cancel()
+            if inFlight.isGenerationStarted {
+                inFlight.generation?.cancel()
+                activeGenerationCount = max(0, activeGenerationCount - 1)
+            } else {
+                pendingDescriptors.removeAll { $0 == descriptor }
+            }
             inFlightRequests.removeValue(forKey: descriptor)
+            drainPendingRequests()
         } else {
             inFlightRequests[descriptor] = inFlight
         }
@@ -185,6 +193,9 @@ final class QuickLookThumbnailProvider: ThumbnailProviding {
         guard let inFlight = inFlightRequests.removeValue(forKey: descriptor) else {
             return
         }
+        if inFlight.isGenerationStarted {
+            activeGenerationCount = max(0, activeGenerationCount - 1)
+        }
 
         let preparedImage = image.map { Self.preparedImage($0, forPath: descriptor.path) }
         if let preparedImage {
@@ -193,6 +204,59 @@ final class QuickLookThumbnailProvider: ThumbnailProviding {
 
         for completion in inFlight.completions.values {
             completion(preparedImage)
+        }
+        drainPendingRequests()
+    }
+
+    private func scheduleGeneration(for descriptor: ThumbnailDescriptor) {
+        guard activeGenerationCount < maxConcurrentRequests else {
+            if !pendingDescriptors.contains(descriptor) {
+                pendingDescriptors.append(descriptor)
+            }
+            return
+        }
+
+        startGeneration(for: descriptor)
+    }
+
+    private func startGeneration(for descriptor: ThumbnailDescriptor) {
+        guard var inFlight = inFlightRequests[descriptor],
+              !inFlight.isGenerationStarted,
+              !inFlight.completions.isEmpty
+        else {
+            return
+        }
+
+        inFlight.isGenerationStarted = true
+        inFlightRequests[descriptor] = inFlight
+        activeGenerationCount += 1
+
+        let generation = generator(descriptor) { [weak self] image in
+            Task { @MainActor in
+                self?.complete(descriptor: descriptor, image: image)
+            }
+        }
+
+        guard var current = inFlightRequests[descriptor],
+              current.isGenerationStarted
+        else {
+            return
+        }
+        current.generation = generation
+        inFlightRequests[descriptor] = current
+    }
+
+    private func drainPendingRequests() {
+        while activeGenerationCount < maxConcurrentRequests, !pendingDescriptors.isEmpty {
+            let descriptor = pendingDescriptors.removeFirst()
+            guard let inFlight = inFlightRequests[descriptor],
+                  !inFlight.isGenerationStarted,
+                  !inFlight.completions.isEmpty
+            else {
+                continue
+            }
+
+            startGeneration(for: descriptor)
         }
     }
 
@@ -216,6 +280,8 @@ final class QuickLookThumbnailProvider: ThumbnailProviding {
         }
     }
 
+    static let neutralThumbnailBackgroundColor = NSColor(calibratedWhite: 0.94, alpha: 1)
+
     private static func preparedImage(_ image: NSImage, forPath path: String) -> NSImage {
         guard needsNeutralBackground(path: path) else {
             return image
@@ -226,7 +292,7 @@ final class QuickLookThumbnailProvider: ThumbnailProviding {
             : NSSize(width: 1, height: 1)
         let output = NSImage(size: outputSize)
         output.lockFocus()
-        NSColor.windowBackgroundColor.setFill()
+        neutralThumbnailBackgroundColor.setFill()
         NSRect(origin: .zero, size: outputSize).fill()
         image.draw(
             in: NSRect(origin: .zero, size: outputSize),
@@ -251,7 +317,8 @@ final class QuickLookThumbnailProvider: ThumbnailProviding {
     }
 
     private struct InFlightRequest {
-        let generation: ThumbnailGenerationToken
+        var generation: ThumbnailGenerationToken?
+        var isGenerationStarted: Bool
         var completions: [UUID: (NSImage?) -> Void]
     }
 }
