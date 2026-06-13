@@ -18,10 +18,12 @@ final class FinderWindowController: NSWindowController {
     let panelLayout: PseudoTerminalPanelLayoutState
     let contentState: FinderContentViewState
     let displayModeState: FinderDisplayModeState
+    let themeProvider: FinderThemeProvider
 
     private var toolbarController: FinderToolbarController?
     private var cancellables: Set<AnyCancellable> = []
     private var hasStartedInitialLoad = false
+    private var terminalShortcutMonitor: Any?
 
     init() {
         workspaceVM = WorkspaceBrowserViewModel()
@@ -30,6 +32,7 @@ final class FinderWindowController: NSWindowController {
         panelLayout = PseudoTerminalPanelLayoutState()
         contentState = FinderContentViewState()
         displayModeState = FinderDisplayModeState()
+        themeProvider = FinderThemeProvider()
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 920, height: 620),
@@ -43,7 +46,10 @@ final class FinderWindowController: NSWindowController {
 
         super.init(window: window)
 
-        let sidebarHost = NSHostingController(rootView: FinderSidebarView(workspaceVM: workspaceVM))
+        let sidebarHost = NSHostingController(
+            rootView: FinderSidebarView(workspaceVM: workspaceVM)
+                .environmentObject(themeProvider)
+        )
         sidebarHost.sizingOptions = []
         let contentHost = NSHostingController(
             rootView: FinderContentView(
@@ -56,6 +62,7 @@ final class FinderWindowController: NSWindowController {
                     self?.closeTerminalSession()
                 }
             )
+            .environmentObject(themeProvider)
         )
         contentHost.sizingOptions = []
 
@@ -77,6 +84,7 @@ final class FinderWindowController: NSWindowController {
         window.toolbar = toolbarController.makeToolbar()
 
         wireTerminalLifecycle()
+        installTerminalShortcutMonitor()
         subscribeWindowChromeUpdates()
         refreshWindowChrome()
     }
@@ -84,6 +92,12 @@ final class FinderWindowController: NSWindowController {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         nil
+    }
+
+    deinit {
+        if let terminalShortcutMonitor {
+            NSEvent.removeMonitor(terminalShortcutMonitor)
+        }
     }
 
     override func showWindow(_ sender: Any?) {
@@ -142,6 +156,10 @@ final class FinderWindowController: NSWindowController {
         connectionVM.reconnect()
     }
 
+    @objc func switchThemeAction(_ sender: Any?) {
+        themeProvider.cycle()
+    }
+
     @objc func toggleTerminalPanelAction(_ sender: Any?) {
         if panelLayout.isOpen {
             closeTerminalSession()
@@ -159,6 +177,26 @@ final class FinderWindowController: NSWindowController {
     }
 
     // MARK: - Wiring
+
+    /// 窗口级 local key monitor：在按键下发到响应链 / 菜单之前判定
+    /// Command+J / Command+K 切换终端面板。这样即便 SwiftTerm 终端处于
+    /// first responder（会先于主菜单消费 key equivalent），快捷键依然可靠。
+    /// 详见 `FinderKeyboardShortcuts`。
+    private func installTerminalShortcutMonitor() {
+        terminalShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  let window = self.window,
+                  event.window === window,
+                  FinderKeyboardShortcuts.isToggleTerminalPanel(event)
+            else {
+                return event
+            }
+
+            self.toggleTerminalPanelAction(nil)
+            // 吞掉事件，避免主菜单 / SwiftTerm 再处理一次造成重复切换。
+            return nil
+        }
+    }
 
     private func wireTerminalLifecycle() {
         terminalVM.onSessionEnded = { [weak self] in
@@ -218,6 +256,9 @@ extension FinderWindowController: NSMenuItemValidation {
         case #selector(goToFolderAction(_:)):
             return true
         case #selector(reconnectAction(_:)):
+            return true
+        case #selector(switchThemeAction(_:)):
+            menuItem.title = "切换主题（\(themeProvider.current.displayName)）"
             return true
         default:
             return true

@@ -13,6 +13,7 @@ extension NSToolbarItem.Identifier {
     static let finderNavBack = NSToolbarItem.Identifier("nav.back")
     static let finderNavForward = NSToolbarItem.Identifier("nav.forward")
     static let finderViewSwitcher = NSToolbarItem.Identifier("view.switcher")
+    static let finderThemeSwitch = NSToolbarItem.Identifier("theme.switch")
     static let finderGroupMenu = NSToolbarItem.Identifier("group.menu")
     static let finderShare = NSToolbarItem.Identifier("item.share")
     static let finderTag = NSToolbarItem.Identifier("item.tag")
@@ -96,6 +97,7 @@ extension FinderToolbarController: NSToolbarDelegate {
             .finderNavBackForward,
             .flexibleSpace,
             .finderViewSwitcher,
+            .finderThemeSwitch,
             .finderGroupMenu,
             .finderShare,
             .finderTag,
@@ -119,6 +121,8 @@ extension FinderToolbarController: NSToolbarDelegate {
             return makeBackForwardItem()
         case .finderViewSwitcher:
             return makeViewSwitcherItem()
+        case .finderThemeSwitch:
+            return makeThemeSwitchItem()
         case .finderGroupMenu:
             return makeGroupMenuItem()
         case .finderShare:
@@ -245,6 +249,21 @@ extension FinderToolbarController: NSToolbarDelegate {
         menu.delegate = self
         moreMenu = menu
         item.menu = menu
+        return item
+    }
+
+    private func makeThemeSwitchItem() -> NSToolbarItem {
+        let item = NSToolbarItem(itemIdentifier: .finderThemeSwitch)
+        item.image = Self.symbolImage(
+            ["paintpalette", "circle.lefthalf.filled", "paintbrush"],
+            description: "切换主题"
+        )
+        item.label = "主题"
+        item.toolTip = "切换界面主题"
+        item.isBordered = true
+        item.autovalidates = false
+        item.target = actionTarget
+        item.action = #selector(FinderWindowController.switchThemeAction(_:))
         return item
     }
 

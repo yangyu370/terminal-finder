@@ -102,6 +102,16 @@ enum FinderMainMenuBuilder {
         terminalAlternate.target = controller
         menu.addItem(terminalAlternate)
 
+        menu.addItem(.separator())
+
+        let switchTheme = NSMenuItem(
+            title: "切换主题",
+            action: #selector(FinderWindowController.switchThemeAction(_:)),
+            keyEquivalent: ""
+        )
+        switchTheme.target = controller
+        menu.addItem(switchTheme)
+
         let item = NSMenuItem()
         item.submenu = menu
         return item
