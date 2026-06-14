@@ -12,6 +12,17 @@ import SwiftUI
 /// Owns the Finder-style main window, its toolbar, and all ViewModels.
 /// ViewModels live as long as the window and are injected downwards.
 final class FinderWindowController: NSWindowController {
+    static let minimumWindowFrameSize = NSSize(width: 1007, height: 709)
+    /// AppKit content sizing excludes the 20pt titlebar chrome measured in the reference screenshot.
+    static let initialContentSize = NSSize(width: 1007, height: 689)
+    private static let windowStyleMask: NSWindow.StyleMask = [
+        .titled,
+        .closable,
+        .miniaturizable,
+        .resizable,
+        .fullSizeContentView
+    ]
+
     let workspaceVM: WorkspaceBrowserViewModel
     let connectionVM: BackendConnectionViewModel
     let terminalVM: TerminalSessionViewModel
@@ -37,18 +48,18 @@ final class FinderWindowController: NSWindowController {
         shellModeState = ClientShellModeState()
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 920, height: 620),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            contentRect: NSRect(origin: .zero, size: Self.initialContentSize),
+            styleMask: Self.windowStyleMask,
             backing: .buffered,
             defer: false
         )
         window.toolbarStyle = .unified
         window.titleVisibility = .visible
-        window.minSize = NSSize(width: 700, height: 400)
+        window.minSize = Self.initialContentSize
 
         super.init(window: window)
 
-        window.setContentSize(NSSize(width: 920, height: 620))
+        window.setContentSize(Self.initialContentSize)
         window.center()
         window.setFrameAutosaveName("FinderMainWindow")
 

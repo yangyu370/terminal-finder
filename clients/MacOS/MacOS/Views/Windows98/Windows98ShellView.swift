@@ -9,6 +9,8 @@ import AppKit
 import SwiftUI
 
 struct Windows98ShellView: View {
+    @Environment(\.displayScale) private var displayScale
+
     @ObservedObject var workspaceVM: WorkspaceBrowserViewModel
     @ObservedObject var terminalVM: TerminalSessionViewModel
     @ObservedObject var panelLayout: PseudoTerminalPanelLayoutState
@@ -57,22 +59,18 @@ struct Windows98ShellView: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let titleBarTopInset = Windows98ChromeMetrics.pixelAlignedTopInset(
+                geometry.safeAreaInsets.top,
+                displayScale: displayScale
+            )
+
             VStack(spacing: 0) {
-                titleBar
-                menuBar
-                toolbar
-                addressBar
+                windowChrome(
+                    topInset: titleBarTopInset,
+                    availableWidth: geometry.size.width
+                )
 
-                HStack(spacing: 0) {
-                    sidebar
-                        .frame(width: 176)
-
-                    Windows98RaisedDivider(axis: .vertical)
-
-                    fileList
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                contentSplit(availableWidth: geometry.size.width)
 
                 if panelLayout.isOpen {
                     FinderTerminalResizeHandle { verticalDrag in
@@ -98,7 +96,9 @@ struct Windows98ShellView: View {
                 }
 
                 statusBar
+                    .frame(width: geometry.size.width)
             }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
             .font(.system(size: 12))
             .background(Windows98Palette.surface)
         }
@@ -133,56 +133,95 @@ struct Windows98ShellView: View {
         }
     }
 
-    private var titleBar: some View {
-        HStack(spacing: 8) {
-            Text("C:\\")
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .background(Windows98Palette.surface)
-                .foregroundStyle(.black)
-
-            Spacer()
-
-            Button {
-                onSwitchToNative()
-            } label: {
-                Text("Native")
-                    .font(.system(size: 11, weight: .bold))
-            }
-            .buttonStyle(Windows98ButtonStyle(compact: true))
-            .help("切回 Native Finder shell")
-
-            HStack(spacing: 2) {
-                Button(action: onMinimize) {
-                    Text("_")
-                        .baselineOffset(3)
-                }
-                .buttonStyle(Windows98TitleButtonStyle())
-                .help("Minimize")
-
-                Button(action: onZoom) {
-                    Text("□")
-                }
-                .buttonStyle(Windows98TitleButtonStyle())
-                .help("Zoom")
-
-                Button(action: onClose) {
-                    Text("X")
-                }
-                .buttonStyle(Windows98TitleButtonStyle(isCloseButton: true))
-                .help("Close")
-            }
+    private func windowChrome(topInset: CGFloat, availableWidth: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            titleBar(topInset: topInset)
+            menuBar
+            toolbar
+            addressBar
         }
-        .padding(.horizontal, 4)
-        .frame(height: 26)
-        .background(
+        .frame(width: availableWidth, alignment: .topLeading)
+        .background(Windows98Palette.surface)
+    }
+
+    private func contentSplit(availableWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            sidebar
+                .frame(width: Windows98Layout.sidebarWidth)
+
+            Windows98RaisedDivider(axis: .vertical)
+
+            fileList(
+                availableWidth: max(
+                    0,
+                    availableWidth - Windows98Layout.sidebarWidth - Windows98Layout.raisedDividerWidth
+                )
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: availableWidth, alignment: .leading)
+        .frame(maxHeight: .infinity)
+    }
+
+    private func titleBar(topInset: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(height: topInset)
+
+            HStack(spacing: 8) {
+                Text("C:\\")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(Windows98Palette.surface)
+                    .foregroundStyle(.black)
+
+                Spacer()
+
+                Button {
+                    onSwitchToNative()
+                } label: {
+                    Text("Native")
+                        .font(.system(size: 11, weight: .bold))
+                }
+                .buttonStyle(Windows98ButtonStyle(compact: true))
+                .help("切回 Native Finder shell")
+                .layoutPriority(1)
+
+                HStack(spacing: 2) {
+                    Button(action: onMinimize) {
+                        Text("_")
+                            .baselineOffset(3)
+                    }
+                    .buttonStyle(Windows98TitleButtonStyle())
+                    .help("Minimize")
+
+                    Button(action: onZoom) {
+                        Text("□")
+                    }
+                    .buttonStyle(Windows98TitleButtonStyle())
+                    .help("Zoom")
+
+                    Button(action: onClose) {
+                        Text("X")
+                    }
+                    .buttonStyle(Windows98TitleButtonStyle(isCloseButton: true))
+                    .help("Close")
+                }
+                .layoutPriority(2)
+            }
+            .padding(.horizontal, 4)
+            .frame(height: Windows98ChromeMetrics.titleBarContentHeight)
+        }
+        .frame(height: Windows98ChromeMetrics.titleBarHeight(topInset: topInset))
+        .frame(maxWidth: .infinity)
+        .background {
             LinearGradient(
                 colors: [Windows98Palette.titleBlue, Windows98Palette.titleBlueLight],
                 startPoint: .leading,
                 endPoint: .trailing
             )
-        )
+        }
     }
 
     private var menuBar: some View {
@@ -196,6 +235,7 @@ struct Windows98ShellView: View {
         }
         .padding(.horizontal, 6)
         .frame(height: 24)
+        .frame(maxWidth: .infinity)
         .background(Windows98Palette.surface)
         .overlay(alignment: .bottom) {
             Windows98RaisedDivider(axis: .horizontal)
@@ -245,6 +285,7 @@ struct Windows98ShellView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Windows98Palette.surface)
     }
 
@@ -258,10 +299,12 @@ struct Windows98ShellView: View {
                 .font(.system(size: 12, design: .monospaced))
                 .padding(.horizontal, 4)
                 .frame(height: 22)
+                .frame(maxWidth: .infinity)
                 .background(.white)
                 .overlay {
                     Windows98InsetBorder()
                 }
+                .layoutPriority(1)
 
             Button("Go") {
                 openPathInput()
@@ -270,6 +313,7 @@ struct Windows98ShellView: View {
         }
         .padding(.horizontal, 6)
         .padding(.bottom, 6)
+        .frame(maxWidth: .infinity)
         .background(Windows98Palette.surface)
     }
 
@@ -292,17 +336,20 @@ struct Windows98ShellView: View {
         .background(Windows98Palette.sidebar)
     }
 
-    private var fileList: some View {
-        VStack(spacing: 0) {
-            fileHeader
+    private func fileList(availableWidth: CGFloat) -> some View {
+        let columns = Windows98ListColumns(availableWidth: availableWidth)
+
+        return VStack(spacing: 0) {
+            fileHeader(columns: columns)
 
             ZStack {
-                ScrollView {
+                ScrollView([.vertical, .horizontal]) {
                     LazyVStack(spacing: 0) {
                         ForEach(workspaceVM.entries) { entry in
-                            fileRow(entry)
+                            fileRow(entry, columns: columns)
                         }
                     }
+                    .frame(width: columns.totalWidth, alignment: .leading)
                     .padding(.vertical, 2)
                 }
                 .background(.white)
@@ -326,14 +373,15 @@ struct Windows98ShellView: View {
         }
     }
 
-    private var fileHeader: some View {
+    private func fileHeader(columns: Windows98ListColumns) -> some View {
         HStack(spacing: 0) {
-            headerCell("Name", minWidth: 260)
-            headerCell("Type", minWidth: 120)
-            headerCell("Size", minWidth: 90)
-            headerCell("Modified", minWidth: 160)
-            Spacer(minLength: 0)
+            headerCell("Name", width: columns.name)
+            headerCell("Type", width: columns.type)
+            headerCell("Size", width: columns.size)
+            headerCell("Modified", width: columns.modified)
         }
+        .frame(width: columns.totalWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 24)
         .background(Windows98Palette.surface)
     }
@@ -398,7 +446,7 @@ struct Windows98ShellView: View {
         .disabled(!item.isEnabled || item.location == nil)
     }
 
-    private func fileRow(_ entry: DirectoryEntry) -> some View {
+    private func fileRow(_ entry: DirectoryEntry, columns: Windows98ListColumns) -> some View {
         let isSelected = workspaceVM.selectedEntryPath == entry.path
 
         return HStack(spacing: 0) {
@@ -412,22 +460,27 @@ struct Windows98ShellView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .frame(minWidth: 260, maxWidth: 360, alignment: .leading)
+            .padding(.horizontal, 6)
+            .frame(width: columns.name, alignment: .leading)
 
             Text(FinderListFormatters.kindDisplayText(for: entry))
-                .frame(minWidth: 120, maxWidth: 150, alignment: .leading)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 6)
+                .frame(width: columns.type, alignment: .leading)
 
             Text(FinderListFormatters.sizeDisplayText(isDirectory: entry.isDirectory, size: entry.size))
-                .frame(minWidth: 90, maxWidth: 110, alignment: .trailing)
+                .lineLimit(1)
+                .padding(.horizontal, 6)
+                .frame(width: columns.size, alignment: .trailing)
 
             Text(FinderListFormatters.dateDisplayText(isoString: entry.modifiedAt))
-                .frame(minWidth: 160, maxWidth: 190, alignment: .leading)
                 .lineLimit(1)
-
-            Spacer(minLength: 0)
+                .truncationMode(.tail)
+                .padding(.horizontal, 6)
+                .frame(width: columns.modified, alignment: .leading)
         }
-        .padding(.horizontal, 6)
+        .frame(width: columns.totalWidth, alignment: .leading)
         .frame(height: 24)
         .foregroundStyle(isSelected ? Color.white : Color.black)
         .background(isSelected ? Windows98Palette.selection : Color.white)
@@ -440,10 +493,10 @@ struct Windows98ShellView: View {
         }
     }
 
-    private func headerCell(_ title: String, minWidth: CGFloat) -> some View {
+    private func headerCell(_ title: String, width: CGFloat) -> some View {
         Text(title)
-            .frame(minWidth: minWidth, alignment: .leading)
             .padding(.horizontal, 6)
+            .frame(width: width, alignment: .leading)
             .frame(height: 22)
             .overlay {
                 Windows98RaisedBorder()
@@ -518,6 +571,49 @@ struct Windows98SidebarItemFilter {
         }
 
         return fileManager.isReadableFile(atPath: location.path)
+    }
+}
+
+private enum Windows98Layout {
+    static let sidebarWidth: CGFloat = 176
+    static let raisedDividerWidth: CGFloat = 2
+}
+
+struct Windows98ChromeMetrics {
+    static let titleBarContentHeight: CGFloat = 26
+
+    static func titleBarHeight(topInset: CGFloat) -> CGFloat {
+        titleBarContentHeight + max(0, topInset)
+    }
+
+    static func pixelAlignedTopInset(_ topInset: CGFloat, displayScale: CGFloat) -> CGFloat {
+        let positiveInset = max(0, topInset)
+        guard displayScale > 0 else {
+            return positiveInset
+        }
+
+        return ceil(positiveInset * displayScale) / displayScale
+    }
+}
+
+struct Windows98ListColumns {
+    static let minimumScrollableWidth: CGFloat = 750
+
+    let name: CGFloat
+    let type: CGFloat
+    let size: CGFloat
+    let modified: CGFloat
+
+    var totalWidth: CGFloat {
+        name + type + size + modified
+    }
+
+    init(availableWidth: CGFloat) {
+        let effectiveWidth = max(Self.minimumScrollableWidth, availableWidth)
+        size = 120
+        modified = min(280, max(220, effectiveWidth * 0.24))
+        type = min(220, max(150, effectiveWidth * 0.19))
+        name = max(260, effectiveWidth - type - size - modified)
     }
 }
 
