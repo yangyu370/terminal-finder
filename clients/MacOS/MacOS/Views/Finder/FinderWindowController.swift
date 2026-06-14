@@ -34,6 +34,7 @@ final class FinderWindowController: NSWindowController {
     private var toolbarController: FinderToolbarController?
     private var nativeContentViewController: NSViewController?
     private var windows98ContentViewController: NSViewController?
+    private var windowsXPContentViewController: NSViewController?
     private var cancellables: Set<AnyCancellable> = []
     private var hasStartedInitialLoad = false
     private var terminalShortcutMonitor: Any?
@@ -198,6 +199,9 @@ final class FinderWindowController: NSWindowController {
         case .windows98:
             window.contentViewController = makeWindows98ContentViewController()
             applyWindows98Chrome(to: window)
+        case .windowsXP:
+            window.contentViewController = makeWindowsXPContentViewController()
+            applyWindowsXPChrome(to: window)
         }
 
         refreshWindowChrome()
@@ -213,6 +217,15 @@ final class FinderWindowController: NSWindowController {
     }
 
     private func applyWindows98Chrome(to window: NSWindow) {
+        window.toolbar = nil
+        window.toolbarStyle = .expanded
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        setStandardWindowButtonsHidden(true, in: window)
+    }
+
+    private func applyWindowsXPChrome(to window: NSWindow) {
         window.toolbar = nil
         window.toolbarStyle = .expanded
         window.titleVisibility = .hidden
@@ -294,6 +307,40 @@ final class FinderWindowController: NSWindowController {
         )
         host.sizingOptions = []
         windows98ContentViewController = host
+        return host
+    }
+
+    private func makeWindowsXPContentViewController() -> NSViewController {
+        if let windowsXPContentViewController {
+            return windowsXPContentViewController
+        }
+
+        let host = NSHostingController(
+            rootView: WindowsXPShellView(
+                workspaceVM: workspaceVM,
+                terminalVM: terminalVM,
+                panelLayout: panelLayout,
+                contentState: contentState,
+                shellModeState: shellModeState,
+                onCloseTerminal: { [weak self] in
+                    self?.closeTerminalSession()
+                },
+                onSwitchToNative: { [weak self] in
+                    self?.shellModeState.select(.nativeFinder)
+                },
+                onMinimize: { [weak self] in
+                    self?.window?.miniaturize(nil)
+                },
+                onZoom: { [weak self] in
+                    self?.window?.zoom(nil)
+                },
+                onClose: { [weak self] in
+                    self?.window?.performClose(nil)
+                }
+            )
+        )
+        host.sizingOptions = []
+        windowsXPContentViewController = host
         return host
     }
 
