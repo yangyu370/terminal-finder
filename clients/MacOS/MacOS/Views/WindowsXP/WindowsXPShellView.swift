@@ -110,7 +110,7 @@ struct WindowsXPShellView: View {
                         )
                     }
 
-                    FinderTerminalPanelView(
+                    WindowsXPTerminalPanelView(
                         terminalVM: terminalVM,
                         onClose: onCloseTerminal,
                         onViewportChanged: { size in

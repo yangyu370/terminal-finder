@@ -137,6 +137,7 @@ private struct WindowsXPIconPainter {
         fill(WindowsXPIconColors.gold, x: 2, y: 5, width: 12, height: 7)
         // Glossy highlight strip (the XP touch).
         fill(WindowsXPIconColors.goldLight, x: 3, y: 10, width: 10, height: 1)
+        fill(WindowsXPIconColors.goldLight, x: 3, y: 8, width: 8, height: 1)
         fill(WindowsXPIconColors.white, x: 3, y: 11, width: 4, height: 1)
         fill(WindowsXPIconColors.goldDark, x: 3, y: 5, width: 10, height: 1)
     }
@@ -199,6 +200,7 @@ private struct WindowsXPIconPainter {
     func drawDrive() {
         fill(WindowsXPIconColors.outline, x: 2, y: 4, width: 12, height: 8)
         fill(WindowsXPIconColors.surface, x: 3, y: 5, width: 10, height: 6)
+        fill(WindowsXPIconColors.white, x: 3, y: 10, width: 10, height: 1)
         fill(WindowsXPIconColors.white, x: 4, y: 9, width: 8, height: 1)
         fill(WindowsXPIconColors.lunaBlue, x: 4, y: 6, width: 8, height: 1)
         fill(WindowsXPIconColors.fileGreen, x: 10, y: 5, width: 2, height: 1)
