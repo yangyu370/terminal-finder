@@ -27,6 +27,7 @@ final class ClientShellModeState: ObservableObject {
 enum ClientShellMode: String, CaseIterable, Identifiable {
     case nativeFinder = "native-finder"
     case windows98 = "windows-98"
+    case windowsXP = "windows-xp"
 
     var id: String {
         rawValue
@@ -38,6 +39,8 @@ enum ClientShellMode: String, CaseIterable, Identifiable {
             return "Native Finder"
         case .windows98:
             return "Windows 98"
+        case .windowsXP:
+            return "Windows XP"
         }
     }
 }

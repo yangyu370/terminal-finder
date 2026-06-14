@@ -12,6 +12,17 @@ import SwiftUI
 /// Owns the Finder-style main window, its toolbar, and all ViewModels.
 /// ViewModels live as long as the window and are injected downwards.
 final class FinderWindowController: NSWindowController {
+    static let minimumWindowFrameSize = NSSize(width: 1007, height: 709)
+    /// AppKit content sizing excludes the 20pt titlebar chrome measured in the reference screenshot.
+    static let initialContentSize = NSSize(width: 1007, height: 689)
+    private static let windowStyleMask: NSWindow.StyleMask = [
+        .titled,
+        .closable,
+        .miniaturizable,
+        .resizable,
+        .fullSizeContentView
+    ]
+
     let workspaceVM: WorkspaceBrowserViewModel
     let connectionVM: BackendConnectionViewModel
     let terminalVM: TerminalSessionViewModel
@@ -23,6 +34,7 @@ final class FinderWindowController: NSWindowController {
     private var toolbarController: FinderToolbarController?
     private var nativeContentViewController: NSViewController?
     private var windows98ContentViewController: NSViewController?
+    private var windowsXPContentViewController: NSViewController?
     private var cancellables: Set<AnyCancellable> = []
     private var hasStartedInitialLoad = false
     private var terminalShortcutMonitor: Any?
@@ -37,18 +49,18 @@ final class FinderWindowController: NSWindowController {
         shellModeState = ClientShellModeState()
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 920, height: 620),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            contentRect: NSRect(origin: .zero, size: Self.initialContentSize),
+            styleMask: Self.windowStyleMask,
             backing: .buffered,
             defer: false
         )
         window.toolbarStyle = .unified
         window.titleVisibility = .visible
-        window.minSize = NSSize(width: 700, height: 400)
+        window.minSize = Self.initialContentSize
 
         super.init(window: window)
 
-        window.setContentSize(NSSize(width: 920, height: 620))
+        window.setContentSize(Self.initialContentSize)
         window.center()
         window.setFrameAutosaveName("FinderMainWindow")
 
@@ -187,6 +199,9 @@ final class FinderWindowController: NSWindowController {
         case .windows98:
             window.contentViewController = makeWindows98ContentViewController()
             applyWindows98Chrome(to: window)
+        case .windowsXP:
+            window.contentViewController = makeWindowsXPContentViewController()
+            applyWindowsXPChrome(to: window)
         }
 
         refreshWindowChrome()
@@ -202,6 +217,15 @@ final class FinderWindowController: NSWindowController {
     }
 
     private func applyWindows98Chrome(to window: NSWindow) {
+        window.toolbar = nil
+        window.toolbarStyle = .expanded
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        setStandardWindowButtonsHidden(true, in: window)
+    }
+
+    private func applyWindowsXPChrome(to window: NSWindow) {
         window.toolbar = nil
         window.toolbarStyle = .expanded
         window.titleVisibility = .hidden
@@ -283,6 +307,40 @@ final class FinderWindowController: NSWindowController {
         )
         host.sizingOptions = []
         windows98ContentViewController = host
+        return host
+    }
+
+    private func makeWindowsXPContentViewController() -> NSViewController {
+        if let windowsXPContentViewController {
+            return windowsXPContentViewController
+        }
+
+        let host = NSHostingController(
+            rootView: WindowsXPShellView(
+                workspaceVM: workspaceVM,
+                terminalVM: terminalVM,
+                panelLayout: panelLayout,
+                contentState: contentState,
+                shellModeState: shellModeState,
+                onCloseTerminal: { [weak self] in
+                    self?.closeTerminalSession()
+                },
+                onSwitchToNative: { [weak self] in
+                    self?.shellModeState.select(.nativeFinder)
+                },
+                onMinimize: { [weak self] in
+                    self?.window?.miniaturize(nil)
+                },
+                onZoom: { [weak self] in
+                    self?.window?.zoom(nil)
+                },
+                onClose: { [weak self] in
+                    self?.window?.performClose(nil)
+                }
+            )
+        )
+        host.sizingOptions = []
+        windowsXPContentViewController = host
         return host
     }
 

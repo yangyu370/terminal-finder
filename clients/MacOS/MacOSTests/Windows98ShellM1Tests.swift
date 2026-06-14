@@ -89,6 +89,39 @@ final class Windows98SidebarItemFilterTests: XCTestCase {
     }
 }
 
+final class Windows98ChromeMetricsTests: XCTestCase {
+    func testTopInsetIsAlignedToBackingPixels() {
+        XCTAssertEqual(
+            Windows98ChromeMetrics.pixelAlignedTopInset(20.2, displayScale: 2),
+            20.5,
+            accuracy: 0.001
+        )
+    }
+
+    func testTopInsetClampsInvalidValues() {
+        XCTAssertEqual(Windows98ChromeMetrics.pixelAlignedTopInset(-4, displayScale: 2), 0)
+        XCTAssertEqual(Windows98ChromeMetrics.pixelAlignedTopInset(12, displayScale: 0), 12)
+    }
+}
+
+final class Windows98ListColumnsTests: XCTestCase {
+    func testColumnsUseTheSameTotalWidthAsTheAvailableListArea() {
+        let columns = Windows98ListColumns(availableWidth: 830)
+
+        XCTAssertEqual(columns.totalWidth, 830, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(columns.name, 260)
+        XCTAssertGreaterThanOrEqual(columns.type, 150)
+        XCTAssertEqual(columns.size, 120)
+        XCTAssertGreaterThanOrEqual(columns.modified, 220)
+    }
+
+    func testColumnsKeepAMinimumScrollableWidthForNarrowWindows() {
+        let columns = Windows98ListColumns(availableWidth: 560)
+
+        XCTAssertEqual(columns.totalWidth, Windows98ListColumns.minimumScrollableWidth, accuracy: 0.001)
+    }
+}
+
 @MainActor
 final class Windows98ShellViewActionTests: XCTestCase {
     func testWindowButtonClosuresAreCallableFromShellView() {
@@ -118,6 +151,18 @@ final class Windows98ShellViewActionTests: XCTestCase {
 
 @MainActor
 final class FinderWindowControllerShellChromeTests: XCTestCase {
+    func testInitialWindowSizeMatchesReferenceScreenshotMinimum() {
+        let controller = FinderWindowController()
+        guard let window = controller.window else {
+            XCTFail("FinderWindowController did not create a window")
+            return
+        }
+
+        XCTAssertEqual(window.minSize, FinderWindowController.minimumWindowFrameSize)
+        XCTAssertGreaterThanOrEqual(window.frame.width, FinderWindowController.minimumWindowFrameSize.width)
+        XCTAssertGreaterThanOrEqual(window.frame.height, FinderWindowController.minimumWindowFrameSize.height)
+    }
+
     func testShellSwitchPreservesFrameAndRestoresWindowChrome() async {
         let controller = FinderWindowController()
         guard let window = controller.window else {

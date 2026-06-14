@@ -1,16 +1,18 @@
 //
-//  Windows98ShellView.swift
+//  WindowsXPShellView.swift
 //  MacOS
 //
-//  Created by Codex on 2026/6/14.
+//  Created by Claude on 2026/6/14.
 //
+//  Independent Windows XP (Luna) shell. Mirrors the Windows98ShellView skeleton
+//  (approach A: decoupled shells sharing only ViewModels) with Luna styling:
+//  blue glass title bar + red close button, beige #ECE9D8 controls, blue task
+//  pane, and #316AC5 selection.
 
 import AppKit
 import SwiftUI
 
-struct Windows98ShellView: View {
-    @Environment(\.displayScale) private var displayScale
-
+struct WindowsXPShellView: View {
     @ObservedObject var workspaceVM: WorkspaceBrowserViewModel
     @ObservedObject var terminalVM: TerminalSessionViewModel
     @ObservedObject var panelLayout: PseudoTerminalPanelLayoutState
@@ -23,8 +25,8 @@ struct Windows98ShellView: View {
     let onZoom: () -> Void
     let onClose: () -> Void
 
-    private let iconProvider: Windows98IconProvider
-    private let sidebarItemFilter: Windows98SidebarItemFilter
+    private let iconProvider: WindowsXPIconProvider
+    private let sidebarItemFilter: WindowsXPSidebarItemFilter
 
     @State private var pathInput: String
 
@@ -34,8 +36,8 @@ struct Windows98ShellView: View {
         panelLayout: PseudoTerminalPanelLayoutState,
         contentState: FinderContentViewState,
         shellModeState: ClientShellModeState,
-        iconProvider: Windows98IconProvider = Windows98IconProvider(),
-        sidebarItemFilter: Windows98SidebarItemFilter = Windows98SidebarItemFilter(),
+        iconProvider: WindowsXPIconProvider = WindowsXPIconProvider(),
+        sidebarItemFilter: WindowsXPSidebarItemFilter = WindowsXPSidebarItemFilter(),
         onCloseTerminal: @escaping () -> Void,
         onSwitchToNative: @escaping () -> Void,
         onMinimize: @escaping () -> Void,
@@ -59,27 +61,22 @@ struct Windows98ShellView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let titleBarTopInset = Windows98ChromeMetrics.pixelAlignedTopInset(
-                geometry.safeAreaInsets.top,
-                displayScale: displayScale
-            )
-
             VStack(spacing: 0) {
-                titleBar(topInset: titleBarTopInset)
+                titleBar
                 menuBar
                 toolbar
                 addressBar
 
                 HStack(spacing: 0) {
                     sidebar
-                        .frame(width: Windows98Layout.sidebarWidth)
+                        .frame(width: WindowsXPLayout.sidebarWidth)
 
-                    Windows98RaisedDivider(axis: .vertical)
+                    WindowsXPRaisedDivider(axis: .vertical)
 
                     fileList(
                         availableWidth: max(
                             0,
-                            geometry.size.width - Windows98Layout.sidebarWidth - Windows98Layout.raisedDividerWidth
+                            geometry.size.width - WindowsXPLayout.sidebarWidth - WindowsXPLayout.raisedDividerWidth
                         )
                     )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -112,8 +109,9 @@ struct Windows98ShellView: View {
                 statusBar
             }
             .font(.system(size: 12))
-            .background(Windows98Palette.surface)
+            .background(WindowsXPPalette.surface)
         }
+        .ignoresSafeArea()
         .onChange(of: workspaceVM.path) { _, newValue in
             pathInput = newValue
         }
@@ -145,14 +143,15 @@ struct Windows98ShellView: View {
         }
     }
 
-    private func titleBar(topInset: CGFloat) -> some View {
+    private var titleBar: some View {
         HStack(spacing: 8) {
-            Text("C:\\")
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .background(Windows98Palette.surface)
-                .foregroundStyle(.black)
+            Text(titleText)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(WindowsXPPalette.titleText)
+                .shadow(color: .black.opacity(0.35), radius: 0, x: 0, y: 1)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.leading, 4)
 
             Spacer()
 
@@ -162,61 +161,76 @@ struct Windows98ShellView: View {
                 Text("Native")
                     .font(.system(size: 11, weight: .bold))
             }
-            .buttonStyle(Windows98ButtonStyle(compact: true))
+            .buttonStyle(WindowsXPButtonStyle(compact: true))
             .help("切回 Native Finder shell")
             .layoutPriority(1)
 
-            HStack(spacing: 2) {
+            HStack(spacing: 3) {
                 Button(action: onMinimize) {
                     Text("_")
                         .baselineOffset(3)
                 }
-                .buttonStyle(Windows98TitleButtonStyle())
+                .buttonStyle(WindowsXPCaptionButtonStyle(role: .minimize))
                 .help("Minimize")
 
                 Button(action: onZoom) {
                     Text("□")
                 }
-                .buttonStyle(Windows98TitleButtonStyle())
+                .buttonStyle(WindowsXPCaptionButtonStyle(role: .maximize))
                 .help("Zoom")
 
                 Button(action: onClose) {
-                    Text("X")
+                    Text("✕")
                 }
-                .buttonStyle(Windows98TitleButtonStyle(isCloseButton: true))
+                .buttonStyle(WindowsXPCaptionButtonStyle(role: .close))
                 .help("Close")
             }
             .layoutPriority(2)
         }
-        .padding(.horizontal, 4)
-        .frame(height: Windows98ChromeMetrics.titleBarContentHeight)
+        .padding(.horizontal, 5)
+        .frame(height: 28)
         .frame(maxWidth: .infinity)
-        .background(alignment: .top) {
-            LinearGradient(
-                colors: [Windows98Palette.titleBlue, Windows98Palette.titleBlueLight],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(height: Windows98ChromeMetrics.titleBarContentHeight + topInset)
-            .offset(y: -topInset)
-        }
+        .background(
+            ZStack(alignment: .top) {
+                LinearGradient(
+                    colors: [
+                        WindowsXPPalette.titleActiveTop,
+                        WindowsXPPalette.titleActiveMid,
+                        WindowsXPPalette.titleActiveBottom
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                LinearGradient(
+                    colors: [WindowsXPPalette.titleGloss, .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 12)
+                .allowsHitTesting(false)
+            }
+        )
+    }
+
+    private var titleText: String {
+        let name = workspaceVM.currentDirectoryName
+        return name.isEmpty ? "Windows XP" : name
     }
 
     private var menuBar: some View {
-        HStack(spacing: 4) {
-            menuLabel("File")
-            menuLabel("Edit")
-            menuLabel("View")
-            menuLabel("Go")
-            menuLabel("Help")
+        HStack(spacing: 2) {
+            ForEach(["File", "Edit", "View", "Favorites", "Tools", "Help"], id: \.self) { title in
+                menuLabel(title)
+            }
             Spacer()
         }
         .padding(.horizontal, 6)
-        .frame(height: 24)
+        .frame(height: 22)
         .frame(maxWidth: .infinity)
-        .background(Windows98Palette.surface)
+        .background(WindowsXPPalette.surface)
         .overlay(alignment: .bottom) {
-            Windows98RaisedDivider(axis: .horizontal)
+            WindowsXPRaisedDivider(axis: .horizontal)
         }
     }
 
@@ -226,96 +240,104 @@ struct Windows98ShellView: View {
                 workspaceVM.goBack()
             }
             .disabled(!workspaceVM.canGoBack)
-            .buttonStyle(Windows98ButtonStyle())
+            .buttonStyle(WindowsXPButtonStyle())
 
             Button("Forward") {
                 workspaceVM.goForward()
             }
             .disabled(!workspaceVM.canGoForward)
-            .buttonStyle(Windows98ButtonStyle())
+            .buttonStyle(WindowsXPButtonStyle())
 
             Button("Up") {
                 workspaceVM.goUp()
             }
             .disabled(!workspaceVM.canGoUp)
-            .buttonStyle(Windows98ButtonStyle())
+            .buttonStyle(WindowsXPButtonStyle())
 
-            Windows98RaisedDivider(axis: .vertical)
+            WindowsXPRaisedDivider(axis: .vertical)
                 .frame(height: 22)
 
             Button("Refresh") {
                 workspaceVM.refresh()
             }
             .disabled(workspaceVM.isLoading)
-            .buttonStyle(Windows98ButtonStyle())
+            .buttonStyle(WindowsXPButtonStyle())
 
             Button(workspaceVM.showsHiddenFiles ? "Hide Dotfiles" : "Show Dotfiles") {
                 workspaceVM.toggleHiddenFiles()
             }
-            .buttonStyle(Windows98ButtonStyle())
+            .buttonStyle(WindowsXPButtonStyle())
 
             Spacer()
 
             Button(panelLayout.isOpen ? "Hide Terminal" : "Terminal") {
                 toggleTerminalPanel()
             }
-            .buttonStyle(Windows98ButtonStyle())
+            .buttonStyle(WindowsXPButtonStyle())
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Windows98Palette.surface)
+        .background(
+            LinearGradient(
+                colors: [WindowsXPPalette.toolbarTop, WindowsXPPalette.toolbarBottom],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
     private var addressBar: some View {
         HStack(spacing: 6) {
             Text("Address")
-                .foregroundStyle(.black)
+                .foregroundStyle(WindowsXPPalette.text)
 
             TextField("", text: $pathInput, onCommit: openPathInput)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12, design: .monospaced))
-                .padding(.horizontal, 4)
+                .font(.system(size: 12))
+                .padding(.horizontal, 5)
                 .frame(height: 22)
                 .frame(maxWidth: .infinity)
-                .background(.white)
+                .background(WindowsXPPalette.contentBackground)
                 .overlay {
-                    Windows98InsetBorder()
+                    WindowsXPFieldBorder(cornerRadius: 1)
                 }
                 .layoutPriority(1)
 
             Button("Go") {
                 openPathInput()
             }
-            .buttonStyle(Windows98ButtonStyle(compact: true))
+            .buttonStyle(WindowsXPButtonStyle(compact: true))
         }
         .padding(.horizontal, 6)
         .padding(.bottom, 6)
         .frame(maxWidth: .infinity)
-        .background(Windows98Palette.surface)
+        .background(WindowsXPPalette.surface)
     }
 
     private var sidebar: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Explorer")
-                    .font(.system(size: 12, weight: .bold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(.white)
-                    .background(Windows98Palette.titleBlue)
-
-                ForEach(sidebarItemFilter.accessibleItems(from: workspaceVM.sidebarLocations)) { item in
-                    sidebarRow(item)
+            VStack(alignment: .leading, spacing: 10) {
+                taskPanel(title: "Other Places") {
+                    ForEach(sidebarItemFilter.accessibleItems(from: workspaceVM.sidebarLocations)) { item in
+                        sidebarRow(item)
+                    }
                 }
             }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Windows98Palette.sidebar)
+        .background(
+            LinearGradient(
+                colors: [WindowsXPPalette.taskPaneTop, WindowsXPPalette.taskPaneBottom],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
     private func fileList(availableWidth: CGFloat) -> some View {
-        let columns = Windows98ListColumns(availableWidth: availableWidth)
+        let columns = WindowsXPListColumns(availableWidth: availableWidth)
 
         return VStack(spacing: 0) {
             fileHeader(columns: columns)
@@ -330,14 +352,14 @@ struct Windows98ShellView: View {
                     .frame(width: columns.totalWidth, alignment: .leading)
                     .padding(.vertical, 2)
                 }
-                .background(.white)
+                .background(WindowsXPPalette.contentBackground)
 
                 if workspaceVM.isLoading {
                     Text("Loading...")
                         .padding(8)
-                        .background(Windows98Palette.surface)
+                        .background(WindowsXPPalette.surface)
                         .overlay {
-                            Windows98RaisedBorder()
+                            WindowsXPFieldBorder()
                         }
                 } else if let errorText = workspaceVM.errorText, workspaceVM.entries.isEmpty {
                     messageBlock(title: "Unable to load folder", detail: errorText)
@@ -346,12 +368,12 @@ struct Windows98ShellView: View {
                 }
             }
             .overlay {
-                Windows98InsetBorder()
+                WindowsXPFieldBorder()
             }
         }
     }
 
-    private func fileHeader(columns: Windows98ListColumns) -> some View {
+    private func fileHeader(columns: WindowsXPListColumns) -> some View {
         HStack(spacing: 0) {
             headerCell("Name", width: columns.name)
             headerCell("Type", width: columns.type)
@@ -361,7 +383,13 @@ struct Windows98ShellView: View {
         .frame(width: columns.totalWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 24)
-        .background(Windows98Palette.surface)
+        .background(
+            LinearGradient(
+                colors: [WindowsXPPalette.surfaceLight, WindowsXPPalette.surface],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
     private var statusBar: some View {
@@ -375,7 +403,7 @@ struct Windows98ShellView: View {
                 .frame(width: 130)
         }
         .padding(4)
-        .background(Windows98Palette.surface)
+        .background(WindowsXPPalette.surface)
     }
 
     private var selectedStatusText: String {
@@ -390,9 +418,40 @@ struct Windows98ShellView: View {
 
     private func menuLabel(_ title: String) -> some View {
         Text(title)
-            .padding(.horizontal, 5)
-            .frame(height: 20)
-            .foregroundStyle(.black)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .foregroundStyle(WindowsXPPalette.text)
+    }
+
+    private func taskPanel<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(WindowsXPPalette.taskHeaderText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    LinearGradient(
+                        colors: [Color.white, WindowsXPPalette.taskPaneTop.opacity(0.22)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            content()
+                .padding(.vertical, 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(WindowsXPPalette.taskPanelFill)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(WindowsXPPalette.fieldBorder, lineWidth: 1)
+        }
     }
 
     private func sidebarRow(_ item: FinderSidebarItem) -> some View {
@@ -407,7 +466,7 @@ struct Windows98ShellView: View {
                 Image(nsImage: iconProvider.sidebarIcon(for: item))
                     .resizable()
                     .interpolation(.none)
-                    .frame(width: 18)
+                    .frame(width: 16, height: 16)
 
                 Text(item.title)
                     .lineLimit(1)
@@ -415,16 +474,16 @@ struct Windows98ShellView: View {
 
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(item.isEnabled ? Color.black : Color.secondary)
+            .foregroundStyle(item.isEnabled ? WindowsXPPalette.linkText : Color.secondary)
             .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.vertical, 3)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!item.isEnabled || item.location == nil)
     }
 
-    private func fileRow(_ entry: DirectoryEntry, columns: Windows98ListColumns) -> some View {
+    private func fileRow(_ entry: DirectoryEntry, columns: WindowsXPListColumns) -> some View {
         let isSelected = workspaceVM.selectedEntryPath == entry.path
 
         return HStack(spacing: 0) {
@@ -460,8 +519,8 @@ struct Windows98ShellView: View {
         }
         .frame(width: columns.totalWidth, alignment: .leading)
         .frame(height: 24)
-        .foregroundStyle(isSelected ? Color.white : Color.black)
-        .background(isSelected ? Windows98Palette.selection : Color.white)
+        .foregroundStyle(isSelected ? WindowsXPPalette.selectedText : WindowsXPPalette.text)
+        .background(isSelected ? WindowsXPPalette.selection : WindowsXPPalette.contentBackground)
         .contentShape(Rectangle())
         .onTapGesture {
             workspaceVM.selectEntry(path: entry.path)
@@ -477,7 +536,7 @@ struct Windows98ShellView: View {
             .frame(width: width, alignment: .leading)
             .frame(height: 22)
             .overlay {
-                Windows98RaisedBorder()
+                WindowsXPRaisedBorder()
             }
     }
 
@@ -489,7 +548,7 @@ struct Windows98ShellView: View {
             .padding(.horizontal, 5)
             .frame(height: 20)
             .overlay {
-                Windows98InsetBorder()
+                WindowsXPFieldBorder()
             }
     }
 
@@ -503,8 +562,8 @@ struct Windows98ShellView: View {
                 .truncationMode(.middle)
         }
         .padding(16)
-        .foregroundStyle(.black)
-        .background(.white)
+        .foregroundStyle(WindowsXPPalette.text)
+        .background(WindowsXPPalette.contentBackground)
     }
 
     private func openPathInput() {
@@ -521,58 +580,14 @@ struct Windows98ShellView: View {
             terminalVM.start(cwd: workspaceVM.terminalCwdPath, cols: grid.cols, rows: grid.rows)
         }
     }
-
 }
 
-struct Windows98SidebarItemFilter {
-    private let fileManager: FileManager
-
-    init(fileManager: FileManager = .default) {
-        self.fileManager = fileManager
-    }
-
-    func accessibleItems(from locations: [WorkspaceSidebarLocation]) -> [FinderSidebarItem] {
-        FinderSidebarItem.makeItems(from: locations)
-            .filter(isAccessibleDirectory)
-    }
-
-    private func isAccessibleDirectory(_ item: FinderSidebarItem) -> Bool {
-        guard let location = item.location else {
-            return false
-        }
-
-        var isDirectory = ObjCBool(false)
-        guard fileManager.fileExists(atPath: location.path, isDirectory: &isDirectory),
-              isDirectory.boolValue
-        else {
-            return false
-        }
-
-        return fileManager.isReadableFile(atPath: location.path)
-    }
-}
-
-private enum Windows98Layout {
-    static let sidebarWidth: CGFloat = 176
+private enum WindowsXPLayout {
+    static let sidebarWidth: CGFloat = 200
     static let raisedDividerWidth: CGFloat = 2
 }
 
-struct Windows98ChromeMetrics {
-    static let titleBarContentHeight: CGFloat = 26
-
-    static func pixelAlignedTopInset(_ topInset: CGFloat, displayScale: CGFloat) -> CGFloat {
-        let positiveInset = max(0, topInset)
-        guard displayScale > 0 else {
-            return positiveInset
-        }
-
-        return ceil(positiveInset * displayScale) / displayScale
-    }
-}
-
-struct Windows98ListColumns {
-    static let minimumScrollableWidth: CGFloat = 750
-
+struct WindowsXPListColumns {
     let name: CGFloat
     let type: CGFloat
     let size: CGFloat
@@ -583,131 +598,10 @@ struct Windows98ListColumns {
     }
 
     init(availableWidth: CGFloat) {
-        let effectiveWidth = max(Self.minimumScrollableWidth, availableWidth)
+        let effectiveWidth = max(720, availableWidth)
         size = 120
         modified = min(280, max(220, effectiveWidth * 0.24))
         type = min(220, max(150, effectiveWidth * 0.19))
         name = max(260, effectiveWidth - type - size - modified)
-    }
-}
-
-private enum Windows98Palette {
-    static let surface = Color(nsColor: NSColor(calibratedRed: 0.75, green: 0.75, blue: 0.75, alpha: 1))
-    static let sidebar = Color(nsColor: NSColor(calibratedRed: 0.86, green: 0.86, blue: 0.86, alpha: 1))
-    static let titleBlue = Color(nsColor: NSColor(calibratedRed: 0.0, green: 0.0, blue: 0.5, alpha: 1))
-    static let titleBlueLight = Color(nsColor: NSColor(calibratedRed: 0.07, green: 0.35, blue: 0.76, alpha: 1))
-    static let selection = Color(nsColor: NSColor(calibratedRed: 0.0, green: 0.0, blue: 0.5, alpha: 1))
-    static let highlight = Color.white
-    static let shadow = Color(nsColor: NSColor(calibratedWhite: 0.5, alpha: 1))
-    static let darkShadow = Color.black
-}
-
-private struct Windows98ButtonStyle: ButtonStyle {
-    var compact = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: compact ? 11 : 12))
-            .foregroundStyle(.black)
-            .padding(.horizontal, compact ? 7 : 10)
-            .frame(height: compact ? 19 : 23)
-            .background(Windows98Palette.surface)
-            .overlay {
-                if configuration.isPressed {
-                    Windows98InsetBorder()
-                } else {
-                    Windows98RaisedBorder()
-                }
-            }
-    }
-}
-
-private struct Windows98TitleButtonStyle: ButtonStyle {
-    var isCloseButton = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: isCloseButton ? 11 : 12, weight: .bold))
-            .foregroundStyle(.black)
-            .frame(width: 16, height: 16)
-            .background(Windows98Palette.surface)
-            .overlay {
-                if configuration.isPressed {
-                    Windows98InsetBorder()
-                } else {
-                    Windows98RaisedBorder()
-                }
-            }
-            .offset(x: configuration.isPressed ? 1 : 0, y: configuration.isPressed ? 1 : 0)
-    }
-}
-
-private struct Windows98RaisedDivider: View {
-    enum Axis {
-        case horizontal
-        case vertical
-    }
-
-    let axis: Axis
-
-    var body: some View {
-        switch axis {
-        case .horizontal:
-            VStack(spacing: 0) {
-                Windows98Palette.highlight.frame(height: 1)
-                Windows98Palette.shadow.frame(height: 1)
-            }
-        case .vertical:
-            HStack(spacing: 0) {
-                Windows98Palette.highlight.frame(width: 1)
-                Windows98Palette.shadow.frame(width: 1)
-            }
-        }
-    }
-}
-
-private struct Windows98RaisedBorder: View {
-    var body: some View {
-        Rectangle()
-            .strokeBorder(Windows98Palette.highlight, lineWidth: 1)
-            .overlay(alignment: .trailing) {
-                Windows98Palette.darkShadow.frame(width: 1)
-            }
-            .overlay(alignment: .bottom) {
-                Windows98Palette.darkShadow.frame(height: 1)
-            }
-            .overlay(alignment: .trailing) {
-                Windows98Palette.shadow
-                    .frame(width: 1)
-                    .padding(.bottom, 1)
-            }
-            .overlay(alignment: .bottom) {
-                Windows98Palette.shadow
-                    .frame(height: 1)
-                    .padding(.trailing, 1)
-            }
-    }
-}
-
-private struct Windows98InsetBorder: View {
-    var body: some View {
-        Rectangle()
-            .strokeBorder(Windows98Palette.darkShadow, lineWidth: 1)
-            .overlay(alignment: .trailing) {
-                Windows98Palette.highlight.frame(width: 1)
-            }
-            .overlay(alignment: .bottom) {
-                Windows98Palette.highlight.frame(height: 1)
-            }
-            .overlay(alignment: .top) {
-                Windows98Palette.shadow
-                    .frame(height: 1)
-                    .padding(.leading, 1)
-            }
-            .overlay(alignment: .leading) {
-                Windows98Palette.shadow
-                    .frame(width: 1)
-                    .padding(.top, 1)
-            }
     }
 }
