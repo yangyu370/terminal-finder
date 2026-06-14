@@ -4,7 +4,8 @@
 //
 //  Created by Claude on 2026/6/14.
 //
-//  Beige status bar with soft sunken cells: object count, selection, shell name.
+//  Beige status bar with soft sunken cells: object count, selection detail
+//  (kind + size), shell name, plus an XP-style resize grip in the corner.
 
 import SwiftUI
 
@@ -21,6 +22,8 @@ struct WindowsXPStatusBarView: View {
 
             statusCell(shellModeState.mode.displayName)
                 .frame(width: 130)
+
+            resizeGrip
         }
         .padding(4)
         .background(WindowsXPPalette.surface)
@@ -33,7 +36,13 @@ struct WindowsXPStatusBarView: View {
             return workspaceVM.terminalCwdPath
         }
 
-        return entry.name
+        let kind = FinderListFormatters.kindDisplayText(for: entry)
+        if entry.isDirectory {
+            return "\(entry.name) — \(kind)"
+        }
+
+        let size = FinderListFormatters.sizeDisplayText(isDirectory: entry.isDirectory, size: entry.size)
+        return "\(entry.name) — \(kind), \(size)"
     }
 
     private func statusCell(_ text: String) -> some View {
@@ -46,5 +55,23 @@ struct WindowsXPStatusBarView: View {
             .overlay {
                 WindowsXPFieldBorder()
             }
+    }
+
+    /// Lower-right triangular dot grid, echoing the XP window resize grip.
+    private var resizeGrip: some View {
+        Canvas { context, size in
+            let dot: CGFloat = 2
+            let step: CGFloat = 4
+            for row in 0..<3 {
+                for col in 0...row {
+                    let x = size.width - step * CGFloat(row - col + 1)
+                    let y = size.height - step * CGFloat(col + 1)
+                    let rect = CGRect(x: x, y: y, width: dot, height: dot)
+                    context.fill(Path(ellipseIn: rect), with: .color(WindowsXPPalette.shadow))
+                }
+            }
+        }
+        .frame(width: 16, height: 20)
+        .allowsHitTesting(false)
     }
 }

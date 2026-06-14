@@ -33,6 +33,11 @@ struct WindowsXPIconProvider {
         makeImage(kind: iconKind(for: entry))
     }
 
+    /// Draw an icon for an explicit kind (e.g. the address-bar folder glyph).
+    func icon(kind: WindowsXPIconKind) -> NSImage {
+        makeImage(kind: kind)
+    }
+
     func iconKind(for entry: DirectoryEntry) -> WindowsXPIconKind {
         if entry.isDirectory || entry.kind == .directory {
             return .folder

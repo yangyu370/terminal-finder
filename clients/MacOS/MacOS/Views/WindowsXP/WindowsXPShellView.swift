@@ -191,17 +191,24 @@ struct WindowsXPShellView: View {
             Text("Address")
                 .foregroundStyle(WindowsXPPalette.text)
 
-            TextField("", text: $pathInput, onCommit: openPathInput)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .padding(.horizontal, 5)
-                .frame(height: 22)
-                .frame(maxWidth: .infinity)
-                .background(WindowsXPPalette.contentBackground)
-                .overlay {
-                    WindowsXPFieldBorder(cornerRadius: 1)
-                }
-                .layoutPriority(1)
+            HStack(spacing: 5) {
+                Image(nsImage: iconProvider.icon(kind: .folder))
+                    .resizable()
+                    .interpolation(.none)
+                    .frame(width: 16, height: 16)
+
+                TextField("", text: $pathInput, onCommit: openPathInput)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+            }
+            .padding(.horizontal, 5)
+            .frame(height: 22)
+            .frame(maxWidth: .infinity)
+            .background(WindowsXPPalette.contentBackground)
+            .overlay {
+                WindowsXPFieldBorder(cornerRadius: 1)
+            }
+            .layoutPriority(1)
 
             Button("Go") {
                 openPathInput()

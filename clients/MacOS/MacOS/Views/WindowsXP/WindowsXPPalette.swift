@@ -40,6 +40,8 @@ enum WindowsXPPalette {
     // MARK: Selection / text
     static let selection = rgb(49, 106, 197)       // #316AC5
     static let selectedText = Color.white
+    static let rowHover = rgb(216, 228, 248)       // #D8E4F8 (light Luna hover)
+    static let headerHover = rgb(222, 232, 250)    // #DEE8FA
     static let text = Color.black
     static let contentBackground = Color.white
 
