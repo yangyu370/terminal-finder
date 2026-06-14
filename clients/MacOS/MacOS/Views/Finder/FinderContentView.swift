@@ -19,7 +19,6 @@ struct FinderContentView: View {
     @ObservedObject var panelLayout: PseudoTerminalPanelLayoutState
     @ObservedObject var contentState: FinderContentViewState
     @ObservedObject var displayModeState: FinderDisplayModeState
-    @EnvironmentObject var themeProvider: FinderThemeProvider
 
     let onCloseTerminal: () -> Void
 
@@ -55,7 +54,7 @@ struct FinderContentView: View {
             }
             .animation(.easeOut(duration: 0.16), value: panelLayout.isOpen)
         }
-        .background(Color(nsColor: themeProvider.current.listBackground))
+        .background(Color(nsColor: .controlBackgroundColor))
         .alert(
             "Unable to Open File",
             isPresented: Binding(
@@ -126,7 +125,6 @@ struct FinderContentView: View {
                 entries: workspaceVM.entries,
                 selectedPath: workspaceVM.selectedEntryPath,
                 isLoading: workspaceVM.isLoading,
-                themeProvider: themeProvider,
                 onSelect: { path in
                     workspaceVM.selectEntry(path: path)
                 },
@@ -204,7 +202,7 @@ private struct FinderMessageOverlay: View {
     }
 }
 
-private struct FinderGoToFolderSheet: View {
+struct FinderGoToFolderSheet: View {
     @State private var path: String
 
     let onOpen: (String) -> Void

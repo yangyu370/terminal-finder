@@ -13,7 +13,7 @@ extension NSToolbarItem.Identifier {
     static let finderNavBack = NSToolbarItem.Identifier("nav.back")
     static let finderNavForward = NSToolbarItem.Identifier("nav.forward")
     static let finderViewSwitcher = NSToolbarItem.Identifier("view.switcher")
-    static let finderThemeSwitch = NSToolbarItem.Identifier("theme.switch")
+    static let finderShellSwitch = NSToolbarItem.Identifier("shell.switch")
     static let finderGroupMenu = NSToolbarItem.Identifier("group.menu")
     static let finderShare = NSToolbarItem.Identifier("item.share")
     static let finderTag = NSToolbarItem.Identifier("item.tag")
@@ -28,11 +28,13 @@ final class FinderToolbarController: NSObject {
     private let workspaceVM: WorkspaceBrowserViewModel
     private let connectionVM: BackendConnectionViewModel
     private let displayModeState: FinderDisplayModeState
+    private let shellModeState: ClientShellModeState
     private weak var actionTarget: FinderWindowController?
 
     private weak var backItem: NSToolbarItem?
     private weak var forwardItem: NSToolbarItem?
     private weak var viewSwitcherControl: NSSegmentedControl?
+    private var shellMenu: NSMenu?
     private var moreMenu: NSMenu?
     private var cancellables: Set<AnyCancellable> = []
 
@@ -40,11 +42,13 @@ final class FinderToolbarController: NSObject {
         workspaceVM: WorkspaceBrowserViewModel,
         connectionVM: BackendConnectionViewModel,
         displayModeState: FinderDisplayModeState,
+        shellModeState: ClientShellModeState,
         actionTarget: FinderWindowController
     ) {
         self.workspaceVM = workspaceVM
         self.connectionVM = connectionVM
         self.displayModeState = displayModeState
+        self.shellModeState = shellModeState
         self.actionTarget = actionTarget
         super.init()
 
@@ -59,6 +63,13 @@ final class FinderToolbarController: NSObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] mode in
                 self?.viewSwitcherControl?.selectedSegment = mode.segmentIndex
+            }
+            .store(in: &cancellables)
+
+        shellModeState.$mode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshShellMenu()
             }
             .store(in: &cancellables)
     }
@@ -97,7 +108,7 @@ extension FinderToolbarController: NSToolbarDelegate {
             .finderNavBackForward,
             .flexibleSpace,
             .finderViewSwitcher,
-            .finderThemeSwitch,
+            .finderShellSwitch,
             .finderGroupMenu,
             .finderShare,
             .finderTag,
@@ -121,8 +132,8 @@ extension FinderToolbarController: NSToolbarDelegate {
             return makeBackForwardItem()
         case .finderViewSwitcher:
             return makeViewSwitcherItem()
-        case .finderThemeSwitch:
-            return makeThemeSwitchItem()
+        case .finderShellSwitch:
+            return makeShellSwitchItem()
         case .finderGroupMenu:
             return makeGroupMenuItem()
         case .finderShare:
@@ -252,18 +263,19 @@ extension FinderToolbarController: NSToolbarDelegate {
         return item
     }
 
-    private func makeThemeSwitchItem() -> NSToolbarItem {
-        let item = NSToolbarItem(itemIdentifier: .finderThemeSwitch)
-        item.image = Self.symbolImage(
-            ["paintpalette", "circle.lefthalf.filled", "paintbrush"],
-            description: "切换主题"
-        )
-        item.label = "主题"
-        item.toolTip = "切换界面主题"
-        item.isBordered = true
-        item.autovalidates = false
-        item.target = actionTarget
-        item.action = #selector(FinderWindowController.switchThemeAction(_:))
+    private func makeShellSwitchItem() -> NSToolbarItem {
+        let item = NSMenuToolbarItem(itemIdentifier: .finderShellSwitch)
+        item.image = Self.symbolImage(["rectangle.2.swap", "rectangle.split.2x1", "macwindow"], description: "切换界面")
+        item.label = "界面"
+        item.toolTip = "切换客户端界面"
+        item.showsIndicator = true
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = self
+        shellMenu = menu
+        item.menu = menu
+        refreshShellMenu()
         return item
     }
 
@@ -294,6 +306,11 @@ extension FinderToolbarController: NSToolbarDelegate {
 
 extension FinderToolbarController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === shellMenu {
+            refreshShellMenu()
+            return
+        }
+
         guard menu === moreMenu else {
             return
         }
@@ -362,5 +379,25 @@ extension FinderToolbarController: NSMenuDelegate {
         goToFolder.target = actionTarget
         goToFolder.isEnabled = true
         menu.addItem(goToFolder)
+    }
+
+    private func refreshShellMenu() {
+        guard let shellMenu else {
+            return
+        }
+
+        shellMenu.removeAllItems()
+        for mode in ClientShellMode.allCases {
+            let item = NSMenuItem(
+                title: mode.displayName,
+                action: #selector(FinderWindowController.selectShellAction(_:)),
+                keyEquivalent: ""
+            )
+            item.target = actionTarget
+            item.representedObject = mode.rawValue
+            item.state = shellModeState.mode == mode ? .on : .off
+            item.isEnabled = true
+            shellMenu.addItem(item)
+        }
     }
 }

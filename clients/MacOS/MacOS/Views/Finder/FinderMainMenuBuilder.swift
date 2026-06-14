@@ -104,13 +104,16 @@ enum FinderMainMenuBuilder {
 
         menu.addItem(.separator())
 
-        let switchTheme = NSMenuItem(
-            title: "切换主题",
-            action: #selector(FinderWindowController.switchThemeAction(_:)),
-            keyEquivalent: ""
-        )
-        switchTheme.target = controller
-        menu.addItem(switchTheme)
+        for mode in ClientShellMode.allCases {
+            let shellItem = NSMenuItem(
+                title: mode.displayName,
+                action: #selector(FinderWindowController.selectShellAction(_:)),
+                keyEquivalent: ""
+            )
+            shellItem.target = controller
+            shellItem.representedObject = mode.rawValue
+            menu.addItem(shellItem)
+        }
 
         let item = NSMenuItem()
         item.submenu = menu

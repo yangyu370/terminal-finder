@@ -18,9 +18,11 @@ final class FinderWindowController: NSWindowController {
     let panelLayout: PseudoTerminalPanelLayoutState
     let contentState: FinderContentViewState
     let displayModeState: FinderDisplayModeState
-    let themeProvider: FinderThemeProvider
+    let shellModeState: ClientShellModeState
 
     private var toolbarController: FinderToolbarController?
+    private var nativeContentViewController: NSViewController?
+    private var windows98ContentViewController: NSViewController?
     private var cancellables: Set<AnyCancellable> = []
     private var hasStartedInitialLoad = false
     private var terminalShortcutMonitor: Any?
@@ -32,7 +34,7 @@ final class FinderWindowController: NSWindowController {
         panelLayout = PseudoTerminalPanelLayoutState()
         contentState = FinderContentViewState()
         displayModeState = FinderDisplayModeState()
-        themeProvider = FinderThemeProvider()
+        shellModeState = ClientShellModeState()
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 920, height: 620),
@@ -46,30 +48,6 @@ final class FinderWindowController: NSWindowController {
 
         super.init(window: window)
 
-        let sidebarHost = NSHostingController(
-            rootView: FinderSidebarView(workspaceVM: workspaceVM)
-                .environmentObject(themeProvider)
-        )
-        sidebarHost.sizingOptions = []
-        let contentHost = NSHostingController(
-            rootView: FinderContentView(
-                workspaceVM: workspaceVM,
-                terminalVM: terminalVM,
-                panelLayout: panelLayout,
-                contentState: contentState,
-                displayModeState: displayModeState,
-                onCloseTerminal: { [weak self] in
-                    self?.closeTerminalSession()
-                }
-            )
-            .environmentObject(themeProvider)
-        )
-        contentHost.sizingOptions = []
-
-        window.contentViewController = FinderSplitViewController(
-            sidebarViewController: sidebarHost,
-            contentViewController: contentHost
-        )
         window.setContentSize(NSSize(width: 920, height: 620))
         window.center()
         window.setFrameAutosaveName("FinderMainWindow")
@@ -78,13 +56,15 @@ final class FinderWindowController: NSWindowController {
             workspaceVM: workspaceVM,
             connectionVM: connectionVM,
             displayModeState: displayModeState,
+            shellModeState: shellModeState,
             actionTarget: self
         )
         self.toolbarController = toolbarController
-        window.toolbar = toolbarController.makeToolbar()
+        applyShellMode(shellModeState.mode)
 
         wireTerminalLifecycle()
         installTerminalShortcutMonitor()
+        subscribeShellModeUpdates()
         subscribeWindowChromeUpdates()
         refreshWindowChrome()
     }
@@ -156,8 +136,15 @@ final class FinderWindowController: NSWindowController {
         connectionVM.reconnect()
     }
 
-    @objc func switchThemeAction(_ sender: Any?) {
-        themeProvider.cycle()
+    @objc func selectShellAction(_ sender: Any?) {
+        guard let menuItem = sender as? NSMenuItem,
+              let rawValue = menuItem.representedObject as? String,
+              let mode = ClientShellMode(rawValue: rawValue)
+        else {
+            return
+        }
+
+        shellModeState.select(mode)
     }
 
     @objc func toggleTerminalPanelAction(_ sender: Any?) {
@@ -177,6 +164,127 @@ final class FinderWindowController: NSWindowController {
     }
 
     // MARK: - Wiring
+
+    private func subscribeShellModeUpdates() {
+        shellModeState.$mode
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] mode in
+                self?.applyShellMode(mode)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func applyShellMode(_ mode: ClientShellMode) {
+        guard let window else {
+            return
+        }
+
+        switch mode {
+        case .nativeFinder:
+            window.contentViewController = makeNativeContentViewController()
+            applyNativeFinderChrome(to: window)
+        case .windows98:
+            window.contentViewController = makeWindows98ContentViewController()
+            applyWindows98Chrome(to: window)
+        }
+
+        refreshWindowChrome()
+    }
+
+    private func applyNativeFinderChrome(to window: NSWindow) {
+        window.toolbarStyle = .unified
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
+        window.toolbar = toolbarController?.makeToolbar()
+        window.isMovableByWindowBackground = false
+        setStandardWindowButtonsHidden(false, in: window)
+    }
+
+    private func applyWindows98Chrome(to window: NSWindow) {
+        window.toolbar = nil
+        window.toolbarStyle = .expanded
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        setStandardWindowButtonsHidden(true, in: window)
+    }
+
+    private func setStandardWindowButtonsHidden(_ isHidden: Bool, in window: NSWindow) {
+        [
+            NSWindow.ButtonType.closeButton,
+            .miniaturizeButton,
+            .zoomButton
+        ].forEach { buttonType in
+            window.standardWindowButton(buttonType)?.isHidden = isHidden
+        }
+    }
+
+    private func makeNativeContentViewController() -> NSViewController {
+        if let nativeContentViewController {
+            return nativeContentViewController
+        }
+
+        let sidebarHost = NSHostingController(
+            rootView: FinderSidebarView(workspaceVM: workspaceVM)
+        )
+        sidebarHost.sizingOptions = []
+
+        let contentHost = NSHostingController(
+            rootView: FinderContentView(
+                workspaceVM: workspaceVM,
+                terminalVM: terminalVM,
+                panelLayout: panelLayout,
+                contentState: contentState,
+                displayModeState: displayModeState,
+                onCloseTerminal: { [weak self] in
+                    self?.closeTerminalSession()
+                }
+            )
+        )
+        contentHost.sizingOptions = []
+
+        let splitViewController = FinderSplitViewController(
+            sidebarViewController: sidebarHost,
+            contentViewController: contentHost
+        )
+        nativeContentViewController = splitViewController
+        return splitViewController
+    }
+
+    private func makeWindows98ContentViewController() -> NSViewController {
+        if let windows98ContentViewController {
+            return windows98ContentViewController
+        }
+
+        let host = NSHostingController(
+            rootView: Windows98ShellView(
+                workspaceVM: workspaceVM,
+                terminalVM: terminalVM,
+                panelLayout: panelLayout,
+                contentState: contentState,
+                shellModeState: shellModeState,
+                onCloseTerminal: { [weak self] in
+                    self?.closeTerminalSession()
+                },
+                onSwitchToNative: { [weak self] in
+                    self?.shellModeState.select(.nativeFinder)
+                },
+                onMinimize: { [weak self] in
+                    self?.window?.miniaturize(nil)
+                },
+                onZoom: { [weak self] in
+                    self?.window?.zoom(nil)
+                },
+                onClose: { [weak self] in
+                    self?.window?.performClose(nil)
+                }
+            )
+        )
+        host.sizingOptions = []
+        windows98ContentViewController = host
+        return host
+    }
 
     /// 窗口级 local key monitor：在按键下发到响应链 / 菜单之前判定
     /// Command+J / Command+K 切换终端面板。这样即便 SwiftTerm 终端处于
@@ -257,8 +365,11 @@ extension FinderWindowController: NSMenuItemValidation {
             return true
         case #selector(reconnectAction(_:)):
             return true
-        case #selector(switchThemeAction(_:)):
-            menuItem.title = "切换主题（\(themeProvider.current.displayName)）"
+        case #selector(selectShellAction(_:)):
+            if let rawValue = menuItem.representedObject as? String,
+               let mode = ClientShellMode(rawValue: rawValue) {
+                menuItem.state = shellModeState.mode == mode ? .on : .off
+            }
             return true
         default:
             return true
