@@ -9,8 +9,6 @@ import AppKit
 import SwiftUI
 
 struct Windows98ShellView: View {
-    @Environment(\.displayScale) private var displayScale
-
     @ObservedObject var workspaceVM: WorkspaceBrowserViewModel
     @ObservedObject var terminalVM: TerminalSessionViewModel
     @ObservedObject var panelLayout: PseudoTerminalPanelLayoutState
@@ -19,6 +17,7 @@ struct Windows98ShellView: View {
 
     let onCloseTerminal: () -> Void
     let onSwitchToNative: () -> Void
+    let onSelectShell: (ClientShellMode) -> Void
     let onMinimize: () -> Void
     let onZoom: () -> Void
     let onClose: () -> Void
@@ -27,6 +26,7 @@ struct Windows98ShellView: View {
     private let sidebarItemFilter: Windows98SidebarItemFilter
 
     @State private var pathInput: String
+    @State private var shellMenuAnchorView: NSView?
 
     init(
         workspaceVM: WorkspaceBrowserViewModel,
@@ -38,6 +38,7 @@ struct Windows98ShellView: View {
         sidebarItemFilter: Windows98SidebarItemFilter = Windows98SidebarItemFilter(),
         onCloseTerminal: @escaping () -> Void,
         onSwitchToNative: @escaping () -> Void,
+        onSelectShell: @escaping (ClientShellMode) -> Void = { _ in },
         onMinimize: @escaping () -> Void,
         onZoom: @escaping () -> Void,
         onClose: @escaping () -> Void
@@ -51,6 +52,7 @@ struct Windows98ShellView: View {
         self.sidebarItemFilter = sidebarItemFilter
         self.onCloseTerminal = onCloseTerminal
         self.onSwitchToNative = onSwitchToNative
+        self.onSelectShell = onSelectShell
         self.onMinimize = onMinimize
         self.onZoom = onZoom
         self.onClose = onClose
@@ -59,16 +61,8 @@ struct Windows98ShellView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let titleBarTopInset = Windows98ChromeMetrics.pixelAlignedTopInset(
-                geometry.safeAreaInsets.top,
-                displayScale: displayScale
-            )
-
             VStack(spacing: 0) {
-                windowChrome(
-                    topInset: titleBarTopInset,
-                    availableWidth: geometry.size.width
-                )
+                windowChrome(availableWidth: geometry.size.width)
 
                 contentSplit(availableWidth: geometry.size.width)
 
@@ -102,6 +96,7 @@ struct Windows98ShellView: View {
             .font(.system(size: 12))
             .background(Windows98Palette.surface)
         }
+        .ignoresSafeArea(.container, edges: .top)
         .onChange(of: workspaceVM.path) { _, newValue in
             pathInput = newValue
         }
@@ -133,9 +128,9 @@ struct Windows98ShellView: View {
         }
     }
 
-    private func windowChrome(topInset: CGFloat, availableWidth: CGFloat) -> some View {
+    private func windowChrome(availableWidth: CGFloat) -> some View {
         VStack(spacing: 0) {
-            titleBar(topInset: topInset)
+            titleBar
             menuBar
             toolbar
             addressBar
@@ -163,57 +158,44 @@ struct Windows98ShellView: View {
         .frame(maxHeight: .infinity)
     }
 
-    private func titleBar(topInset: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            Color.clear
-                .frame(height: topInset)
+    private var titleBar: some View {
+        HStack(spacing: 8) {
+            Text("C:\\")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(Windows98Palette.surface)
+                .foregroundStyle(.black)
 
-            HStack(spacing: 8) {
-                Text("C:\\")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    .background(Windows98Palette.surface)
-                    .foregroundStyle(.black)
+            Spacer()
 
-                Spacer()
-
-                Button {
-                    onSwitchToNative()
-                } label: {
-                    Text("Native")
-                        .font(.system(size: 11, weight: .bold))
-                }
-                .buttonStyle(Windows98ButtonStyle(compact: true))
-                .help("切回 Native Finder shell")
+            shellSwitcher
                 .layoutPriority(1)
 
-                HStack(spacing: 2) {
-                    Button(action: onMinimize) {
-                        Text("_")
-                            .baselineOffset(3)
-                    }
-                    .buttonStyle(Windows98TitleButtonStyle())
-                    .help("Minimize")
-
-                    Button(action: onZoom) {
-                        Text("□")
-                    }
-                    .buttonStyle(Windows98TitleButtonStyle())
-                    .help("Zoom")
-
-                    Button(action: onClose) {
-                        Text("X")
-                    }
-                    .buttonStyle(Windows98TitleButtonStyle(isCloseButton: true))
-                    .help("Close")
+            HStack(spacing: 2) {
+                Button(action: onMinimize) {
+                    Text("_")
+                        .baselineOffset(3)
                 }
-                .layoutPriority(2)
+                .buttonStyle(Windows98TitleButtonStyle())
+                .help("Minimize")
+
+                Button(action: onZoom) {
+                    Text("□")
+                }
+                .buttonStyle(Windows98TitleButtonStyle())
+                .help("Zoom")
+
+                Button(action: onClose) {
+                    Text("X")
+                }
+                .buttonStyle(Windows98TitleButtonStyle(isCloseButton: true))
+                .help("Close")
             }
-            .padding(.horizontal, 4)
-            .frame(height: Windows98ChromeMetrics.titleBarContentHeight)
+            .layoutPriority(2)
         }
-        .frame(height: Windows98ChromeMetrics.titleBarHeight(topInset: topInset))
+        .padding(.horizontal, 4)
+        .frame(height: Windows98ChromeMetrics.titleBarContentHeight)
         .frame(maxWidth: .infinity)
         .background {
             LinearGradient(
@@ -221,6 +203,41 @@ struct Windows98ShellView: View {
                 startPoint: .leading,
                 endPoint: .trailing
             )
+        }
+    }
+
+    private var shellSwitcher: some View {
+        Button {
+            ClientShellModeMenuPresenter.popUp(
+                currentMode: shellModeState.mode,
+                anchoredTo: shellMenuAnchorView,
+                onSelect: selectShell
+            )
+        } label: {
+            HStack(spacing: 4) {
+                Text("界面")
+                Text(shellModeState.mode.displayName)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("▼")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .font(.system(size: 11, weight: .bold))
+        }
+        .background(ClientShellModeMenuAnchorView(view: $shellMenuAnchorView))
+        .buttonStyle(Windows98ShellMenuButtonStyle())
+        .help("切换客户端界面")
+    }
+
+    private func selectShell(_ mode: ClientShellMode) {
+        guard shellModeState.mode != mode else {
+            return
+        }
+
+        if mode == .nativeFinder {
+            onSwitchToNative()
+        } else {
+            onSelectShell(mode)
         }
     }
 
@@ -581,19 +598,6 @@ private enum Windows98Layout {
 
 struct Windows98ChromeMetrics {
     static let titleBarContentHeight: CGFloat = 26
-
-    static func titleBarHeight(topInset: CGFloat) -> CGFloat {
-        titleBarContentHeight + max(0, topInset)
-    }
-
-    static func pixelAlignedTopInset(_ topInset: CGFloat, displayScale: CGFloat) -> CGFloat {
-        let positiveInset = max(0, topInset)
-        guard displayScale > 0 else {
-            return positiveInset
-        }
-
-        return ceil(positiveInset * displayScale) / displayScale
-    }
 }
 
 struct Windows98ListColumns {
@@ -645,6 +649,25 @@ private struct Windows98ButtonStyle: ButtonStyle {
                     Windows98RaisedBorder()
                 }
             }
+    }
+}
+
+private struct Windows98ShellMenuButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.black)
+            .padding(.horizontal, 7)
+            .frame(height: 19)
+            .background(Windows98Palette.surface)
+            .overlay {
+                if configuration.isPressed {
+                    Windows98InsetBorder()
+                } else {
+                    Windows98RaisedBorder()
+                }
+            }
+            .offset(x: configuration.isPressed ? 1 : 0, y: configuration.isPressed ? 1 : 0)
     }
 }
 

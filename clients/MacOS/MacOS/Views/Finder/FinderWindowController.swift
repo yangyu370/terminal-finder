@@ -22,6 +22,12 @@ final class FinderWindowController: NSWindowController {
         .resizable,
         .fullSizeContentView
     ]
+    private static let shellWindowStyleMask: NSWindow.StyleMask = [
+        .closable,
+        .miniaturizable,
+        .resizable,
+        .fullSizeContentView
+    ]
 
     let workspaceVM: WorkspaceBrowserViewModel
     let connectionVM: BackendConnectionViewModel
@@ -32,7 +38,6 @@ final class FinderWindowController: NSWindowController {
     let shellModeState: ClientShellModeState
 
     private var toolbarController: FinderToolbarController?
-    private var nativeContentViewController: NSViewController?
     private var windows98ContentViewController: NSViewController?
     private var windowsXPContentViewController: NSViewController?
     private var cancellables: Set<AnyCancellable> = []
@@ -46,7 +51,7 @@ final class FinderWindowController: NSWindowController {
         panelLayout = PseudoTerminalPanelLayoutState()
         contentState = FinderContentViewState()
         displayModeState = FinderDisplayModeState()
-        shellModeState = ClientShellModeState()
+        shellModeState = ClientShellModeState(mode: ClientShellMode.initialMode())
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.initialContentSize),
@@ -194,21 +199,30 @@ final class FinderWindowController: NSWindowController {
 
         switch mode {
         case .nativeFinder:
-            window.contentViewController = makeNativeContentViewController()
             applyNativeFinderChrome(to: window)
+            installContentViewController(makeNativeContentViewController(), in: window)
         case .windows98:
-            window.contentViewController = makeWindows98ContentViewController()
             applyWindows98Chrome(to: window)
+            installContentViewController(makeWindows98ContentViewController(), in: window)
         case .windowsXP:
-            window.contentViewController = makeWindowsXPContentViewController()
             applyWindowsXPChrome(to: window)
+            installContentViewController(makeWindowsXPContentViewController(), in: window)
         }
 
         refreshWindowChrome()
     }
 
+    private func installContentViewController(_ viewController: NSViewController, in window: NSWindow) {
+        let contentBounds = window.contentView?.bounds ?? NSRect(origin: .zero, size: Self.initialContentSize)
+        viewController.view.frame = contentBounds
+        viewController.view.autoresizingMask = [.width, .height]
+        window.contentViewController = viewController
+    }
+
     private func applyNativeFinderChrome(to window: NSWindow) {
+        window.styleMask = Self.windowStyleMask
         window.toolbarStyle = .unified
+        window.titlebarSeparatorStyle = .automatic
         window.titleVisibility = .visible
         window.titlebarAppearsTransparent = false
         window.toolbar = toolbarController?.makeToolbar()
@@ -217,8 +231,10 @@ final class FinderWindowController: NSWindowController {
     }
 
     private func applyWindows98Chrome(to window: NSWindow) {
+        window.styleMask = Self.shellWindowStyleMask
         window.toolbar = nil
         window.toolbarStyle = .expanded
+        window.titlebarSeparatorStyle = .none
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
@@ -226,8 +242,10 @@ final class FinderWindowController: NSWindowController {
     }
 
     private func applyWindowsXPChrome(to window: NSWindow) {
+        window.styleMask = Self.shellWindowStyleMask
         window.toolbar = nil
         window.toolbarStyle = .expanded
+        window.titlebarSeparatorStyle = .none
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
@@ -245,10 +263,6 @@ final class FinderWindowController: NSWindowController {
     }
 
     private func makeNativeContentViewController() -> NSViewController {
-        if let nativeContentViewController {
-            return nativeContentViewController
-        }
-
         let sidebarHost = NSHostingController(
             rootView: FinderSidebarView(workspaceVM: workspaceVM)
         )
@@ -272,7 +286,6 @@ final class FinderWindowController: NSWindowController {
             sidebarViewController: sidebarHost,
             contentViewController: contentHost
         )
-        nativeContentViewController = splitViewController
         return splitViewController
     }
 
@@ -294,6 +307,9 @@ final class FinderWindowController: NSWindowController {
                 onSwitchToNative: { [weak self] in
                     self?.shellModeState.select(.nativeFinder)
                 },
+                onSelectShell: { [weak self] mode in
+                    self?.shellModeState.select(mode)
+                },
                 onMinimize: { [weak self] in
                     self?.window?.miniaturize(nil)
                 },
@@ -301,7 +317,7 @@ final class FinderWindowController: NSWindowController {
                     self?.window?.zoom(nil)
                 },
                 onClose: { [weak self] in
-                    self?.window?.performClose(nil)
+                    self?.window?.close()
                 }
             )
         )
@@ -328,6 +344,9 @@ final class FinderWindowController: NSWindowController {
                 onSwitchToNative: { [weak self] in
                     self?.shellModeState.select(.nativeFinder)
                 },
+                onSelectShell: { [weak self] mode in
+                    self?.shellModeState.select(mode)
+                },
                 onMinimize: { [weak self] in
                     self?.window?.miniaturize(nil)
                 },
@@ -335,7 +354,7 @@ final class FinderWindowController: NSWindowController {
                     self?.window?.zoom(nil)
                 },
                 onClose: { [weak self] in
-                    self?.window?.performClose(nil)
+                    self?.window?.close()
                 }
             )
         )

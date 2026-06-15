@@ -58,6 +58,7 @@ struct WindowsXPToolbarView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 5)
+        .frame(height: 36)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             LinearGradient(
@@ -66,5 +67,9 @@ struct WindowsXPToolbarView: View {
                 endPoint: .bottom
             )
         )
+        .overlay(alignment: .bottom) {
+            WindowsXPPalette.shadow.opacity(0.75)
+                .frame(height: 1)
+        }
     }
 }

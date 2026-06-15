@@ -21,6 +21,7 @@ struct WindowsXPShellView: View {
 
     let onCloseTerminal: () -> Void
     let onSwitchToNative: () -> Void
+    let onSelectShell: (ClientShellMode) -> Void
     let onMinimize: () -> Void
     let onZoom: () -> Void
     let onClose: () -> Void
@@ -40,6 +41,7 @@ struct WindowsXPShellView: View {
         sidebarItemFilter: WindowsXPSidebarItemFilter = WindowsXPSidebarItemFilter(),
         onCloseTerminal: @escaping () -> Void,
         onSwitchToNative: @escaping () -> Void,
+        onSelectShell: @escaping (ClientShellMode) -> Void = { _ in },
         onMinimize: @escaping () -> Void,
         onZoom: @escaping () -> Void,
         onClose: @escaping () -> Void
@@ -53,6 +55,7 @@ struct WindowsXPShellView: View {
         self.sidebarItemFilter = sidebarItemFilter
         self.onCloseTerminal = onCloseTerminal
         self.onSwitchToNative = onSwitchToNative
+        self.onSelectShell = onSelectShell
         self.onMinimize = onMinimize
         self.onZoom = onZoom
         self.onClose = onClose
@@ -62,45 +65,9 @@ struct WindowsXPShellView: View {
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                WindowsXPTitleBarView(
-                    title: titleText,
-                    onSwitchToNative: onSwitchToNative,
-                    onMinimize: onMinimize,
-                    onZoom: onZoom,
-                    onClose: onClose
-                )
+                windowChrome(availableWidth: geometry.size.width)
 
-                menuBar
-
-                WindowsXPToolbarView(
-                    workspaceVM: workspaceVM,
-                    panelLayout: panelLayout,
-                    onToggleTerminal: toggleTerminalPanel
-                )
-
-                addressBar
-
-                HStack(spacing: 0) {
-                    WindowsXPSidebarView(
-                        workspaceVM: workspaceVM,
-                        iconProvider: iconProvider,
-                        sidebarItemFilter: sidebarItemFilter
-                    )
-                    .frame(width: WindowsXPLayout.sidebarWidth)
-
-                    WindowsXPRaisedDivider(axis: .vertical)
-
-                    WindowsXPFileListView(
-                        workspaceVM: workspaceVM,
-                        iconProvider: iconProvider,
-                        availableWidth: max(
-                            0,
-                            geometry.size.width - WindowsXPLayout.sidebarWidth - WindowsXPLayout.raisedDividerWidth
-                        )
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                contentSplit(availableWidth: geometry.size.width)
 
                 if panelLayout.isOpen {
                     FinderTerminalResizeHandle { verticalDrag in
@@ -129,11 +96,13 @@ struct WindowsXPShellView: View {
                     workspaceVM: workspaceVM,
                     shellModeState: shellModeState
                 )
+                .frame(width: geometry.size.width)
             }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
             .font(.system(size: 12))
             .background(WindowsXPPalette.surface)
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(.container, edges: .top)
         .onChange(of: workspaceVM.path) { _, newValue in
             pathInput = newValue
         }
@@ -168,6 +137,57 @@ struct WindowsXPShellView: View {
     private var titleText: String {
         let name = workspaceVM.currentDirectoryName
         return name.isEmpty ? "Windows XP" : name
+    }
+
+    private func windowChrome(availableWidth: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            WindowsXPTitleBarView(
+                title: titleText,
+                shellModeState: shellModeState,
+                onSwitchToNative: onSwitchToNative,
+                onSelectShell: onSelectShell,
+                onMinimize: onMinimize,
+                onZoom: onZoom,
+                onClose: onClose
+            )
+
+            menuBar
+
+            WindowsXPToolbarView(
+                workspaceVM: workspaceVM,
+                panelLayout: panelLayout,
+                onToggleTerminal: toggleTerminalPanel
+            )
+
+            addressBar
+        }
+        .frame(width: availableWidth, alignment: .topLeading)
+        .background(WindowsXPPalette.surface)
+    }
+
+    private func contentSplit(availableWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            WindowsXPSidebarView(
+                workspaceVM: workspaceVM,
+                iconProvider: iconProvider,
+                sidebarItemFilter: sidebarItemFilter
+            )
+            .frame(width: WindowsXPLayout.sidebarWidth)
+
+            WindowsXPRaisedDivider(axis: .vertical)
+
+            WindowsXPFileListView(
+                workspaceVM: workspaceVM,
+                iconProvider: iconProvider,
+                availableWidth: max(
+                    0,
+                    availableWidth - WindowsXPLayout.sidebarWidth - WindowsXPLayout.raisedDividerWidth
+                )
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: availableWidth, alignment: .leading)
+        .frame(maxHeight: .infinity)
     }
 
     private var menuBar: some View {

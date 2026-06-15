@@ -37,6 +37,47 @@ struct WindowsXPButtonStyle: ButtonStyle {
     }
 }
 
+struct WindowsXPShellSwitchButtonStyle: ButtonStyle {
+    var isSelected = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(isSelected ? WindowsXPPalette.titleActiveBottom : WindowsXPPalette.text)
+            .padding(.horizontal, 8)
+            .frame(height: 20)
+            .background(
+                LinearGradient(
+                    colors: backgroundColors(pressed: configuration.isPressed),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay {
+                RoundedRectangle(cornerRadius: 4)
+                    .strokeBorder(
+                        isSelected ? WindowsXPPalette.highlight : WindowsXPPalette.buttonBorder.opacity(0.75),
+                        lineWidth: 1
+                    )
+            }
+            .shadow(color: Color.black.opacity(isSelected ? 0.18 : 0.08), radius: 1, x: 0, y: 1)
+            .offset(y: configuration.isPressed ? 1 : 0)
+    }
+
+    private func backgroundColors(pressed: Bool) -> [Color] {
+        if isSelected {
+            return pressed
+                ? [WindowsXPPalette.surface, WindowsXPPalette.surfaceLight]
+                : [WindowsXPPalette.highlight, WindowsXPPalette.surfaceLight]
+        }
+
+        return pressed
+            ? [WindowsXPPalette.surface, WindowsXPPalette.surfaceLight]
+            : [WindowsXPPalette.surfaceLight, WindowsXPPalette.surface]
+    }
+}
+
 enum WindowsXPCaptionButtonRole {
     case minimize
     case maximize

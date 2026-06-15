@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import MacOS
 
@@ -90,30 +91,8 @@ final class Windows98SidebarItemFilterTests: XCTestCase {
 }
 
 final class Windows98ChromeMetricsTests: XCTestCase {
-    func testTitleBarHeightIncludesTheDynamicTopInset() {
-        XCTAssertEqual(
-            Windows98ChromeMetrics.titleBarHeight(topInset: 24),
-            Windows98ChromeMetrics.titleBarContentHeight + 24,
-            accuracy: 0.001
-        )
-        XCTAssertEqual(
-            Windows98ChromeMetrics.titleBarHeight(topInset: -4),
-            Windows98ChromeMetrics.titleBarContentHeight,
-            accuracy: 0.001
-        )
-    }
-
-    func testTopInsetIsAlignedToBackingPixels() {
-        XCTAssertEqual(
-            Windows98ChromeMetrics.pixelAlignedTopInset(20.2, displayScale: 2),
-            20.5,
-            accuracy: 0.001
-        )
-    }
-
-    func testTopInsetClampsInvalidValues() {
-        XCTAssertEqual(Windows98ChromeMetrics.pixelAlignedTopInset(-4, displayScale: 2), 0)
-        XCTAssertEqual(Windows98ChromeMetrics.pixelAlignedTopInset(12, displayScale: 0), 12)
+    func testTitleBarHeightDoesNotReserveNativeTitlebarSafeArea() {
+        XCTAssertEqual(Windows98ChromeMetrics.titleBarContentHeight, 26, accuracy: 0.001)
     }
 }
 
@@ -148,17 +127,19 @@ final class Windows98ShellViewActionTests: XCTestCase {
             shellModeState: ClientShellModeState(mode: .windows98),
             onCloseTerminal: {},
             onSwitchToNative: { calls.append("native") },
+            onSelectShell: { calls.append($0.rawValue) },
             onMinimize: { calls.append("minimize") },
             onZoom: { calls.append("zoom") },
             onClose: { calls.append("close") }
         )
 
         view.onSwitchToNative()
+        view.onSelectShell(.windowsXP)
         view.onMinimize()
         view.onZoom()
         view.onClose()
 
-        XCTAssertEqual(calls, ["native", "minimize", "zoom", "close"])
+        XCTAssertEqual(calls, ["native", "windows-xp", "minimize", "zoom", "close"])
     }
 }
 
@@ -184,17 +165,22 @@ final class FinderWindowControllerShellChromeTests: XCTestCase {
         }
 
         let initialFrame = window.frame
+        let initialNativeController = window.contentViewController
+        XCTAssertTrue(initialNativeController is FinderSplitViewController)
 
-        controller.shellModeState.select(.windows98)
-        await drainMainQueue()
+        for mode in [ClientShellMode.windows98, .windowsXP] {
+            controller.shellModeState.select(mode)
+            await drainMainQueue()
 
-        XCTAssertEqual(window.frame, initialFrame)
-        XCTAssertNil(window.toolbar)
-        XCTAssertEqual(window.titleVisibility, .hidden)
-        XCTAssertTrue(window.titlebarAppearsTransparent)
-        XCTAssertTrue(window.standardWindowButton(.closeButton)?.isHidden ?? false)
-        XCTAssertTrue(window.standardWindowButton(.miniaturizeButton)?.isHidden ?? false)
-        XCTAssertTrue(window.standardWindowButton(.zoomButton)?.isHidden ?? false)
+            XCTAssertEqual(window.frame, initialFrame)
+            XCTAssertNil(window.toolbar)
+            XCTAssertEqual(window.titleVisibility, .hidden)
+            XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+            XCTAssertTrue(window.titlebarAppearsTransparent)
+            XCTAssertTrue(window.standardWindowButton(.closeButton)?.isHidden ?? true)
+            XCTAssertTrue(window.standardWindowButton(.miniaturizeButton)?.isHidden ?? true)
+            XCTAssertTrue(window.standardWindowButton(.zoomButton)?.isHidden ?? true)
+        }
 
         controller.shellModeState.select(.nativeFinder)
         await drainMainQueue()
@@ -202,10 +188,21 @@ final class FinderWindowControllerShellChromeTests: XCTestCase {
         XCTAssertEqual(window.frame, initialFrame)
         XCTAssertNotNil(window.toolbar)
         XCTAssertEqual(window.titleVisibility, .visible)
+        XCTAssertEqual(window.titlebarSeparatorStyle, .automatic)
         XCTAssertFalse(window.titlebarAppearsTransparent)
         XCTAssertFalse(window.standardWindowButton(.closeButton)?.isHidden ?? true)
         XCTAssertFalse(window.standardWindowButton(.miniaturizeButton)?.isHidden ?? true)
         XCTAssertFalse(window.standardWindowButton(.zoomButton)?.isHidden ?? true)
+        XCTAssertTrue(window.contentViewController is FinderSplitViewController)
+        XCTAssertFalse(window.contentViewController === initialNativeController)
+    }
+
+    func testWindows98ShellCloseButtonClosesWindow() async {
+        await assertShellCloseButtonClosesWindow(.windows98)
+    }
+
+    func testWindowsXPShellCloseButtonClosesWindow() async {
+        await assertShellCloseButtonClosesWindow(.windowsXP)
     }
 
     private func drainMainQueue() async {
@@ -214,5 +211,40 @@ final class FinderWindowControllerShellChromeTests: XCTestCase {
                 continuation.resume()
             }
         }
+    }
+
+    private func assertShellCloseButtonClosesWindow(_ mode: ClientShellMode) async {
+        let controller = FinderWindowController()
+        guard let window = controller.window else {
+            XCTFail("FinderWindowController did not create a window")
+            return
+        }
+
+        window.orderFront(nil)
+        XCTAssertTrue(window.isVisible)
+
+        controller.shellModeState.select(mode)
+        await drainMainQueue()
+
+        switch mode {
+        case .windows98:
+            guard let host = window.contentViewController as? NSHostingController<Windows98ShellView> else {
+                XCTFail("Windows 98 shell did not install a Windows98ShellView host")
+                return
+            }
+            host.rootView.onClose()
+        case .windowsXP:
+            guard let host = window.contentViewController as? NSHostingController<WindowsXPShellView> else {
+                XCTFail("Windows XP shell did not install a WindowsXPShellView host")
+                return
+            }
+            host.rootView.onClose()
+        case .nativeFinder:
+            XCTFail("Native Finder is not a self-drawn shell mode")
+            return
+        }
+
+        await drainMainQueue()
+        XCTAssertFalse(window.isVisible)
     }
 }
