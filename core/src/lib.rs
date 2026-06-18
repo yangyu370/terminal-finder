@@ -7,6 +7,7 @@ pub mod error;
 pub mod ffi;
 pub mod state;
 pub mod terminal;
+pub mod vfs;
 pub mod workspace;
 
 // 生成 UniFFI 跨语言脚手架（proc-macro 模式，命名空间默认取 crate 名）。

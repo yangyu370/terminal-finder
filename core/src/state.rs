@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use crate::terminal::registry::TerminalRegistry;
+use crate::vfs::registry::ProviderRegistry;
 use crate::workspace::state::WorkspaceStore;
 use tokio::sync::broadcast;
 
@@ -12,6 +13,7 @@ pub struct AppState {
     pub version: &'static str,
     workspace: WorkspaceStore,
     terminals: TerminalRegistry,
+    providers: ProviderRegistry,
     events: broadcast::Sender<String>,
     next_event_connection_id: Arc<AtomicU64>,
 }
@@ -24,6 +26,7 @@ impl AppState {
             version,
             workspace: WorkspaceStore::with_default_directory(),
             terminals: TerminalRegistry::new(),
+            providers: ProviderRegistry::new(),
             events,
             next_event_connection_id: Arc::new(AtomicU64::new(1)),
         }
@@ -35,6 +38,10 @@ impl AppState {
 
     pub fn terminals(&self) -> &TerminalRegistry {
         &self.terminals
+    }
+
+    pub fn providers(&self) -> &ProviderRegistry {
+        &self.providers
     }
 
     pub fn events(&self) -> &broadcast::Sender<String> {

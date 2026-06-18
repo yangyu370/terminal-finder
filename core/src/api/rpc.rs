@@ -101,7 +101,7 @@ async fn dispatch_rpc(state: &AppState, method: &str, params: Value) -> Result<V
                 method: method.to_string(),
                 message: error.to_string(),
             })
-            .map(workspace::list_directory)?
+            .map(|params| workspace::list_directory(state, params))?
             .await
             .map(|result| to_value(result).expect("workspace.listDirectory response serializes")),
         _ => Err(ApiError::UnknownMethod(method.to_string())),

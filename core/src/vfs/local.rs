@@ -1,3 +1,9 @@
+//! 本地文件系统 provider。
+//!
+//! 从 `workspace/fs.rs` 整体搬入，函数逻辑一字不动；新增 `LocalFsProvider` 实现 `VfsProvider`。
+//! `spawn_blocking` 的职责从 `workspace/service.rs` 下沉到这里——因为 local 需要它，
+//! 而 S3Provider 等原生 async provider 不需要；调用者只看到 async 接口。
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -9,7 +15,7 @@ use crate::{
     workspace::{DirectoryEntry, EntryKind, ListDirectoryParams, ListDirectoryResponse},
 };
 
-pub fn open_directory_blocking(
+pub(crate) fn open_directory_blocking(
     path: PathBuf,
 ) -> Result<(PathBuf, ListDirectoryResponse), ApiError> {
     let directory = canonical_directory_path(path)?;
@@ -20,7 +26,7 @@ pub fn open_directory_blocking(
     Ok((directory, listing))
 }
 
-pub fn workspace_root_for_directory(workspace_root: PathBuf, directory: &Path) -> PathBuf {
+pub(crate) fn workspace_root_for_directory(workspace_root: PathBuf, directory: &Path) -> PathBuf {
     workspace_root
         .canonicalize()
         .ok()
@@ -28,7 +34,7 @@ pub fn workspace_root_for_directory(workspace_root: PathBuf, directory: &Path) -
         .unwrap_or_else(|| directory.to_path_buf())
 }
 
-pub fn list_directory_blocking(
+pub(crate) fn list_directory_blocking(
     params: ListDirectoryParams,
 ) -> Result<ListDirectoryResponse, ApiError> {
     let metadata = fs::metadata(&params.path).map_err(|source| ApiError::FileSystemRead {
@@ -118,7 +124,7 @@ fn directory_entry(
     })
 }
 
-fn system_time_to_utc_iso(time: SystemTime) -> Option<String> {
+pub(crate) fn system_time_to_utc_iso(time: SystemTime) -> Option<String> {
     let duration = time.duration_since(UNIX_EPOCH).ok()?;
     let (year, month, day, hour, minute, second) = unix_duration_to_utc_parts(duration);
     Some(format!(
@@ -154,9 +160,53 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i64, u32, u32) {
     (year, month as u32, day as u32)
 }
 
+/// 本地文件系统 provider。在 `spawn_blocking` 中执行阻塞 FS 调用，对外暴露 async 接口。
+pub struct LocalFsProvider;
+
+#[async_trait::async_trait]
+impl crate::vfs::VfsProvider for LocalFsProvider {
+    async fn list(&self, path: &str) -> Result<ListDirectoryResponse, ApiError> {
+        let params = ListDirectoryParams {
+            path: PathBuf::from(path),
+        };
+        tokio::task::spawn_blocking(move || list_directory_blocking(params))
+            .await
+            .map_err(|e| ApiError::BackgroundTask {
+                operation: "vfs.local.list",
+                message: e.to_string(),
+            })?
+    }
+
+    async fn open_directory(
+        &self,
+        path: &str,
+    ) -> Result<(String, ListDirectoryResponse), ApiError> {
+        let path_buf = PathBuf::from(path);
+        tokio::task::spawn_blocking(move || {
+            let (canonical, listing) = open_directory_blocking(path_buf)?;
+            Ok::<_, ApiError>((canonical.to_string_lossy().into_owned(), listing))
+        })
+        .await
+        .map_err(|e| ApiError::BackgroundTask {
+            operation: "vfs.local.open_directory",
+            message: e.to_string(),
+        })?
+    }
+
+    fn capabilities(&self) -> crate::vfs::ProviderCaps {
+        crate::vfs::ProviderCaps {
+            can_rename: true,
+            can_symlink: true,
+            can_write: true,
+            has_native_directories: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vfs::VfsProvider;
 
     #[test]
     fn open_directory_canonicalizes_path_and_returns_listing() {
@@ -336,5 +386,42 @@ mod tests {
                 .expect("system time is after unix epoch")
                 .as_nanos()
         ))
+    }
+
+    #[tokio::test]
+    async fn provider_dispatch_list_matches_direct_call() {
+        // 验证：通过 LocalFsProvider trait 方法 list 的结果，与直接调 list_directory_blocking 一致。
+        let test_path = std::env::temp_dir().join(format!(
+            "terminal-finder-provider-dispatch-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time is after unix epoch")
+                .as_nanos()
+        ));
+
+        fs::create_dir(&test_path).expect("create test directory");
+        fs::create_dir(test_path.join("alpha")).expect("create child directory");
+        fs::write(test_path.join("beta.txt"), b"data").expect("create child file");
+
+        let provider = LocalFsProvider;
+        let via_provider = provider
+            .list(&test_path.to_string_lossy())
+            .await
+            .expect("provider lists directory");
+        let via_direct = list_directory_blocking(ListDirectoryParams {
+            path: test_path.clone(),
+        })
+        .expect("direct list works");
+
+        fs::remove_dir_all(&test_path).expect("remove test directory");
+
+        assert_eq!(via_provider.path, via_direct.path);
+        assert_eq!(via_provider.entries.len(), via_direct.entries.len());
+        for (p, d) in via_provider.entries.iter().zip(via_direct.entries.iter()) {
+            assert_eq!(p.name, d.name);
+            assert_eq!(p.path, d.path);
+            assert_eq!(p.is_directory, d.is_directory);
+            assert_eq!(p.size, d.size);
+        }
     }
 }

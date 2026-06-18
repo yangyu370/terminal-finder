@@ -1,11 +1,12 @@
+use std::path::PathBuf;
+
 use crate::{
     error::ApiError,
     state::AppState,
+    vfs::{Location, local::workspace_root_for_directory},
     workspace::{
         GetStateResponse, ListDirectoryParams, ListDirectoryResponse, OpenDirectoryParams,
-        OpenDirectoryResponse, WorkspaceStateResponse,
-        fs::{list_directory_blocking, open_directory_blocking, workspace_root_for_directory},
-        state::WorkspaceState,
+        OpenDirectoryResponse, WorkspaceStateResponse, state::WorkspaceState,
     },
 };
 
@@ -28,34 +29,38 @@ pub async fn open_directory(
         "opening directory"
     );
 
+    let location = Location::local(requested_path.to_string_lossy().into_owned());
+    let provider = state
+        .providers()
+        .get(&location.scheme)
+        .expect("local provider is always registered");
+
+    let (canonical_path, listing) = provider.open_directory(&location.path).await?;
+
     let workspace_root = state.workspace().state().workspace_root;
-    let (workspace_root, directory, listing) = tokio::task::spawn_blocking(move || {
-        let (directory, listing) = open_directory_blocking(requested_path)?;
-        let workspace_root = workspace_root_for_directory(workspace_root, &directory);
-        Ok::<_, ApiError>((workspace_root, directory, listing))
-    })
-    .await
-    .map_err(|error| ApiError::BackgroundTask {
-        operation: "workspace.openDirectory",
-        message: error.to_string(),
-    })??;
+    let directory = PathBuf::from(&canonical_path);
+    let workspace_root = workspace_root_for_directory(workspace_root, &directory);
 
     let workspace_state = state
         .workspace()
         .set_directory_state(workspace_root, directory);
-    let state = workspace_state_response(workspace_state);
+    let state_response = workspace_state_response(workspace_state);
 
     tracing::info!(
         target: LOG_TARGET,
-        current_directory = %state.current_directory,
+        current_directory = %state_response.current_directory,
         entries = listing.entries.len(),
         "opened directory"
     );
 
-    Ok(OpenDirectoryResponse { state, listing })
+    Ok(OpenDirectoryResponse {
+        state: state_response,
+        listing,
+    })
 }
 
 pub async fn list_directory(
+    state: &AppState,
     params: ListDirectoryParams,
 ) -> Result<ListDirectoryResponse, ApiError> {
     let path = params.path.clone();
@@ -65,12 +70,13 @@ pub async fn list_directory(
         "listing directory"
     );
 
-    let result = tokio::task::spawn_blocking(move || list_directory_blocking(params))
-        .await
-        .map_err(|error| ApiError::BackgroundTask {
-            operation: "workspace.listDirectory",
-            message: error.to_string(),
-        })??;
+    let location = Location::local(path.to_string_lossy().into_owned());
+    let provider = state
+        .providers()
+        .get(&location.scheme)
+        .expect("local provider is always registered");
+
+    let result = provider.list(&location.path).await?;
 
     tracing::info!(
         target: LOG_TARGET,

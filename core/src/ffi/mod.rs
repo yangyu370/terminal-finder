@@ -103,7 +103,7 @@ impl CoreHandle {
         let params = ListDirectoryParams {
             path: PathBuf::from(path),
         };
-        let response = workspace::list_directory(params).await?;
+        let response = workspace::list_directory(&self.state, params).await?;
         Ok(response.into())
     }
 }

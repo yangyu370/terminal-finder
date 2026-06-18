@@ -1,5 +1,4 @@
 pub mod dto;
-pub mod fs;
 pub mod service;
 pub mod state;
 
