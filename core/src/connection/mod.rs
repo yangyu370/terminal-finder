@@ -95,9 +95,18 @@ mod tests {
         };
         let formatted = format!("{cred:?}");
 
-        assert!(!formatted.contains("AKIA_REAL_ACCESS_KEY"), "Debug output leaks access_key_id: {formatted}");
-        assert!(!formatted.contains("SECRET_TOP_SECRET_DATA"), "Debug output leaks secret_access_key: {formatted}");
-        assert!(formatted.contains("***"), "Debug output should contain '***' mask: {formatted}");
+        assert!(
+            !formatted.contains("AKIA_REAL_ACCESS_KEY"),
+            "Debug output leaks access_key_id: {formatted}"
+        );
+        assert!(
+            !formatted.contains("SECRET_TOP_SECRET_DATA"),
+            "Debug output leaks secret_access_key: {formatted}"
+        );
+        assert!(
+            formatted.contains("***"),
+            "Debug output should contain '***' mask: {formatted}"
+        );
     }
 
     #[test]
@@ -109,8 +118,17 @@ mod tests {
         let wrapped = Credential::S3(cred);
         let formatted = format!("{wrapped:?}");
 
-        assert!(!formatted.contains("AKIA_REAL_ACCESS_KEY"), "Credential::S3 Debug leaks access_key_id: {formatted}");
-        assert!(!formatted.contains("SECRET_TOP_SECRET_DATA"), "Credential::S3 Debug leaks secret_access_key: {formatted}");
-        assert!(formatted.contains("***"), "Credential::S3 Debug should propagate '***' mask: {formatted}");
+        assert!(
+            !formatted.contains("AKIA_REAL_ACCESS_KEY"),
+            "Credential::S3 Debug leaks access_key_id: {formatted}"
+        );
+        assert!(
+            !formatted.contains("SECRET_TOP_SECRET_DATA"),
+            "Credential::S3 Debug leaks secret_access_key: {formatted}"
+        );
+        assert!(
+            formatted.contains("***"),
+            "Credential::S3 Debug should propagate '***' mask: {formatted}"
+        );
     }
 }

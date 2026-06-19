@@ -25,12 +25,18 @@ pub struct ConnectionRegistry {
 
 impl ConnectionRegistry {
     pub fn new() -> Self {
-        Self { entries: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            entries: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     pub fn create(&self, config: ConnectionConfig, credential: Credential) -> ConnectionId {
         let id = ConnectionId(Uuid::new_v4().to_string());
-        let entry = ConnectionEntry { id: id.clone(), config, credential };
+        let entry = ConnectionEntry {
+            id: id.clone(),
+            config,
+            credential,
+        };
         let mut guard = self.entries.write().unwrap_or_else(|p| p.into_inner());
         guard.insert(id.clone(), entry);
         id
@@ -134,6 +140,9 @@ mod tests {
         assert!(registry.is_shared_with(&cloned));
 
         let id = registry.create(sample_config(), sample_credential());
-        assert!(cloned.get(&id).is_some(), "entry visible through cloned handle");
+        assert!(
+            cloned.get(&id).is_some(),
+            "entry visible through cloned handle"
+        );
     }
 }
