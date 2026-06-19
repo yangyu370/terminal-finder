@@ -99,4 +99,18 @@ mod tests {
         assert!(!formatted.contains("SECRET_TOP_SECRET_DATA"), "Debug output leaks secret_access_key: {formatted}");
         assert!(formatted.contains("***"), "Debug output should contain '***' mask: {formatted}");
     }
+
+    #[test]
+    fn credential_enum_debug_does_not_leak_secret() {
+        let cred = S3Credential {
+            access_key_id: "AKIA_REAL_ACCESS_KEY".to_string(),
+            secret_access_key: "SECRET_TOP_SECRET_DATA".to_string(),
+        };
+        let wrapped = Credential::S3(cred);
+        let formatted = format!("{wrapped:?}");
+
+        assert!(!formatted.contains("AKIA_REAL_ACCESS_KEY"), "Credential::S3 Debug leaks access_key_id: {formatted}");
+        assert!(!formatted.contains("SECRET_TOP_SECRET_DATA"), "Credential::S3 Debug leaks secret_access_key: {formatted}");
+        assert!(formatted.contains("***"), "Credential::S3 Debug should propagate '***' mask: {formatted}");
+    }
 }
