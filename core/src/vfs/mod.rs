@@ -63,8 +63,6 @@ pub trait VfsProvider: Send + Sync {
     fn capabilities(&self) -> ProviderCaps;
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
