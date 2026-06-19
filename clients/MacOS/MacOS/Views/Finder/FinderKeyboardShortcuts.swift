@@ -15,28 +15,39 @@ import AppKit
 /// 面板「有概率」切不出来。`FinderWindowController` 用窗口级 local key monitor
 /// 在事件下发到响应链之前按此规则判定，从而让 Command+J / Command+K 始终生效。
 enum FinderKeyboardShortcuts {
+    private static let jKeyCode: UInt16 = 38
+    private static let kKeyCode: UInt16 = 40
+
     /// 切换终端面板：Command+J 或 Command+K，且不带其它修饰键。
     /// - Parameters:
     ///   - characters: 建议传入 `NSEvent.charactersIgnoringModifiers`。
     ///   - modifierFlags: 事件的修饰键集合（会自动忽略设备无关的杂项位）。
     static func isToggleTerminalPanel(
         characters: String?,
-        modifierFlags: NSEvent.ModifierFlags
+        modifierFlags: NSEvent.ModifierFlags,
+        keyCode: UInt16? = nil
     ) -> Bool {
         let relevant: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
         guard modifierFlags.intersection(relevant) == .command else {
             return false
         }
-        guard let key = characters?.lowercased() else {
+
+        if let key = characters?.lowercased(),
+           key == "j" || key == "k" {
+            return true
+        }
+
+        guard let keyCode else {
             return false
         }
-        return key == "j" || key == "k"
+        return keyCode == jKeyCode || keyCode == kKeyCode
     }
 
     static func isToggleTerminalPanel(_ event: NSEvent) -> Bool {
         isToggleTerminalPanel(
             characters: event.charactersIgnoringModifiers,
-            modifierFlags: event.modifierFlags
+            modifierFlags: event.modifierFlags,
+            keyCode: event.keyCode
         )
     }
 }

@@ -12,6 +12,8 @@ import AppKit
 import SwiftUI
 
 struct WindowsXPFileListView: View {
+    private static let topRowID = "windows-xp-file-list-top"
+
     @ObservedObject var workspaceVM: WorkspaceBrowserViewModel
     let iconProvider: WindowsXPIconProvider
     let availableWidth: CGFloat
@@ -26,16 +28,32 @@ struct WindowsXPFileListView: View {
             fileHeader(columns: columns)
 
             ZStack {
-                ScrollView([.vertical, .horizontal]) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(workspaceVM.entries) { entry in
-                            fileRow(entry, columns: columns)
+                ScrollViewReader { proxy in
+                    ScrollView([.vertical, .horizontal]) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            Color.clear
+                                .frame(width: columns.totalWidth, height: 0)
+                                .id(Self.topRowID)
+
+                            ForEach(workspaceVM.entries) { entry in
+                                fileRow(entry, columns: columns)
+                            }
                         }
+                        .frame(width: columns.totalWidth, alignment: .leading)
+                        .padding(.vertical, 2)
                     }
-                    .frame(width: columns.totalWidth, alignment: .leading)
-                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(WindowsXPPalette.contentBackground)
+                    .onAppear {
+                        scrollToTop(proxy)
+                    }
+                    .onChange(of: workspaceVM.listing?.path) { _, _ in
+                        scrollToTop(proxy)
+                    }
+                    .onChange(of: workspaceVM.entries.map(\.path)) { _, _ in
+                        scrollToTop(proxy)
+                    }
                 }
-                .background(WindowsXPPalette.contentBackground)
 
                 if workspaceVM.isLoading {
                     loadingPanel
@@ -45,9 +63,17 @@ struct WindowsXPFileListView: View {
                     messageBlock(iconKind: .folder, title: "This folder is empty", detail: workspaceVM.path)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay {
                 WindowsXPFieldBorder()
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func scrollToTop(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            proxy.scrollTo(Self.topRowID, anchor: .top)
         }
     }
 

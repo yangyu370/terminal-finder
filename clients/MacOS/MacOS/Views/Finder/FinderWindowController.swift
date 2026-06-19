@@ -9,6 +9,16 @@ import AppKit
 import Combine
 import SwiftUI
 
+private final class FinderWindow: NSWindow {
+    override var canBecomeKey: Bool {
+        true
+    }
+
+    override var canBecomeMain: Bool {
+        true
+    }
+}
+
 /// Owns the Finder-style main window, its toolbar, and all ViewModels.
 /// ViewModels live as long as the window and are injected downwards.
 final class FinderWindowController: NSWindowController {
@@ -53,7 +63,7 @@ final class FinderWindowController: NSWindowController {
         displayModeState = FinderDisplayModeState()
         shellModeState = ClientShellModeState(mode: ClientShellMode.initialMode())
 
-        let window = NSWindow(
+        let window = FinderWindow(
             contentRect: NSRect(origin: .zero, size: Self.initialContentSize),
             styleMask: Self.windowStyleMask,
             backing: .buffered,
@@ -371,7 +381,7 @@ final class FinderWindowController: NSWindowController {
         terminalShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self,
                   let window = self.window,
-                  event.window === window,
+                  self.event(event, belongsTo: window),
                   FinderKeyboardShortcuts.isToggleTerminalPanel(event)
             else {
                 return event
@@ -381,6 +391,14 @@ final class FinderWindowController: NSWindowController {
             // 吞掉事件，避免主菜单 / SwiftTerm 再处理一次造成重复切换。
             return nil
         }
+    }
+
+    private func event(_ event: NSEvent, belongsTo window: NSWindow) -> Bool {
+        if let eventWindow = event.window {
+            return eventWindow === window
+        }
+
+        return NSApp.keyWindow === window || NSApp.mainWindow === window
     }
 
     private func wireTerminalLifecycle() {

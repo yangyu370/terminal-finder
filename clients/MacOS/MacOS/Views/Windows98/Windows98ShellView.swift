@@ -9,6 +9,8 @@ import AppKit
 import SwiftUI
 
 struct Windows98ShellView: View {
+    private static let fileListTopID = "windows98-file-list-top"
+
     @ObservedObject var workspaceVM: WorkspaceBrowserViewModel
     @ObservedObject var terminalVM: TerminalSessionViewModel
     @ObservedObject var panelLayout: PseudoTerminalPanelLayoutState
@@ -79,7 +81,8 @@ struct Windows98ShellView: View {
                         onClose: onCloseTerminal,
                         onViewportChanged: { size in
                             panelLayout.noteViewportSize(size)
-                        }
+                        },
+                        focusesTerminalOnMouseDown: true
                     )
                     .frame(
                         maxWidth: .infinity,
@@ -97,8 +100,13 @@ struct Windows98ShellView: View {
             .background(Windows98Palette.surface)
         }
         .ignoresSafeArea(.container, edges: .top)
+        .background(terminalShortcutButtons)
+        .onAppear(perform: syncPathInput)
         .onChange(of: workspaceVM.path) { _, newValue in
-            pathInput = newValue
+            pathInput = WindowsLegacyShellPathDisplay.visiblePath(
+                path: newValue,
+                fallback: workspaceVM.terminalCwdPath
+            )
         }
         .alert(
             "Unable to Open File",
@@ -140,7 +148,7 @@ struct Windows98ShellView: View {
     }
 
     private func contentSplit(availableWidth: CGFloat) -> some View {
-        HStack(spacing: 0) {
+        HStack(alignment: .top, spacing: 0) {
             sidebar
                 .frame(width: Windows98Layout.sidebarWidth)
 
@@ -152,10 +160,10 @@ struct Windows98ShellView: View {
                     availableWidth - Windows98Layout.sidebarWidth - Windows98Layout.raisedDividerWidth
                 )
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: availableWidth, alignment: .leading)
-        .frame(maxHeight: .infinity)
+        .frame(width: availableWidth, alignment: .topLeading)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private var titleBar: some View {
@@ -314,6 +322,7 @@ struct Windows98ShellView: View {
             TextField("", text: $pathInput, onCommit: openPathInput)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.black)
                 .padding(.horizontal, 4)
                 .frame(height: 22)
                 .frame(maxWidth: .infinity)
@@ -360,16 +369,32 @@ struct Windows98ShellView: View {
             fileHeader(columns: columns)
 
             ZStack {
-                ScrollView([.vertical, .horizontal]) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(workspaceVM.entries) { entry in
-                            fileRow(entry, columns: columns)
+                ScrollViewReader { proxy in
+                    ScrollView([.vertical, .horizontal]) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            Color.clear
+                                .frame(width: columns.totalWidth, height: 0)
+                                .id(Self.fileListTopID)
+
+                            ForEach(workspaceVM.entries) { entry in
+                                fileRow(entry, columns: columns)
+                            }
                         }
+                        .frame(width: columns.totalWidth, alignment: .leading)
+                        .padding(.vertical, 2)
                     }
-                    .frame(width: columns.totalWidth, alignment: .leading)
-                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(.white)
+                    .onAppear {
+                        scrollFileListToTop(proxy)
+                    }
+                    .onChange(of: workspaceVM.listing?.path) { _, _ in
+                        scrollFileListToTop(proxy)
+                    }
+                    .onChange(of: workspaceVM.entries.map(\.path)) { _, _ in
+                        scrollFileListToTop(proxy)
+                    }
                 }
-                .background(.white)
 
                 if workspaceVM.isLoading {
                     Text("Loading...")
@@ -384,10 +409,30 @@ struct Windows98ShellView: View {
                     messageBlock(title: "This folder is empty", detail: workspaceVM.path)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay {
                 Windows98InsetBorder()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var terminalShortcutButtons: some View {
+        VStack {
+            Button(action: toggleTerminalPanel) {
+                Color.clear.frame(width: 1, height: 1)
+            }
+            .keyboardShortcut("j", modifiers: .command)
+
+            Button(action: toggleTerminalPanel) {
+                Color.clear.frame(width: 1, height: 1)
+            }
+            .keyboardShortcut("k", modifiers: .command)
+        }
+        .buttonStyle(.plain)
+        .frame(width: 1, height: 1)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     private func fileHeader(columns: Windows98ListColumns) -> some View {
@@ -551,6 +596,19 @@ struct Windows98ShellView: View {
         workspaceVM.openCurrentPath()
     }
 
+    private func syncPathInput() {
+        pathInput = WindowsLegacyShellPathDisplay.visiblePath(
+            path: workspaceVM.path,
+            fallback: workspaceVM.terminalCwdPath
+        )
+    }
+
+    private func scrollFileListToTop(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            proxy.scrollTo(Self.fileListTopID, anchor: .top)
+        }
+    }
+
     private func toggleTerminalPanel() {
         if panelLayout.isOpen {
             onCloseTerminal()
@@ -561,6 +619,12 @@ struct Windows98ShellView: View {
         }
     }
 
+}
+
+enum WindowsLegacyShellPathDisplay {
+    static func visiblePath(path: String, fallback: String) -> String {
+        path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : path
+    }
 }
 
 struct Windows98SidebarItemFilter {

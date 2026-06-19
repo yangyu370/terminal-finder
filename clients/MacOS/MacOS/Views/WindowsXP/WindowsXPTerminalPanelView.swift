@@ -20,7 +20,7 @@ struct WindowsXPTerminalPanelView: View {
         VStack(spacing: 0) {
             titleStrip
 
-            FinderTerminalView(viewModel: terminalVM)
+            FinderTerminalView(viewModel: terminalVM, focusesTerminalOnMouseDown: true)
                 .background {
                     GeometryReader { geometry in
                         Color.clear

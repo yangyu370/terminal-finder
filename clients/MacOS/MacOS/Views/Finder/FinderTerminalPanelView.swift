@@ -12,6 +12,19 @@ struct FinderTerminalPanelView: View {
 
     let onClose: () -> Void
     let onViewportChanged: (CGSize) -> Void
+    let focusesTerminalOnMouseDown: Bool
+
+    init(
+        terminalVM: TerminalSessionViewModel,
+        onClose: @escaping () -> Void,
+        onViewportChanged: @escaping (CGSize) -> Void,
+        focusesTerminalOnMouseDown: Bool = false
+    ) {
+        self.terminalVM = terminalVM
+        self.onClose = onClose
+        self.onViewportChanged = onViewportChanged
+        self.focusesTerminalOnMouseDown = focusesTerminalOnMouseDown
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,7 +34,10 @@ struct FinderTerminalPanelView: View {
                 .fill(Color(nsColor: .separatorColor))
                 .frame(height: 1)
 
-            FinderTerminalView(viewModel: terminalVM)
+            FinderTerminalView(
+                viewModel: terminalVM,
+                focusesTerminalOnMouseDown: focusesTerminalOnMouseDown
+            )
                 .background {
                     GeometryReader { geometry in
                         Color.clear

@@ -114,6 +114,22 @@ final class Windows98ListColumnsTests: XCTestCase {
     }
 }
 
+final class WindowsLegacyShellPathDisplayTests: XCTestCase {
+    func testUsesWorkspacePathWhenPresent() {
+        XCTAssertEqual(
+            WindowsLegacyShellPathDisplay.visiblePath(path: "/Users/mac/Desktop", fallback: "/Users/mac"),
+            "/Users/mac/Desktop"
+        )
+    }
+
+    func testFallsBackToCurrentDirectoryWhenWorkspacePathIsBlank() {
+        XCTAssertEqual(
+            WindowsLegacyShellPathDisplay.visiblePath(path: "   ", fallback: "/Users/mac"),
+            "/Users/mac"
+        )
+    }
+}
+
 @MainActor
 final class Windows98ShellViewActionTests: XCTestCase {
     func testWindowButtonClosuresAreCallableFromShellView() {
@@ -173,6 +189,9 @@ final class FinderWindowControllerShellChromeTests: XCTestCase {
             await drainMainQueue()
 
             XCTAssertEqual(window.frame, initialFrame)
+            XCTAssertFalse(window.styleMask.contains(.titled))
+            XCTAssertTrue(window.canBecomeKey)
+            XCTAssertTrue(window.canBecomeMain)
             XCTAssertNil(window.toolbar)
             XCTAssertEqual(window.titleVisibility, .hidden)
             XCTAssertEqual(window.titlebarSeparatorStyle, .none)

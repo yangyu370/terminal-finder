@@ -103,8 +103,13 @@ struct WindowsXPShellView: View {
             .background(WindowsXPPalette.surface)
         }
         .ignoresSafeArea(.container, edges: .top)
+        .background(terminalShortcutButtons)
+        .onAppear(perform: syncPathInput)
         .onChange(of: workspaceVM.path) { _, newValue in
-            pathInput = newValue
+            pathInput = WindowsLegacyShellPathDisplay.visiblePath(
+                path: newValue,
+                fallback: workspaceVM.terminalCwdPath
+            )
         }
         .alert(
             "Unable to Open File",
@@ -166,7 +171,7 @@ struct WindowsXPShellView: View {
     }
 
     private func contentSplit(availableWidth: CGFloat) -> some View {
-        HStack(spacing: 0) {
+        HStack(alignment: .top, spacing: 0) {
             WindowsXPSidebarView(
                 workspaceVM: workspaceVM,
                 iconProvider: iconProvider,
@@ -184,10 +189,10 @@ struct WindowsXPShellView: View {
                     availableWidth - WindowsXPLayout.sidebarWidth - WindowsXPLayout.raisedDividerWidth
                 )
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: availableWidth, alignment: .leading)
-        .frame(maxHeight: .infinity)
+        .frame(width: availableWidth, alignment: .topLeading)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private var menuBar: some View {
@@ -220,6 +225,7 @@ struct WindowsXPShellView: View {
                 TextField("", text: $pathInput, onCommit: openPathInput)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12))
+                    .foregroundStyle(WindowsXPPalette.text)
             }
             .padding(.horizontal, 5)
             .frame(height: 22)
@@ -251,6 +257,31 @@ struct WindowsXPShellView: View {
     private func openPathInput() {
         workspaceVM.updatePathInput(pathInput)
         workspaceVM.openCurrentPath()
+    }
+
+    private func syncPathInput() {
+        pathInput = WindowsLegacyShellPathDisplay.visiblePath(
+            path: workspaceVM.path,
+            fallback: workspaceVM.terminalCwdPath
+        )
+    }
+
+    private var terminalShortcutButtons: some View {
+        VStack {
+            Button(action: toggleTerminalPanel) {
+                Color.clear.frame(width: 1, height: 1)
+            }
+            .keyboardShortcut("j", modifiers: .command)
+
+            Button(action: toggleTerminalPanel) {
+                Color.clear.frame(width: 1, height: 1)
+            }
+            .keyboardShortcut("k", modifiers: .command)
+        }
+        .buttonStyle(.plain)
+        .frame(width: 1, height: 1)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     private func toggleTerminalPanel() {

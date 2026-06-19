@@ -20,6 +20,23 @@ final class FinderKeyboardShortcutsTests: XCTestCase {
         )
     }
 
+    func testFallsBackToPhysicalJAndKKeyCodesWhenCharactersAreUnavailable() {
+        XCTAssertTrue(
+            FinderKeyboardShortcuts.isToggleTerminalPanel(
+                characters: nil,
+                modifierFlags: [.command],
+                keyCode: 38
+            )
+        )
+        XCTAssertTrue(
+            FinderKeyboardShortcuts.isToggleTerminalPanel(
+                characters: "\n",
+                modifierFlags: [.command],
+                keyCode: 40
+            )
+        )
+    }
+
     func testRequiresCommandModifier() {
         XCTAssertFalse(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "j", modifierFlags: []))
         XCTAssertFalse(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "j", modifierFlags: [.shift]))
@@ -43,5 +60,12 @@ final class FinderKeyboardShortcutsTests: XCTestCase {
         XCTAssertFalse(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "i", modifierFlags: [.command]))
         XCTAssertFalse(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "", modifierFlags: [.command]))
         XCTAssertFalse(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: nil, modifierFlags: [.command]))
+        XCTAssertFalse(
+            FinderKeyboardShortcuts.isToggleTerminalPanel(
+                characters: nil,
+                modifierFlags: [.command],
+                keyCode: 7
+            )
+        )
     }
 }
