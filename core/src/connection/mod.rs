@@ -82,3 +82,21 @@ impl fmt::Debug for S3Credential {
 pub enum Credential {
     S3(S3Credential),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s3_credential_debug_does_not_leak_secret() {
+        let cred = S3Credential {
+            access_key_id: "AKIA_REAL_ACCESS_KEY".to_string(),
+            secret_access_key: "SECRET_TOP_SECRET_DATA".to_string(),
+        };
+        let formatted = format!("{cred:?}");
+
+        assert!(!formatted.contains("AKIA_REAL_ACCESS_KEY"), "Debug output leaks access_key_id: {formatted}");
+        assert!(!formatted.contains("SECRET_TOP_SECRET_DATA"), "Debug output leaks secret_access_key: {formatted}");
+        assert!(formatted.contains("***"), "Debug output should contain '***' mask: {formatted}");
+    }
+}
