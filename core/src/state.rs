@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use crate::connection::ConnectionRegistry;
 use crate::terminal::registry::TerminalRegistry;
 use crate::vfs::registry::ProviderRegistry;
 use crate::workspace::state::WorkspaceStore;
@@ -14,6 +15,7 @@ pub struct AppState {
     workspace: WorkspaceStore,
     terminals: TerminalRegistry,
     providers: ProviderRegistry,
+    connections: ConnectionRegistry,
     events: broadcast::Sender<String>,
     next_event_connection_id: Arc<AtomicU64>,
 }
@@ -27,6 +29,7 @@ impl AppState {
             workspace: WorkspaceStore::with_default_directory(),
             terminals: TerminalRegistry::new(),
             providers: ProviderRegistry::new(),
+            connections: ConnectionRegistry::new(),
             events,
             next_event_connection_id: Arc::new(AtomicU64::new(1)),
         }
@@ -42,6 +45,10 @@ impl AppState {
 
     pub fn providers(&self) -> &ProviderRegistry {
         &self.providers
+    }
+
+    pub fn connections(&self) -> &ConnectionRegistry {
+        &self.connections
     }
 
     pub fn events(&self) -> &broadcast::Sender<String> {
@@ -74,5 +81,13 @@ mod tests {
         let cloned = state.clone();
 
         assert!(state.terminals().is_shared_with(cloned.terminals()));
+    }
+
+    #[test]
+    fn connection_registry_is_shared_across_state_clones() {
+        let state = AppState::new("test");
+        let cloned = state.clone();
+
+        assert!(state.connections().is_shared_with(cloned.connections()));
     }
 }
