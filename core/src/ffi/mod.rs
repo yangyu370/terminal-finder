@@ -168,21 +168,32 @@ impl CoreHandle {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl CoreHandle {
-    /// 打开目录，对应 `workspace.openDirectory`。异步：内部走 spawn_blocking 读文件系统。
-    pub async fn open_directory(&self, path: String) -> Result<OpenDirectoryDto, CoreError> {
+    /// 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
+    /// S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
+    /// 传入注册过的 S3 connection id 时落到对应 S3Provider。
+    pub async fn open_directory(
+        &self,
+        path: String,
+        connection_id: Option<String>,
+    ) -> Result<OpenDirectoryDto, CoreError> {
         let params = OpenDirectoryParams {
             path: PathBuf::from(path),
-            connection_id: None,
+            connection_id,
         };
         let response = workspace::open_directory(&self.state, params).await?;
         Ok(response.into())
     }
 
-    /// 列目录，对应 `workspace.listDirectory`。异步：内部走 spawn_blocking 读文件系统。
-    pub async fn list_directory(&self, path: String) -> Result<DirectoryListingDto, CoreError> {
+    /// 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
+    /// connection 路由规则。
+    pub async fn list_directory(
+        &self,
+        path: String,
+        connection_id: Option<String>,
+    ) -> Result<DirectoryListingDto, CoreError> {
         let params = ListDirectoryParams {
             path: PathBuf::from(path),
-            connection_id: None,
+            connection_id,
         };
         let response = workspace::list_directory(&self.state, params).await?;
         Ok(response.into())
@@ -219,7 +230,7 @@ mod tests {
         std::fs::write(dir.join("entry.txt"), b"x").expect("temp file writes");
 
         let listing = handle
-            .list_directory(dir.to_string_lossy().into_owned())
+            .list_directory(dir.to_string_lossy().into_owned(), None)
             .await
             .expect("known directory lists");
 
@@ -242,7 +253,7 @@ mod tests {
         std::fs::write(&file, b"not a directory").expect("temp file writes");
 
         let error = handle
-            .open_directory(file.to_string_lossy().into_owned())
+            .open_directory(file.to_string_lossy().into_owned(), None)
             .await
             .expect_err("opening a file must fail");
 
