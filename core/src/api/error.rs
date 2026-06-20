@@ -25,6 +25,13 @@ impl ApiError {
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             },
             ApiError::BackgroundTask { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            // Phase 1c cloud variants.
+            ApiError::NetworkError { .. } => StatusCode::BAD_GATEWAY,
+            ApiError::AuthenticationFailed { .. } => StatusCode::UNAUTHORIZED,
+            ApiError::ObjectNotFound { .. } | ApiError::ConnectionNotFound { .. } => {
+                StatusCode::NOT_FOUND
+            }
+            ApiError::ProviderError { .. } => StatusCode::BAD_GATEWAY,
         }
     }
 }

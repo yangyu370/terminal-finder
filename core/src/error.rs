@@ -21,6 +21,27 @@ pub enum ApiError {
         operation: &'static str,
         message: String,
     },
+
+    // Phase 1c additions — cloud / connection-aware errors.
+    #[error("network error during {operation}: {message}")]
+    NetworkError {
+        operation: &'static str,
+        message: String,
+    },
+    #[error("authentication failed for connection {connection_id}: {message}")]
+    AuthenticationFailed {
+        connection_id: String,
+        message: String,
+    },
+    #[error("object not found: {path}")]
+    ObjectNotFound { path: String },
+    #[error("connection not found: {connection_id}")]
+    ConnectionNotFound { connection_id: String },
+    #[error("provider error during {operation}: {message}")]
+    ProviderError {
+        operation: &'static str,
+        message: String,
+    },
 }
 
 impl ApiError {
@@ -31,6 +52,11 @@ impl ApiError {
             ApiError::NotDirectory(_) => "not_directory",
             ApiError::FileSystemRead { .. } => "filesystem_read_failed",
             ApiError::BackgroundTask { .. } => "background_task_failed",
+            ApiError::NetworkError { .. } => "network_error",
+            ApiError::AuthenticationFailed { .. } => "authentication_failed",
+            ApiError::ObjectNotFound { .. } => "object_not_found",
+            ApiError::ConnectionNotFound { .. } => "connection_not_found",
+            ApiError::ProviderError { .. } => "provider_error",
         }
     }
 
@@ -52,6 +78,69 @@ impl ApiError {
             ApiError::BackgroundTask { operation, message } => {
                 format!("background task failed during {operation}: {message}")
             }
+            ApiError::NetworkError { operation, message } => {
+                format!("network error during {operation}: {message}")
+            }
+            ApiError::AuthenticationFailed {
+                connection_id,
+                message,
+            } => {
+                format!("authentication failed for connection {connection_id}: {message}")
+            }
+            ApiError::ObjectNotFound { path } => format!("object not found: {path}"),
+            ApiError::ConnectionNotFound { connection_id } => {
+                format!("connection not found: {connection_id}")
+            }
+            ApiError::ProviderError { operation, message } => {
+                format!("provider error during {operation}: {message}")
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiError;
+
+    #[test]
+    fn error_codes_cover_new_variants() {
+        let cases: Vec<(ApiError, &str)> = vec![
+            (
+                ApiError::NetworkError {
+                    operation: "s3.list",
+                    message: "boom".into(),
+                },
+                "network_error",
+            ),
+            (
+                ApiError::AuthenticationFailed {
+                    connection_id: "c1".into(),
+                    message: "boom".into(),
+                },
+                "authentication_failed",
+            ),
+            (
+                ApiError::ObjectNotFound { path: "k/v".into() },
+                "object_not_found",
+            ),
+            (
+                ApiError::ConnectionNotFound {
+                    connection_id: "c1".into(),
+                },
+                "connection_not_found",
+            ),
+            (
+                ApiError::ProviderError {
+                    operation: "s3.stat",
+                    message: "boom".into(),
+                },
+                "provider_error",
+            ),
+        ];
+
+        for (err, expected_code) in cases {
+            assert_eq!(err.code(), expected_code, "code mismatch for {err:?}");
+            assert!(!err.message().is_empty(), "message empty for {err:?}");
         }
     }
 }
