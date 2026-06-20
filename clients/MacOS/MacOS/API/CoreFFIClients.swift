@@ -78,7 +78,9 @@ private extension WorkspaceState {
     init(from dto: WorkspaceStateDto) {
         self.init(
             currentDirectory: dto.currentDirectory,
-            workspaceRoot: dto.workspaceRoot
+            workspaceRoot: dto.workspaceRoot,
+            scheme: dto.scheme,
+            connectionId: dto.connectionId
         )
     }
 }
