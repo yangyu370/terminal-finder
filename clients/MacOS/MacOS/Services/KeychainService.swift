@@ -39,7 +39,13 @@ public final class KeychainService: KeychainServicing {
 
     public func save(connectionId: String, accessKeyId: String, secretAccessKey: String) throws {
         try saveItem(connectionId: connectionId, label: "access_key_id", value: accessKeyId)
-        try saveItem(connectionId: connectionId, label: "secret_access_key", value: secretAccessKey)
+        do {
+            try saveItem(connectionId: connectionId, label: "secret_access_key", value: secretAccessKey)
+        } catch {
+            // Best-effort rollback so we don't leave half-stored credentials behind.
+            try? deleteItem(connectionId: connectionId, label: "access_key_id")
+            throw error
+        }
     }
 
     public func load(connectionId: String) throws -> KeychainCredential {
@@ -65,9 +71,13 @@ public final class KeychainService: KeychainServicing {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: account(connectionId, label),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         // Delete any existing entry first (so add succeeds cleanly).
-        SecItemDelete(query as CFDictionary)
+        let deleteStatus = SecItemDelete(query as CFDictionary)
+        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+            throw KeychainServiceError.osStatus(deleteStatus)
+        }
 
         var insertQuery = query
         insertQuery[kSecValueData as String] = data

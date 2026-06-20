@@ -40,4 +40,22 @@ final class KeychainServiceTests: XCTestCase {
             }
         }
     }
+
+    func test_save_twice_overwrites_existing_entry() throws {
+        let service = InMemoryKeychainService()
+        try service.save(
+            connectionId: "conn-1",
+            accessKeyId: "OLD_ACCESS",
+            secretAccessKey: "OLD_SECRET"
+        )
+        try service.save(
+            connectionId: "conn-1",
+            accessKeyId: "NEW_ACCESS",
+            secretAccessKey: "NEW_SECRET"
+        )
+
+        let loaded = try service.load(connectionId: "conn-1")
+        XCTAssertEqual(loaded.accessKeyId, "NEW_ACCESS")
+        XCTAssertEqual(loaded.secretAccessKey, "NEW_SECRET")
+    }
 }
