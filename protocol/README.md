@@ -158,6 +158,84 @@ GET /health
 
 Entries are non-recursive. Directories are returned before files, then sorted by name.
 
+## connection.create
+
+### Request
+
+```json
+{
+  "method": "connection.create",
+  "params": {
+    "display_name": "MinIO local",
+    "endpoint": "http://localhost:9000",
+    "region": "us-east-1",
+    "bucket": "test-bucket",
+    "base_prefix": "",
+    "path_style": true,
+    "access_key_id": "<redacted>",
+    "secret_access_key": "<redacted>"
+  }
+}
+```
+
+### Response
+
+```json
+{
+  "ok": true,
+  "result": { "connection_id": "a1b2c3d4-1111-2222-3333-444455556666" }
+}
+```
+
+`connection.create` registers an S3 connection in core's in-memory `ConnectionRegistry`. **Credentials are NEVER persisted by core** — the client (currently macOS Keychain) owns persistence and must re-pass credentials on each app start. The returned `connection_id` is a UUID v4 string the client uses for subsequent calls.
+
+This method never fails on bad credentials at registration time (no network round-trip happens here); credential validity is only checked when the connection is first used to list / read / write objects.
+
+## connection.list
+
+### Request
+
+```json
+{ "method": "connection.list", "params": {} }
+```
+
+### Response
+
+```json
+{
+  "ok": true,
+  "result": {
+    "connections": [
+      {
+        "connection_id": "a1b2c3d4-1111-2222-3333-444455556666",
+        "display_name": "MinIO local",
+        "endpoint": "http://localhost:9000",
+        "bucket": "test-bucket",
+        "base_prefix": ""
+      }
+    ]
+  }
+}
+```
+
+Returns connection summaries (`ConnectionInfoDto` cross-FFI). Credentials are intentionally omitted from the response shape — they live only in the in-memory registry and the client's Keychain.
+
+## connection.remove
+
+### Request
+
+```json
+{ "method": "connection.remove", "params": { "connection_id": "a1b2c3d4-1111-2222-3333-444455556666" } }
+```
+
+### Response
+
+```json
+{ "ok": true, "result": {} }
+```
+
+Removes the connection and its in-memory credentials. Returns an error (currently `invalid_params`; will become `connection_not_found` in Phase 1c with the dedicated `ApiError::ConnectionNotFound` variant) when the `connection_id` is unknown.
+
 ## Errors
 
 RPC errors use a shared shape:
