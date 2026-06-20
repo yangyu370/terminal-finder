@@ -85,6 +85,90 @@ impl CoreHandle {
     pub fn close_terminal(&self, session_id: String) -> Result<(), CoreError> {
         terminal::close_terminal(&self.state, session_id)
     }
+
+    /// Register an S3 connection. Credentials live in-memory only;
+    /// the client (Swift) owns Keychain persistence and re-passes
+    /// credentials on app restart.
+    ///
+    /// SECURITY: credentials are received by value across the FFI
+    /// boundary but MUST NEVER be logged — not at info, not at debug.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connection_create(
+        &self,
+        display_name: String,
+        endpoint: String,
+        region: String,
+        bucket: String,
+        base_prefix: String,
+        path_style: bool,
+        access_key_id: String,
+        secret_access_key: String,
+    ) -> String {
+        use crate::connection::{ConnectionConfig, Credential, S3ConnectionConfig, S3Credential};
+
+        let config = ConnectionConfig::S3(S3ConnectionConfig {
+            display_name,
+            endpoint,
+            region,
+            bucket,
+            base_prefix,
+            path_style,
+        });
+        let credential = Credential::S3(S3Credential {
+            access_key_id,
+            secret_access_key,
+        });
+        let id = self.state.connections().create(config, credential);
+        tracing::info!(method = "connection.create", "connection registered");
+        id.0
+    }
+
+    /// List all registered connections (no credentials returned).
+    pub fn connection_list(&self) -> Vec<crate::ffi::dto::ConnectionInfoDto> {
+        use crate::connection::ConnectionConfig;
+
+        self.state
+            .connections()
+            .list()
+            .into_iter()
+            .map(|entry| {
+                let ConnectionConfig::S3(cfg) = &entry.config;
+                crate::ffi::dto::ConnectionInfoDto {
+                    connection_id: entry.id.0.clone(),
+                    display_name: cfg.display_name.clone(),
+                    endpoint: cfg.endpoint.clone(),
+                    bucket: cfg.bucket.clone(),
+                    base_prefix: cfg.base_prefix.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// Remove a connection and its in-memory credentials. Returns
+    /// `Err` if the id is unknown.
+    ///
+    /// TEMPORARY (until PR 3 introduces `ApiError::ConnectionNotFound`):
+    /// uses `ApiError::InvalidParams` for the not-found case. PR 3 will
+    /// swap this to `ConnectionNotFound { connection_id: id.0 }`.
+    pub fn connection_remove(
+        &self,
+        connection_id: String,
+    ) -> Result<(), crate::ffi::error::CoreError> {
+        use crate::connection::ConnectionId;
+        use crate::error::ApiError;
+
+        let id = ConnectionId(connection_id);
+        if self.state.connections().remove(&id) {
+            tracing::info!(method = "connection.remove", "connection removed");
+            Ok(())
+        } else {
+            Err(ApiError::InvalidParams {
+                method: "connection.remove".into(),
+                message: format!("connection not found: {}", id.0),
+            }
+            .into())
+        }
+    }
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -169,5 +253,63 @@ mod tests {
 
         let CoreError::Rpc { code, .. } = error;
         assert_eq!(code, "not_directory");
+    }
+}
+
+#[cfg(test)]
+mod connection_ffi_tests {
+    use super::*;
+
+    fn handle() -> Arc<CoreHandle> {
+        CoreHandle::new()
+    }
+
+    #[test]
+    fn connection_create_and_list_returns_entry() {
+        let h = handle();
+        let id = h.connection_create(
+            "test".into(),
+            "http://localhost:9000".into(),
+            "us-east-1".into(),
+            "test-bucket".into(),
+            String::new(),
+            true,
+            "minioadmin".into(),
+            "minioadmin".into(),
+        );
+        let listed = h.connection_list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].connection_id, id);
+        assert_eq!(listed[0].display_name, "test");
+        assert_eq!(listed[0].endpoint, "http://localhost:9000");
+        assert_eq!(listed[0].bucket, "test-bucket");
+        assert_eq!(listed[0].base_prefix, "");
+    }
+
+    #[test]
+    fn connection_remove_makes_get_fail() {
+        let h = handle();
+        let id = h.connection_create(
+            "test".into(),
+            "http://localhost:9000".into(),
+            "us-east-1".into(),
+            "test-bucket".into(),
+            String::new(),
+            true,
+            "minioadmin".into(),
+            "minioadmin".into(),
+        );
+        h.connection_remove(id.clone()).expect("remove succeeds");
+        assert_eq!(h.connection_list().len(), 0);
+        assert!(
+            h.connection_remove(id).is_err(),
+            "removing missing id is an error"
+        );
+    }
+
+    #[test]
+    fn connection_list_returns_empty_initially() {
+        let h = handle();
+        assert!(h.connection_list().is_empty());
     }
 }
