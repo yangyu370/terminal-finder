@@ -309,3 +309,103 @@ mod tests {
         assert_eq!(mapped.code(), "authentication_failed");
     }
 }
+
+#[cfg(all(test, feature = "integration-test"))]
+mod integration_tests {
+    use super::*;
+    use crate::vfs::VfsProvider;
+
+    fn minio_provider() -> Arc<S3Provider> {
+        let cfg = S3ConnectionConfig {
+            display_name: "minio-integration".into(),
+            endpoint: "http://localhost:9000".into(),
+            region: "us-east-1".into(),
+            bucket: "test-bucket".into(),
+            base_prefix: String::new(),
+            path_style: true,
+        };
+        let cred = S3Credential {
+            access_key_id: "minioadmin".into(),
+            secret_access_key: "minioadmin".into(),
+        };
+        S3Provider::new(ConnectionId("integration".into()), &cfg, &cred)
+            .expect("MinIO provider constructs")
+    }
+
+    #[tokio::test]
+    async fn list_root_returns_fixtures() {
+        let provider = minio_provider();
+
+        let listing = provider.list("").await.expect("list root");
+
+        let names: Vec<_> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"alpha"),
+            "alpha/ should be present: {names:?}"
+        );
+        assert!(
+            names.contains(&"gamma.txt"),
+            "gamma.txt should be present: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_nested_prefix_returns_beta() {
+        let provider = minio_provider();
+
+        let listing = provider.list("alpha").await.expect("list alpha");
+
+        let names: Vec<_> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"beta.txt"),
+            "alpha/beta.txt should be present: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stat_existing_object_returns_metadata() {
+        let provider = minio_provider();
+
+        let entry = provider.stat("gamma.txt").await.expect("stat gamma.txt");
+
+        assert!(!entry.is_directory);
+        assert!(entry.size.unwrap_or(0) > 0);
+    }
+
+    #[tokio::test]
+    async fn stat_missing_object_returns_not_found() {
+        let provider = minio_provider();
+
+        let err = provider
+            .stat("missing.txt")
+            .await
+            .expect_err("missing should fail");
+
+        assert_eq!(err.code(), "object_not_found");
+    }
+
+    #[tokio::test]
+    async fn list_with_bad_credentials_returns_auth_error() {
+        let cfg = S3ConnectionConfig {
+            display_name: "bad-creds".into(),
+            endpoint: "http://localhost:9000".into(),
+            region: "us-east-1".into(),
+            bucket: "test-bucket".into(),
+            base_prefix: String::new(),
+            path_style: true,
+        };
+        let cred = S3Credential {
+            access_key_id: "wrong".into(),
+            secret_access_key: "wrong".into(),
+        };
+        let provider =
+            S3Provider::new(ConnectionId("bad".into()), &cfg, &cred).expect("constructs");
+
+        let err = provider.list("").await.expect_err("auth should fail");
+
+        assert!(matches!(
+            err.code(),
+            "authentication_failed" | "provider_error"
+        ));
+    }
+}

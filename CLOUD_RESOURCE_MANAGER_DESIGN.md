@@ -1,6 +1,6 @@
 # 云端资源管理器开发设计文档（Cloud Resource Manager）
 
-> 状态：设计稿（未实现）。本文件是开发计划，不是活契约；当前架构与已实现能力以根目录 `README.md` 为权威，协议以 `protocol/README.md` 为准。
+> 状态：设计稿（Phase 1 部分已本地实现：Session 1a / 1b / 1c / 1d 已 merge 到本地 `master`，未 push；下一步从 Session 1e 开始）。本文件是开发计划，不是活契约；当前架构与已实现能力以根目录 `README.md` 为权威，协议以 `protocol/README.md` 为准。
 >
 > 约定：本文件是 `*.md` 开发文档，**不纳入 git**（遵循根/core/client `agent.md`）。
 
@@ -64,7 +64,7 @@
             ┌────────────────── macOS client (presentation only) ──────────────────┐
             │  Views/Finder/*  四种视图 + 终端面板 + 新增"连接/同步"面板             │
             │  ViewModels: 位置=Location{provider,path};连接状态;同步进度          │
-            │  Services: Keychain 读写（Security framework）                        │
+            │  Services: Keychain 凭据读写 + ConnectionStore 配置元数据持久化        │
             └──────────────────────────────┬───────────────────────────────────────┘
                                             │ UniFFI 进程内（契约不变，逐步新增方法）
    ┌────────────────────────────────────────▼────────────────────────────────────────┐
@@ -120,9 +120,12 @@ pub trait VfsProvider: Send + Sync {
 ### 4.1 凭据管理（高风险点）
 
 - S3 SigV4 签名**需要 access_key + secret 本体**，所以"core 拿引用"的实务落点：
-  - **Keychain 是持久化所有者（client 侧）**：通过 macOS Security framework 存取。
+  - **Keychain 是凭据持久化所有者（client 侧）**：通过 macOS Security framework 存取 `access_key_id` / `secret_access_key`。
+  - **ConnectionStore 是非敏感连接配置持久化所有者（client 侧）**：JSON file at `~/Library/Application Support/TerminalFinder/connections.json`，只存 `connectionId` / `kind` / `displayName` / `endpoint` / `region` / `bucket` / `basePrefix` / `pathStyle`。
   - client 在**建连接时**把密钥经**进程内 FFI**（同地址空间，不过网络）交给 core。
-  - core 只在 `ConnectionRegistry` 的**内存**里持有，用于签名；**绝不落盘、绝不进 tracing 日志、绝不进崩溃 dump 摘要**（对齐 `core/agent.md` 日志脱敏规则）。
+  - app 启动时 core 的 `ConnectionRegistry` 永远为空；Swift 读取 `ConnectionStore` + Keychain 后逐条 `core.connectionCreate(...)` 重建活跃内存注册表。
+  - core 只在 `ConnectionRegistry` 的**内存**里持有配置和凭据，用于签名；**绝不落盘、绝不进 tracing 日志、绝不进崩溃 dump 摘要**（对齐 `core/agent.md` 日志脱敏规则）。
+- 已落地状态（2026-06-20）：`KeychainService.swift` / `ConnectionStore.swift` 已在 Session 1b 本地 merge；真实连接 UI 仍属于 Session 1f。
 - sprites.dev 等支持短期 token 的场景，才是真正意义上的"引用/临时凭据"。
 - R2 建议使用 **scoped API token**，不要用账户主密钥；attack surface 已在 README 限制章节警示。
 
@@ -195,7 +198,8 @@ clients/MacOS/
 ├── MacOS/
 │   ├── Core/Generated/             ← 1e 跑 refresh-core-ffi.sh 后自动更新
 │   ├── Services/
-│   │   └── KeychainService.swift   ← 1b 新增
+│   │   ├── KeychainService.swift   ← 1b 新增：凭据持久化
+│   │   └── ConnectionStore.swift   ← 1b 新增：非敏感连接配置 JSON 持久化
 │   ├── ViewModels/
 │   │   └── ConnectionViewModel.swift ← 1f 新增
 │   └── Views/
@@ -367,9 +371,11 @@ cargo build --no-default-features --lib
 
 ---
 
-#### Session 1b — Connection FFI 方法 + Swift Keychain 服务
+#### Session 1b — Connection FFI 方法 + Swift Keychain / ConnectionStore 服务
 
-**目标**：通过 FFI 暴露连接 CRUD，Swift 侧实现 Keychain 读写服务。
+**目标**：通过 FFI 暴露连接 CRUD，Swift 侧实现 Keychain 凭据读写服务，并持久化非敏感连接配置元数据。
+
+**已落地（2026-06-20，本地 master `0097bab`）**：本 session 已完成并额外包含 `ConnectionStore`。后续 Session 1f 不再创建 `ConnectionStore`，只在 `ConnectionViewModel` 和启动 hook 中消费它。
 
 ##### 1b.1 FFI 新增方法（`ffi/mod.rs`）
 
@@ -418,28 +424,57 @@ pub struct ConnectionInfoDto {
 ```swift
 // MacOS/Services/KeychainService.swift
 // Security framework 封装，存取 S3 access_key_id + secret_access_key
-// 以 connection_id 为 Keychain item 的 account 字段
+// 以 "<connection_id>::<label>" 为 Keychain item 的 account 字段
 // 读取后经 FFI 传给 core（进程内，不过网络）
 ```
 
-##### 1b.4 五层同步
+##### 1b.4 Swift 侧 — ConnectionStore
+
+```swift
+// MacOS/Services/ConnectionStore.swift
+// JSON file persistence for non-sensitive connection config metadata only.
+// File: ~/Library/Application Support/TerminalFinder/connections.json
+// Schema:
+// {
+//   "version": 1,
+//   "connections": [
+//     {
+//       "connectionId": "uuid",
+//       "kind": "s3",
+//       "displayName": "MinIO local",
+//       "endpoint": "http://localhost:9000",
+//       "region": "us-east-1",
+//       "bucket": "test-bucket",
+//       "basePrefix": "",
+//       "pathStyle": true
+//     }
+//   ]
+// }
+```
+
+规则：凭据字段永远不进 JSON；配置元数据也不塞进 Keychain；core 不读取该文件。
+
+##### 1b.5 五层同步
 
 此步新增了 FFI 方法和 DTO，必须：
 1. `scripts/refresh-core-ffi.sh` 重新生成 Swift 绑定
 2. 更新 `protocol/README.md` 加入 `connection.*` 方法
 
-##### 1b.5 测试
+##### 1b.6 测试
 
 | 层 | 测试 |
 | --- | --- |
 | core（`ffi/mod.rs`） | `connection_create_and_list_returns_entry` / `connection_remove_makes_get_fail` |
 | Swift（`KeychainServiceTests`） | 存 → 取 → 删的 roundtrip（需 mock 或 test Keychain） |
+| Swift（`ConnectionStoreTests`） | missing file / corrupt JSON / upsert replace / remove / JSON 不含凭据 / store + keychain 可重组 `connectionCreate` 参数 |
 
 ---
 
 #### Session 1c — S3Provider core 实现 + 错误扩展（core only，mock-tested）
 
 **目标**：实现 `S3Provider`，让它能 list 对象存储中的内容并映射为 `DirectoryEntry`。先只在 core 层用 mock 测试，不碰 FFI / client。
+
+**已落地（2026-06-20，本地 `master` HEAD `8945efb`）**：OpenDAL 0.53 spike、`ApiError` cloud variants、`Scheme::S3`、`VfsProvider::stat`、`LocalFsProvider::stat`、`ProviderRegistry` connection-id lookup、`S3Provider` 的 `list` / `open_directory` / `stat` 与 OpenDAL error mapping 已完成。真实 MinIO 网络往返仍按计划留给 Session 1d。
 
 ##### 1c.1 依赖选择
 
@@ -503,10 +538,10 @@ impl S3Provider {
             .access_key_id(&credential.access_key_id)
             .secret_access_key(&credential.secret_access_key);
 
-        if config.path_style {
+        if !config.path_style {
             builder = builder.enable_virtual_host_style();
-            // 注：OpenDAL path_style 用 disable_virtual_host_style
-            // MinIO 需 path-style；R2 用默认 virtual-hosted
+            // 注：OpenDAL 0.53 默认是 path-style
+            // MinIO 需 path-style；R2 需 virtual-hosted
         }
 
         let operator = Operator::new(builder)?.finish();
@@ -628,6 +663,8 @@ cargo build --no-default-features --lib
 
 **目标**：用 docker-compose 起 MinIO，跑 S3Provider 真实网络测试。
 
+**已落地（2026-06-20，本地 `master`）**：新增 `dev/docker-compose.minio.yml`、`dev/init-minio.sh`、`dev/fixtures/`，并在 `core` 增加 `integration-test` feature gate 与 5 个真实 MinIO 网络集成测试。验证结果：`cargo test` 63 passed；`cargo test --features integration-test` 68 passed（含 5 个 MinIO 测试）；`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --no-default-features --lib` 均通过。
+
 ##### 1d.1 docker-compose 文件
 
 ```yaml
@@ -653,10 +690,18 @@ volumes:
 
 ```bash
 # dev/init-minio.sh
-# 用 mc（MinIO Client CLI）创建 bucket 和 scoped 测试用户
-mc alias set local http://localhost:9000 minioadmin minioadmin
-mc mb local/test-bucket
-mc cp dev/fixtures/ local/test-bucket/ --recursive
+# 用官方 minio/mc 镜像创建 bucket 并复制 fixtures。
+# macOS Docker Desktop 下通过 host.docker.internal 回连宿主机 localhost:9000。
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -e MC_HOST_local=http://minioadmin:minioadmin@host.docker.internal:9000 \
+  minio/mc:latest mb --ignore-existing local/test-bucket
+
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -v "$(pwd)/dev/fixtures:/fixtures:ro" \
+  -e MC_HOST_local=http://minioadmin:minioadmin@host.docker.internal:9000 \
+  minio/mc:latest cp --recursive /fixtures/ local/test-bucket/
 ```
 
 ##### 1d.3 Feature-gated integration test
@@ -857,13 +902,16 @@ xcodebuild test ...
 
 **目标**：Swift 侧 sidebar 新增"连接"分组，用户可新增 / 查看 / 删除 S3 连接。
 
+`ConnectionStore` 和 `KeychainService` 已在 Session 1b 落地；1f 只负责 ViewModel、启动恢复 hook 和 UI，不再重复实现持久化服务。
+
 ##### 1f.1 ConnectionViewModel
 
 ```swift
 // 管理连接列表状态
-// - loadConnections() → core.connectionList()
-// - createConnection(form) → KeychainService.save() + core.connectionCreate()
-// - removeConnection(id) → core.connectionRemove() + KeychainService.delete()
+// - loadConnections() → ConnectionStore.load() + core.connectionList()
+// - restorePersistedConnections() → ConnectionStore.load() + KeychainService.load() + core.connectionCreate()
+// - createConnection(form) → core.connectionCreate() + KeychainService.save() + ConnectionStore.upsert()
+// - removeConnection(id) → core.connectionRemove() + KeychainService.delete() + ConnectionStore.remove()
 ```
 
 ##### 1f.2 UI 组件
@@ -1099,13 +1147,13 @@ xcodebuild test ...
 | 凭据泄漏（日志 / dump） | 内存持有、绝不落盘 / 不进 tracing；R2 用 scoped token |
 | attack surface 扩大（README 已警示） | 凭据最小权限、连接级隔离、错误信息脱敏 |
 | 本地 FS 回归（Phase 0 重构） | ✅ 已完成：`vfs/local.rs` 保留全部原生 FS 语义，39 测试全绿 |
-| FFI 形状破坏 client（Phase 1b） | 集中在 1b 一次性五层同步，配套 client DTO 测试 |
+| FFI 形状破坏 client（Phase 1e） | 连接 CRUD 的新增 FFI 已在 1b 落地；workspace location-aware 破坏性签名集中在 1e，一次性五层同步并配套 client DTO / ViewModel 测试 |
 
 ---
 
 ## 8. 边界守则（务必遵守，摘自三份 AGENT.md）
 
-- 所有云端业务逻辑（provider、凭据、sync、错误分类）进 **core**，不进 client；client 只渲染、选择、Keychain 系统集成。
+- 云端 provider、sync、错误分类等产品事实进 **core**，不进 client；client 只渲染、选择、Keychain 凭据持久化、ConnectionStore 配置元数据持久化，以及平台系统集成。
 - 不重新引入子进程 / daemon / `127.0.0.1:3587` 轮询；云端连接是 core 进程内发起的出站网络。
 - 阻塞 FS 走 `spawn_blocking`；网络 IO 原生 async。
 - 协议方法语义是 FFI 与可选 HTTP **共同契约**；任一处改动五层同步。
@@ -1117,6 +1165,6 @@ xcodebuild test ...
 
 ## 9. 下一步
 
-Phase 0 地基已完成。建议按 **Session 1a → 1b → 1c → 1d → 1e → 1f → 1g → 1h** 顺序推进。每个 Session 完成后按 §6 跑验证并交付变更清单。
+Phase 0 地基已完成，Phase 1 的 Session 1a / 1b / 1c / 1d 已本地 merge。建议继续按 **Session 1e → 1f → 1g → 1h** 顺序推进。每个 Session 完成后按 §6 跑验证并交付变更清单。
 
-**推荐首先启动 Session 1a**（ConnectionConfig + ConnectionRegistry），纯 core 数据结构，零网络零 FFI，风险最低。
+**下一步启动 Session 1e**（FFI location-aware firewall）。在 `workspace.openDirectory` / `workspace.listDirectory` 引入可选 `connection_id`，同步 core service、FFI DTO、Swift bindings、client 调用点、协议文档和测试。

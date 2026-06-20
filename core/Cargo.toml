@@ -35,6 +35,8 @@ server = [
 ]
 # 开启 uniffi 的 CLI（含 uniffi_bindgen_main），仅用于生成 Swift 绑定。
 bindgen = ["uniffi/cli"]
+# 本地 MinIO 集成测试门控；默认测试和 CI 不要求启动外部服务。
+integration-test = []
 
 [dependencies]
 # 库通用依赖（workspace / terminal 业务层与 FFI 都要用）。
