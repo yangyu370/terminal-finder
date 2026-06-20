@@ -39,26 +39,32 @@ pub async fn open_directory(
 
     let state_response = match location.scheme {
         Scheme::Local => {
-            let workspace_root = state.workspace().state().workspace_root;
+            let existing_root = state.workspace().state().workspace_root;
             let directory = PathBuf::from(&canonical_path);
-            let workspace_root = workspace_root_for_directory(workspace_root, &directory);
+            let workspace_root = workspace_root_for_directory(existing_root, &directory);
 
-            let workspace_state = state
-                .workspace()
-                .set_directory_state(workspace_root, directory);
+            let workspace_state = state.workspace().set_directory_state(
+                workspace_root,
+                directory,
+                "local".to_string(),
+                None,
+            );
             workspace_state_response(workspace_state)
         }
         Scheme::S3 => {
-            // S3 has no canonical-path / workspace-root semantics: the
-            // workspace store is for local navigation only. Report the
-            // resolved prefix (which the S3 provider already normalized
-            // with trailing '/') for both root + current.
-            WorkspaceStateResponse {
-                workspace_root: canonical_path.clone(),
-                current_directory: canonical_path,
-                scheme: "s3".to_string(),
-                connection_id: location.connection_id.clone(),
-            }
+            // S3 has no OS-level canonical-path / workspace-root semantics;
+            // both root and current report the resolved prefix (which the
+            // S3 provider already normalized with trailing '/' for non-empty
+            // prefixes). The store still owns the latest location so a
+            // follow-up workspace.getState reflects the S3 dispatch.
+            let prefix = PathBuf::from(&canonical_path);
+            let workspace_state = state.workspace().set_directory_state(
+                prefix.clone(),
+                prefix,
+                "s3".to_string(),
+                location.connection_id.clone(),
+            );
+            workspace_state_response(workspace_state)
         }
     };
 
@@ -175,8 +181,8 @@ fn workspace_state_response(state: WorkspaceState) -> WorkspaceStateResponse {
     WorkspaceStateResponse {
         workspace_root: state.workspace_root.to_string_lossy().into_owned(),
         current_directory: state.current_directory.to_string_lossy().into_owned(),
-        scheme: "local".to_string(),
-        connection_id: None,
+        scheme: state.scheme,
+        connection_id: state.connection_id,
     }
 }
 
@@ -257,6 +263,50 @@ mod tests {
                 "S3 dispatch must reach the provider, not bail at lookup"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn get_state_reflects_local_open_directory() {
+        // After opening a local directory, get_state must report scheme:"local"
+        // and connection_id:None — the local branch is the Phase 0 baseline.
+        let app_state = AppState::new("test");
+        let temp = std::env::temp_dir();
+        let _ = open_directory(
+            &app_state,
+            OpenDirectoryParams {
+                path: temp.clone(),
+                connection_id: None,
+            },
+        )
+        .await
+        .expect("open temp dir");
+
+        let snapshot = get_state(&app_state).state;
+        assert_eq!(snapshot.scheme, "local");
+        assert!(snapshot.connection_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_state_reflects_s3_open_directory_when_dispatch_succeeds() {
+        // C2 regression guard: opening an S3 connection must update the
+        // WorkspaceStore so that workspace.getState reflects the S3 location.
+        // We can't rely on a network listing, so we drive WorkspaceStore
+        // directly via the same code path open_directory uses on the S3 branch
+        // (set_directory_state with scheme:"s3"). The assertion is that
+        // workspace_state_response no longer hard-codes scheme/connection_id.
+        let app_state = AppState::new("test");
+
+        let _ = app_state.workspace().set_directory_state(
+            std::path::PathBuf::from("conn-prefix/"),
+            std::path::PathBuf::from("conn-prefix/"),
+            "s3".to_string(),
+            Some("conn-id".to_string()),
+        );
+
+        let snapshot = get_state(&app_state).state;
+        assert_eq!(snapshot.scheme, "s3");
+        assert_eq!(snapshot.connection_id.as_deref(), Some("conn-id"));
+        assert_eq!(snapshot.current_directory, "conn-prefix/");
     }
 
     #[tokio::test]
