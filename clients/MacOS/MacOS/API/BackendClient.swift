@@ -9,8 +9,10 @@ protocol BackendClientProtocol {
     func health() async throws -> PingResult
     func ping() async throws -> PingResult
     func getState() async throws -> WorkspaceState
-    func openDirectory(path: String) async throws -> OpenDirectoryResult
-    func listDirectory(path: String) async throws -> DirectoryListing
+    /// `connectionId == nil` 走本地 workspace；传入注册过的 S3 连接 id 时路由到对应 S3Provider。
+    func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryResult
+    /// 见 `openDirectory(path:connectionId:)` 的路由规则。
+    func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing
 }
 
 struct BackendClient: BackendClientProtocol {
@@ -60,17 +62,17 @@ struct BackendClient: BackendClientProtocol {
         return result.state
     }
 
-    func openDirectory(path: String) async throws -> OpenDirectoryResult {
+    func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryResult {
         try await send(
             method: "workspace.openDirectory",
-            params: OpenDirectoryParams(path: path)
+            params: OpenDirectoryParams(path: path, connectionId: connectionId)
         )
     }
 
-    func listDirectory(path: String) async throws -> DirectoryListing {
+    func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing {
         try await send(
             method: "workspace.listDirectory",
-            params: ListDirectoryParams(path: path)
+            params: ListDirectoryParams(path: path, connectionId: connectionId)
         )
     }
 

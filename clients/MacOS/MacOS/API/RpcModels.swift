@@ -80,6 +80,18 @@ struct WorkspaceStateResult: Decodable {
 
 struct OpenDirectoryParams: Encodable {
     let path: String
+    let connectionId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case connectionId = "connection_id"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        try container.encodeIfPresent(connectionId, forKey: .connectionId)
+    }
 }
 
 struct OpenDirectoryResult: Decodable {
@@ -117,6 +129,18 @@ struct OpenDirectoryResult: Decodable {
 
 struct ListDirectoryParams: Encodable {
     let path: String
+    let connectionId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case connectionId = "connection_id"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        try container.encodeIfPresent(connectionId, forKey: .connectionId)
+    }
 }
 
 struct DirectoryListing: Decodable {

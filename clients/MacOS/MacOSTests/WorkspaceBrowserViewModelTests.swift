@@ -347,7 +347,9 @@ private final class MockBackendClient: BackendClientProtocol {
     var openDirectoryDelayNanoseconds: UInt64 = 0
 
     private(set) var listDirectoryPaths: [String] = []
+    private(set) var listDirectoryConnectionIds: [String?] = []
     private(set) var openDirectoryPaths: [String] = []
+    private(set) var openDirectoryConnectionIds: [String?] = []
 
     func health() async throws -> PingResult {
         PingResult(service: "test-core", version: "test")
@@ -361,8 +363,9 @@ private final class MockBackendClient: BackendClientProtocol {
         state
     }
 
-    func openDirectory(path: String) async throws -> OpenDirectoryResult {
+    func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryResult {
         openDirectoryPaths.append(path)
+        openDirectoryConnectionIds.append(connectionId)
 
         if openDirectoryDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: openDirectoryDelayNanoseconds)
@@ -379,8 +382,9 @@ private final class MockBackendClient: BackendClientProtocol {
         return result
     }
 
-    func listDirectory(path: String) async throws -> DirectoryListing {
+    func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing {
         listDirectoryPaths.append(path)
+        listDirectoryConnectionIds.append(connectionId)
 
         guard let listing = listings[path] else {
             throw MockBackendClientError.missingListing(path)

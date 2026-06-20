@@ -132,14 +132,14 @@ private final class MockBackendClient: BackendClientProtocol {
         WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
     }
 
-    func openDirectory(path: String) async throws -> OpenDirectoryResult {
+    func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryResult {
         OpenDirectoryResult(
             state: WorkspaceState(currentDirectory: path, workspaceRoot: "/workspace"),
             listing: nil
         )
     }
 
-    func listDirectory(path: String) async throws -> DirectoryListing {
+    func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing {
         DirectoryListing(path: path, entries: [])
     }
 }

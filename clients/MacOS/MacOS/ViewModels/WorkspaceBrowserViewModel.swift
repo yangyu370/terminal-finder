@@ -93,7 +93,10 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         loadTask = Task { [backendClient] in
             do {
                 let state = try await backendClient.getState()
-                let result = try await backendClient.listDirectory(path: state.currentDirectory)
+                let result = try await backendClient.listDirectory(
+                    path: state.currentDirectory,
+                    connectionId: nil
+                )
                 guard !Task.isCancelled else {
                     return
                 }
@@ -227,7 +230,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     /// Lazily fetches the contents of a subdirectory for inline expansion in the
     /// outline view. Applies the same hidden-file filtering as the top-level list.
     func loadChildren(path: String) async throws -> [DirectoryEntry] {
-        let result = try await backendClient.listDirectory(path: path)
+        let result = try await backendClient.listDirectory(path: path, connectionId: nil)
         guard !showsHiddenFiles else {
             return result.entries
         }
@@ -319,7 +322,10 @@ final class WorkspaceBrowserViewModel: ObservableObject {
 
         loadTask = Task { [backendClient, workspaceItemOpener, workspaceAlertPresenter] in
             do {
-                let result = try await backendClient.openDirectory(path: trimmedPath)
+                let result = try await backendClient.openDirectory(
+                    path: trimmedPath,
+                    connectionId: nil
+                )
                 guard !Task.isCancelled else {
                     return
                 }
@@ -334,7 +340,10 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                 } else {
                     listing = nil
                     do {
-                        listing = try await backendClient.listDirectory(path: result.state.currentDirectory)
+                        listing = try await backendClient.listDirectory(
+                            path: result.state.currentDirectory,
+                            connectionId: nil
+                        )
                     } catch {
                         errorText = error.localizedDescription
                     }
@@ -379,7 +388,10 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         }
 
         do {
-            let refreshedListing = try await backendClient.listDirectory(path: currentDirectoryPath)
+            let refreshedListing = try await backendClient.listDirectory(
+                path: currentDirectoryPath,
+                connectionId: nil
+            )
             guard !Task.isCancelled else {
                 return
             }
@@ -454,7 +466,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
 
         loadTask = Task { [backendClient] in
             do {
-                let result = try await backendClient.listDirectory(path: targetPath)
+                let result = try await backendClient.listDirectory(path: targetPath, connectionId: nil)
                 guard !Task.isCancelled else {
                     return
                 }
