@@ -142,7 +142,12 @@ fn resolve_provider(
     }
 }
 
-/// 懒构造 `S3Provider` 并缓存到 `ProviderRegistry::by_connection`。已缓存则直接返回 `Ok`。
+/// 懒构造 `S3Provider` 并缓存到 `ProviderRegistry::by_connection`。
+///
+/// 重要：必须先到 `ConnectionRegistry` 验证条目仍存在，再看 provider 缓存。
+/// 否则 `connection.remove` 之后 cache 还没被清的瞬间，旧 `S3Provider`（含旧凭据
+/// 的 OpenDAL `Operator`）会被复用，违反 "remove 后该 connection_id 失效" 契约。
+/// FFI 层的 `connection_remove` 也会同步清缓存，这里是 defense-in-depth。
 fn ensure_provider_for_connection(
     state: &AppState,
     conn_id: &ConnectionId,
@@ -150,15 +155,15 @@ fn ensure_provider_for_connection(
     use crate::connection::{ConnectionConfig, Credential};
     use crate::vfs::s3::S3Provider;
 
-    if state.providers().get_by_connection(conn_id).is_some() {
-        return Ok(());
-    }
     let entry = state
         .connections()
         .get(conn_id)
         .ok_or_else(|| ApiError::ConnectionNotFound {
             connection_id: conn_id.0.clone(),
         })?;
+    if state.providers().get_by_connection(conn_id).is_some() {
+        return Ok(());
+    }
     let ConnectionConfig::S3(cfg) = &entry.config;
     let Credential::S3(cred) = &entry.credential;
     let provider = S3Provider::new(conn_id.clone(), cfg, cred)?;
@@ -252,5 +257,57 @@ mod tests {
                 "S3 dispatch must reach the provider, not bail at lookup"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn dispatch_refuses_stale_provider_after_connection_removed() {
+        // Regression guard for the C1 (PR5 self-review) fix: even when a
+        // caller only removes the entry from ConnectionRegistry but forgets
+        // to clear ProviderRegistry::by_connection (FFI's defense-in-depth),
+        // the service layer must NOT route through the cached S3Provider.
+        let app_state = AppState::new("test");
+        let id = app_state.connections().create(
+            ConnectionConfig::S3(S3ConnectionConfig {
+                display_name: "test".into(),
+                endpoint: "http://127.0.0.1:1".into(),
+                region: "us-east-1".into(),
+                bucket: "x".into(),
+                base_prefix: String::new(),
+                path_style: true,
+            }),
+            Credential::S3(S3Credential {
+                access_key_id: "x".into(),
+                secret_access_key: "x".into(),
+            }),
+        );
+
+        // Prime the cache via a first dispatch attempt (network failure is fine).
+        let _ = open_directory(
+            &app_state,
+            OpenDirectoryParams {
+                path: std::path::PathBuf::from(""),
+                connection_id: Some(id.0.clone()),
+            },
+        )
+        .await;
+        assert!(
+            app_state.providers().get_by_connection(&id).is_some(),
+            "first dispatch must cache an S3Provider"
+        );
+
+        // Remove ONLY from ConnectionRegistry — leave the stale provider entry
+        // in place to simulate a caller that bypassed the FFI cleanup.
+        assert!(app_state.connections().remove(&id));
+
+        let err = open_directory(
+            &app_state,
+            OpenDirectoryParams {
+                path: std::path::PathBuf::from(""),
+                connection_id: Some(id.0.clone()),
+            },
+        )
+        .await
+        .expect_err("removed connection id must not route via stale cache");
+        assert_eq!(err.code(), "connection_not_found");
     }
 }

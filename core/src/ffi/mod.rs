@@ -144,8 +144,10 @@ impl CoreHandle {
             .collect()
     }
 
-    /// Remove a connection and its in-memory credentials. Returns
-    /// `Err(ConnectionNotFound)` if the id is unknown.
+    /// Remove a connection and its in-memory credentials. Also drops any
+    /// cached `S3Provider` for that connection so a future call with the same
+    /// `connection_id` cannot reuse the old OpenDAL `Operator` (and its
+    /// embedded credentials). Returns `Err(ConnectionNotFound)` if unknown.
     pub fn connection_remove(
         &self,
         connection_id: String,
@@ -155,6 +157,7 @@ impl CoreHandle {
 
         let id = ConnectionId(connection_id);
         if self.state.connections().remove(&id) {
+            self.state.providers().remove_connection(&id);
             tracing::info!(method = "connection.remove", "connection removed");
             Ok(())
         } else {
@@ -319,5 +322,41 @@ mod connection_ffi_tests {
     fn connection_list_returns_empty_initially() {
         let h = handle();
         assert!(h.connection_list().is_empty());
+    }
+
+    #[test]
+    fn connection_remove_drops_cached_provider() {
+        // Regression guard for C1: connection_remove must also drop any
+        // S3Provider cached in ProviderRegistry::by_connection. Without
+        // this, the removed connection's OpenDAL Operator (and its
+        // credentials) would live on until the AppState is dropped.
+        use crate::connection::ConnectionId;
+        use crate::vfs::{LocalFsProvider, VfsProvider};
+
+        let h = handle();
+        let id_string = h.connection_create(
+            "test".into(),
+            "http://localhost:9000".into(),
+            "us-east-1".into(),
+            "test-bucket".into(),
+            String::new(),
+            true,
+            "minioadmin".into(),
+            "minioadmin".into(),
+        );
+        let id = ConnectionId(id_string.clone());
+        // Simulate the cache as if open_directory had run (LocalFsProvider
+        // stands in for any VfsProvider — the test only cares that the slot
+        // is occupied and then dropped).
+        let dummy: Arc<dyn VfsProvider> = Arc::new(LocalFsProvider);
+        h.state.providers().register_connection(&id, dummy);
+        assert!(h.state.providers().get_by_connection(&id).is_some());
+
+        h.connection_remove(id_string).expect("remove succeeds");
+
+        assert!(
+            h.state.providers().get_by_connection(&id).is_none(),
+            "connection_remove must drop the cached provider entry"
+        );
     }
 }
