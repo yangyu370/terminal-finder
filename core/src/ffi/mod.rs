@@ -145,11 +145,7 @@ impl CoreHandle {
     }
 
     /// Remove a connection and its in-memory credentials. Returns
-    /// `Err` if the id is unknown.
-    ///
-    /// TEMPORARY (until PR 3 introduces `ApiError::ConnectionNotFound`):
-    /// uses `ApiError::InvalidParams` for the not-found case. PR 3 will
-    /// swap this to `ConnectionNotFound { connection_id: id.0 }`.
+    /// `Err(ConnectionNotFound)` if the id is unknown.
     pub fn connection_remove(
         &self,
         connection_id: String,
@@ -162,9 +158,8 @@ impl CoreHandle {
             tracing::info!(method = "connection.remove", "connection removed");
             Ok(())
         } else {
-            Err(ApiError::InvalidParams {
-                method: "connection.remove".into(),
-                message: format!("connection not found: {}", id.0),
+            Err(ApiError::ConnectionNotFound {
+                connection_id: id.0,
             }
             .into())
         }

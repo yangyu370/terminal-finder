@@ -21,3 +21,49 @@ impl From<ApiError> for CoreError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffi_core_error_maps_all_api_errors() {
+        let cases = vec![
+            ApiError::UnknownMethod("foo".into()),
+            ApiError::InvalidParams {
+                method: "m".into(),
+                message: "x".into(),
+            },
+            ApiError::NotDirectory(std::path::PathBuf::from("/")),
+            ApiError::BackgroundTask {
+                operation: "op",
+                message: "x".into(),
+            },
+            ApiError::NetworkError {
+                operation: "op",
+                message: "x".into(),
+            },
+            ApiError::AuthenticationFailed {
+                connection_id: "c".into(),
+                message: "x".into(),
+            },
+            ApiError::ObjectNotFound { path: "k".into() },
+            ApiError::ConnectionNotFound {
+                connection_id: "c".into(),
+            },
+            ApiError::ProviderError {
+                operation: "op",
+                message: "x".into(),
+            },
+        ];
+
+        for err in cases {
+            let expected_code = err.code().to_string();
+            let expected_message = err.message();
+            let core_err: CoreError = err.into();
+            let CoreError::Rpc { code, message } = core_err;
+            assert_eq!(code, expected_code, "code mismatch");
+            assert_eq!(message, expected_message, "message mismatch");
+        }
+    }
+}
