@@ -248,7 +248,7 @@ Returns connection summaries (`ConnectionInfoDto` cross-FFI). Credentials are in
 { "ok": true, "result": {} }
 ```
 
-Removes the connection and its in-memory credentials. Returns an error (currently `invalid_params`; will become `connection_not_found` in Phase 1c with the dedicated `ApiError::ConnectionNotFound` variant) when the `connection_id` is unknown.
+Removes the connection, its in-memory credentials, and any cached S3 provider so the `connection_id` can no longer be used to access objects. Returns the `connection_not_found` error code when the `connection_id` is unknown.
 
 ## Errors
 
