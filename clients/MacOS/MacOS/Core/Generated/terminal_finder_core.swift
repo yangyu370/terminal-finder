@@ -568,6 +568,31 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func closeTerminal(sessionId: String) throws 
     
     /**
+     * Register an S3 connection. Credentials live in-memory only;
+     * the client (Swift) owns Keychain persistence and re-passes
+     * credentials on app restart.
+     *
+     * SECURITY: credentials are received by value across the FFI
+     * boundary but MUST NEVER be logged — not at info, not at debug.
+     */
+    func connectionCreate(displayName: String, endpoint: String, region: String, bucket: String, basePrefix: String, pathStyle: Bool, accessKeyId: String, secretAccessKey: String)  -> String
+    
+    /**
+     * List all registered connections (no credentials returned).
+     */
+    func connectionList()  -> [ConnectionInfoDto]
+    
+    /**
+     * Remove a connection and its in-memory credentials. Returns
+     * `Err` if the id is unknown.
+     *
+     * TEMPORARY (until PR 3 introduces `ApiError::ConnectionNotFound`):
+     * uses `ApiError::InvalidParams` for the not-found case. PR 3 will
+     * swap this to `ConnectionNotFound { connection_id: id.0 }`.
+     */
+    func connectionRemove(connectionId: String) throws 
+    
+    /**
      * 创建 PTY 会话，对应 `terminal.create`。返回 sessionId；
      * 输出 / 退出 / 错误经 `listener` 回调送达（替代 `/terminal` WebSocket 下行流）。
      */
@@ -678,6 +703,57 @@ open func closeTerminal(sessionId: String)throws   {try rustCallWithError(FfiCon
     uniffi_terminal_finder_core_fn_method_corehandle_close_terminal(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(sessionId),$0
+    )
+}
+}
+    
+    /**
+     * Register an S3 connection. Credentials live in-memory only;
+     * the client (Swift) owns Keychain persistence and re-passes
+     * credentials on app restart.
+     *
+     * SECURITY: credentials are received by value across the FFI
+     * boundary but MUST NEVER be logged — not at info, not at debug.
+     */
+open func connectionCreate(displayName: String, endpoint: String, region: String, bucket: String, basePrefix: String, pathStyle: Bool, accessKeyId: String, secretAccessKey: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_terminal_finder_core_fn_method_corehandle_connection_create(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(displayName),
+        FfiConverterString.lower(endpoint),
+        FfiConverterString.lower(region),
+        FfiConverterString.lower(bucket),
+        FfiConverterString.lower(basePrefix),
+        FfiConverterBool.lower(pathStyle),
+        FfiConverterString.lower(accessKeyId),
+        FfiConverterString.lower(secretAccessKey),$0
+    )
+})
+}
+    
+    /**
+     * List all registered connections (no credentials returned).
+     */
+open func connectionList() -> [ConnectionInfoDto]  {
+    return try!  FfiConverterSequenceTypeConnectionInfoDto.lift(try! rustCall() {
+    uniffi_terminal_finder_core_fn_method_corehandle_connection_list(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Remove a connection and its in-memory credentials. Returns
+     * `Err` if the id is unknown.
+     *
+     * TEMPORARY (until PR 3 introduces `ApiError::ConnectionNotFound`):
+     * uses `ApiError::InvalidParams` for the not-found case. PR 3 will
+     * swap this to `ConnectionNotFound { connection_id: id.0 }`.
+     */
+open func connectionRemove(connectionId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+    uniffi_terminal_finder_core_fn_method_corehandle_connection_remove(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(connectionId),$0
     )
 }
 }
@@ -1130,6 +1206,75 @@ public func FfiConverterTypeTerminalEventListener_lower(_ value: TerminalEventLi
 }
 
 
+
+
+/**
+ * Connection summary DTO (does NOT carry credentials — see `phase1.md` §6.3).
+ */
+public struct ConnectionInfoDto: Equatable, Hashable {
+    public var connectionId: String
+    public var displayName: String
+    public var endpoint: String
+    public var bucket: String
+    public var basePrefix: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(connectionId: String, displayName: String, endpoint: String, bucket: String, basePrefix: String) {
+        self.connectionId = connectionId
+        self.displayName = displayName
+        self.endpoint = endpoint
+        self.bucket = bucket
+        self.basePrefix = basePrefix
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ConnectionInfoDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConnectionInfoDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConnectionInfoDto {
+        return
+            try ConnectionInfoDto(
+                connectionId: FfiConverterString.read(from: &buf), 
+                displayName: FfiConverterString.read(from: &buf), 
+                endpoint: FfiConverterString.read(from: &buf), 
+                bucket: FfiConverterString.read(from: &buf), 
+                basePrefix: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConnectionInfoDto, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.connectionId, into: &buf)
+        FfiConverterString.write(value.displayName, into: &buf)
+        FfiConverterString.write(value.endpoint, into: &buf)
+        FfiConverterString.write(value.bucket, into: &buf)
+        FfiConverterString.write(value.basePrefix, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConnectionInfoDto_lift(_ buf: RustBuffer) throws -> ConnectionInfoDto {
+    return try FfiConverterTypeConnectionInfoDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConnectionInfoDto_lower(_ value: ConnectionInfoDto) -> RustBuffer {
+    return FfiConverterTypeConnectionInfoDto.lower(value)
+}
 
 
 /**
@@ -1671,6 +1816,31 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeConnectionInfoDto: FfiConverterRustBuffer {
+    typealias SwiftType = [ConnectionInfoDto]
+
+    public static func write(_ value: [ConnectionInfoDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeConnectionInfoDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ConnectionInfoDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ConnectionInfoDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeConnectionInfoDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeDirectoryEntryDto: FfiConverterRustBuffer {
     typealias SwiftType = [DirectoryEntryDto]
 
@@ -1757,6 +1927,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.contractVersionMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_close_terminal() != 54865) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_create() != 23373) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_list() != 19818) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 33760) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_terminal() != 19440) {
