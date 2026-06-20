@@ -105,3 +105,13 @@ impl From<OpenDirectoryResponse> for OpenDirectoryDto {
         }
     }
 }
+
+/// Connection summary DTO (does NOT carry credentials — see `phase1.md` §6.3).
+#[derive(Debug, uniffi::Record)]
+pub struct ConnectionInfoDto {
+    pub connection_id: String,
+    pub display_name: String,
+    pub endpoint: String,
+    pub bucket: String,
+    pub base_prefix: String,
+}
