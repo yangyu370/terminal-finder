@@ -18,7 +18,8 @@ final class FinderUIRebuildTests: XCTestCase {
         XCTAssertEqual(items.first { $0.id == "locations.home" }?.title, "mac")
         XCTAssertEqual(items.first { $0.id == "locations.home" }?.location?.path, "/Users/mac")
         XCTAssertFalse(items.first { $0.id == "general.recents" }?.isEnabled ?? true)
-        XCTAssertEqual(items.filter { $0.group == .tags }.count, FinderSidebarTagColor.allCases.count)
+        XCTAssertFalse(items.contains { $0.group == .tags })
+        XCTAssertFalse(items.contains { $0.id.hasPrefix("tags.") })
     }
 
     func testFinderListFormattersMatchFinderStylePlaceholders() {

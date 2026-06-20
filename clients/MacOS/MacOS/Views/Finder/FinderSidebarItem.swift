@@ -83,7 +83,7 @@ struct FinderSidebarItem: Identifiable {
             return name.isEmpty ? location.path : name
         } ?? "个人"
 
-        var items: [FinderSidebarItem] = [
+        return [
             FinderSidebarItem(
                 id: "general.recents",
                 title: "最近使用",
@@ -149,19 +149,5 @@ struct FinderSidebarItem: Identifiable {
                 group: .locations
             )
         ]
-
-        for color in FinderSidebarTagColor.allCases {
-            items.append(
-                FinderSidebarItem(
-                    id: "tags.\(color.rawValue)",
-                    title: color.title,
-                    systemImageName: "circle.fill",
-                    group: .tags,
-                    tagColor: color
-                )
-            )
-        }
-
-        return items
     }
 }

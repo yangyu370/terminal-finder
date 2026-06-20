@@ -52,9 +52,6 @@ struct FinderSidebarView: View {
             Section("位置") {
                 rows(for: .locations, in: items)
             }
-            Section("标签") {
-                rows(for: .tags, in: items)
-            }
         }
         .listStyle(.sidebar)
     }
