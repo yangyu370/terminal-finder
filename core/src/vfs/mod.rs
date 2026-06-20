@@ -6,6 +6,7 @@
 
 pub mod local;
 pub mod registry;
+pub mod s3;
 
 use crate::{
     error::ApiError,
