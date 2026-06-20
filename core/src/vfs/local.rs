@@ -34,6 +34,46 @@ pub(crate) fn workspace_root_for_directory(workspace_root: PathBuf, directory: &
         .unwrap_or_else(|| directory.to_path_buf())
 }
 
+/// Stat 单一路径，复用与 list_directory_blocking 同样的 symlink/dir/file/other 判定逻辑。
+pub(crate) fn stat_blocking(path: PathBuf) -> Result<DirectoryEntry, ApiError> {
+    let link_metadata = fs::symlink_metadata(&path).map_err(|source| ApiError::FileSystemRead {
+        path: path.clone(),
+        source,
+    })?;
+    let file_type = link_metadata.file_type();
+    let target_metadata = fs::metadata(&path).ok();
+    let is_directory = target_metadata
+        .as_ref()
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false);
+    let kind = if file_type.is_symlink() {
+        EntryKind::Symlink
+    } else if link_metadata.is_dir() {
+        EntryKind::Directory
+    } else if link_metadata.is_file() {
+        EntryKind::File
+    } else {
+        EntryKind::Other
+    };
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+
+    Ok(DirectoryEntry {
+        name,
+        path: path.to_string_lossy().into_owned(),
+        kind,
+        is_directory,
+        size: link_metadata.is_file().then_some(link_metadata.len()),
+        modified_at: link_metadata
+            .modified()
+            .ok()
+            .and_then(system_time_to_utc_iso),
+    })
+}
+
 pub(crate) fn list_directory_blocking(
     params: ListDirectoryParams,
 ) -> Result<ListDirectoryResponse, ApiError> {
@@ -191,6 +231,16 @@ impl crate::vfs::VfsProvider for LocalFsProvider {
             operation: "vfs.local.open_directory",
             message: e.to_string(),
         })?
+    }
+
+    async fn stat(&self, path: &str) -> Result<DirectoryEntry, ApiError> {
+        let path_buf = PathBuf::from(path);
+        tokio::task::spawn_blocking(move || stat_blocking(path_buf))
+            .await
+            .map_err(|e| ApiError::BackgroundTask {
+                operation: "vfs.local.stat",
+                message: e.to_string(),
+            })?
     }
 
     fn capabilities(&self) -> crate::vfs::ProviderCaps {
@@ -386,6 +436,32 @@ mod tests {
                 .expect("system time is after unix epoch")
                 .as_nanos()
         ))
+    }
+
+    #[tokio::test]
+    async fn local_stat_returns_entry_for_file() {
+        use std::io::Write;
+        let test_path = std::env::temp_dir().join(format!(
+            "terminal-finder-local-stat-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut f = std::fs::File::create(&test_path).expect("create test file");
+        f.write_all(b"hello").expect("write content");
+
+        let provider = LocalFsProvider;
+        let entry = provider
+            .stat(&test_path.to_string_lossy())
+            .await
+            .expect("stat");
+
+        std::fs::remove_file(&test_path).expect("cleanup");
+
+        assert!(!entry.is_directory);
+        assert_eq!(entry.size, Some(5));
+        assert_eq!(entry.kind, EntryKind::File);
     }
 
     #[tokio::test]
