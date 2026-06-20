@@ -39,9 +39,18 @@ pub async fn open_directory(
 
     let state_response = match location.scheme {
         Scheme::Local => {
-            let existing_root = state.workspace().state().workspace_root;
+            let existing = state.workspace().state();
             let directory = PathBuf::from(&canonical_path);
-            let workspace_root = workspace_root_for_directory(existing_root, &directory);
+            // 切回 local 时，旧 workspace_root 可能是 S3 前缀（被 PathBuf 包装的字符串）。
+            // `workspace_root_for_directory` 内部 `canonicalize` 会把这类字符串按 CWD
+            // 解释为相对路径——如果碰巧命中一个真实本地目录，旧 S3 prefix 就会"继承"
+            // 进 local workspace_root，违反 scheme 边界。
+            // 因此只有上一次也是 local 时才沿用 Phase 0 的 root 保持逻辑；否则重置。
+            let workspace_root = if existing.scheme == "local" {
+                workspace_root_for_directory(existing.workspace_root, &directory)
+            } else {
+                directory.clone()
+            };
 
             let workspace_state = state.workspace().set_directory_state(
                 workspace_root,
@@ -307,6 +316,60 @@ mod tests {
         assert_eq!(snapshot.scheme, "s3");
         assert_eq!(snapshot.connection_id.as_deref(), Some("conn-id"));
         assert_eq!(snapshot.current_directory, "conn-prefix/");
+    }
+
+    #[tokio::test]
+    async fn local_open_after_s3_resets_workspace_root_to_opened_directory() {
+        // Regression guard for the post-fix-2 review finding: when the previous
+        // navigation was S3, the stored workspace_root is an S3-prefix string
+        // wrapped in PathBuf. Feeding it into workspace_root_for_directory lets
+        // canonicalize() interpret it as a relative local path. If the CWD
+        // contains a directory of the same name, the S3 prefix would silently
+        // become the new local workspace_root.
+        //
+        // We deterministically trigger that confusion by reusing the system temp
+        // dir as the fake S3 prefix and opening a real subdirectory of it.
+        let app_state = AppState::new("test");
+        let outer = std::env::temp_dir();
+        let inner = outer.join(format!(
+            "tf_local_after_s3_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&inner).expect("create inner test dir");
+
+        // Pretend the previous open was S3 with a prefix that happens to be a
+        // valid local absolute path (the outer temp dir).
+        let _ = app_state.workspace().set_directory_state(
+            outer.clone(),
+            outer.clone(),
+            "s3".to_string(),
+            Some("conn-id".to_string()),
+        );
+
+        let response = open_directory(
+            &app_state,
+            OpenDirectoryParams {
+                path: inner.clone(),
+                connection_id: None,
+            },
+        )
+        .await
+        .expect("opening a real local directory must succeed");
+
+        let canonical_inner = inner.canonicalize().expect("canonicalize inner dir");
+        let _ = std::fs::remove_dir(&inner);
+
+        assert_eq!(response.state.scheme, "local");
+        assert!(response.state.connection_id.is_none());
+        assert_eq!(
+            std::path::PathBuf::from(&response.state.workspace_root),
+            canonical_inner,
+            "switching from S3 back to local must reset workspace_root to the opened directory, not inherit the prior S3 prefix as a local path"
+        );
     }
 
     #[tokio::test]
