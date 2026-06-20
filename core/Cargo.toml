@@ -42,6 +42,8 @@ anyhow = "1"
 async-trait = "0.1"
 # UniFFI：从 Rust 接口生成 Swift 绑定；tokio feature 用于跨边界 async 方法。
 uniffi = { version = "0.31", features = ["tokio"] }
+# OpenDAL S3 客户端：vfs::s3 provider 的底座，PR3 (Session 1c) 引入。
+opendal = { version = "0.53", features = ["services-s3"] }
 portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
