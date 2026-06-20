@@ -92,5 +92,7 @@ fn workspace_state_response(state: WorkspaceState) -> WorkspaceStateResponse {
     WorkspaceStateResponse {
         workspace_root: state.workspace_root.to_string_lossy().into_owned(),
         current_directory: state.current_directory.to_string_lossy().into_owned(),
+        scheme: "local".to_string(),
+        connection_id: None,
     }
 }

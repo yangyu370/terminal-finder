@@ -12,16 +12,14 @@ use std::{
 
 use crate::{
     error::ApiError,
-    workspace::{DirectoryEntry, EntryKind, ListDirectoryParams, ListDirectoryResponse},
+    workspace::{DirectoryEntry, EntryKind, ListDirectoryResponse},
 };
 
 pub(crate) fn open_directory_blocking(
     path: PathBuf,
 ) -> Result<(PathBuf, ListDirectoryResponse), ApiError> {
     let directory = canonical_directory_path(path)?;
-    let listing = list_directory_blocking(ListDirectoryParams {
-        path: directory.clone(),
-    })?;
+    let listing = list_directory_blocking(directory.clone())?;
 
     Ok((directory, listing))
 }
@@ -74,24 +72,22 @@ pub(crate) fn stat_blocking(path: PathBuf) -> Result<DirectoryEntry, ApiError> {
     })
 }
 
-pub(crate) fn list_directory_blocking(
-    params: ListDirectoryParams,
-) -> Result<ListDirectoryResponse, ApiError> {
-    let metadata = fs::metadata(&params.path).map_err(|source| ApiError::FileSystemRead {
-        path: params.path.clone(),
+pub(crate) fn list_directory_blocking(path: PathBuf) -> Result<ListDirectoryResponse, ApiError> {
+    let metadata = fs::metadata(&path).map_err(|source| ApiError::FileSystemRead {
+        path: path.clone(),
         source,
     })?;
 
     if !metadata.is_dir() {
-        return Err(ApiError::NotDirectory(params.path));
+        return Err(ApiError::NotDirectory(path));
     }
 
-    let mut entries = fs::read_dir(&params.path)
+    let mut entries = fs::read_dir(&path)
         .map_err(|source| ApiError::FileSystemRead {
-            path: params.path.clone(),
+            path: path.clone(),
             source,
         })?
-        .map(|entry| directory_entry(entry, &params.path))
+        .map(|entry| directory_entry(entry, &path))
         .collect::<Result<Vec<_>, _>>()?;
 
     entries.sort_by(|left, right| {
@@ -103,7 +99,7 @@ pub(crate) fn list_directory_blocking(
     });
 
     Ok(ListDirectoryResponse {
-        path: params.path.to_string_lossy().into_owned(),
+        path: path.to_string_lossy().into_owned(),
         entries,
     })
 }
@@ -206,10 +202,8 @@ pub struct LocalFsProvider;
 #[async_trait::async_trait]
 impl crate::vfs::VfsProvider for LocalFsProvider {
     async fn list(&self, path: &str) -> Result<ListDirectoryResponse, ApiError> {
-        let params = ListDirectoryParams {
-            path: PathBuf::from(path),
-        };
-        tokio::task::spawn_blocking(move || list_directory_blocking(params))
+        let path = PathBuf::from(path);
+        tokio::task::spawn_blocking(move || list_directory_blocking(path))
             .await
             .map_err(|e| ApiError::BackgroundTask {
                 operation: "vfs.local.list",
@@ -362,10 +356,7 @@ mod tests {
         fs::create_dir(test_path.join("Folder")).expect("create child directory");
         fs::write(test_path.join("file.txt"), b"hello").expect("create child file");
 
-        let listing = list_directory_blocking(ListDirectoryParams {
-            path: test_path.clone(),
-        })
-        .expect("list test directory");
+        let listing = list_directory_blocking(test_path.clone()).expect("list test directory");
 
         fs::remove_dir_all(&test_path).expect("remove test directory");
 
@@ -393,10 +384,7 @@ mod tests {
         std::os::unix::fs::symlink(test_path.join("Target"), test_path.join("LinkedTarget"))
             .expect("create directory symlink");
 
-        let listing = list_directory_blocking(ListDirectoryParams {
-            path: test_path.clone(),
-        })
-        .expect("list test directory");
+        let listing = list_directory_blocking(test_path.clone()).expect("list test directory");
 
         fs::remove_dir_all(&test_path).expect("remove test directory");
 
@@ -484,10 +472,7 @@ mod tests {
             .list(&test_path.to_string_lossy())
             .await
             .expect("provider lists directory");
-        let via_direct = list_directory_blocking(ListDirectoryParams {
-            path: test_path.clone(),
-        })
-        .expect("direct list works");
+        let via_direct = list_directory_blocking(test_path.clone()).expect("direct list works");
 
         fs::remove_dir_all(&test_path).expect("remove test directory");
 

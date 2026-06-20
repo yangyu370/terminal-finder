@@ -172,6 +172,7 @@ impl CoreHandle {
     pub async fn open_directory(&self, path: String) -> Result<OpenDirectoryDto, CoreError> {
         let params = OpenDirectoryParams {
             path: PathBuf::from(path),
+            connection_id: None,
         };
         let response = workspace::open_directory(&self.state, params).await?;
         Ok(response.into())
@@ -181,6 +182,7 @@ impl CoreHandle {
     pub async fn list_directory(&self, path: String) -> Result<DirectoryListingDto, CoreError> {
         let params = ListDirectoryParams {
             path: PathBuf::from(path),
+            connection_id: None,
         };
         let response = workspace::list_directory(&self.state, params).await?;
         Ok(response.into())
