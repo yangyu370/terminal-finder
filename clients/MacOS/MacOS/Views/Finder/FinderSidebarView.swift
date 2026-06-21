@@ -13,6 +13,7 @@ import SwiftUI
 /// requests navigation and never switches the selection locally.
 struct FinderSidebarView: View {
     @ObservedObject var workspaceVM: WorkspaceBrowserViewModel
+    @ObservedObject var connectionVM: ConnectionViewModel
 
     private var items: [FinderSidebarItem] {
         FinderSidebarItem.makeItems(from: workspaceVM.sidebarLocations)
@@ -52,6 +53,12 @@ struct FinderSidebarView: View {
             Section("位置") {
                 rows(for: .locations, in: items)
             }
+            ConnectionSidebarSection(
+                viewModel: connectionVM,
+                onOpenConnection: { connectionId in
+                    workspaceVM.openConnection(connectionId)
+                }
+            )
         }
         .listStyle(.sidebar)
     }

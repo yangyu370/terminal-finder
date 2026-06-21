@@ -41,6 +41,7 @@ final class FinderWindowController: NSWindowController {
 
     let workspaceVM: WorkspaceBrowserViewModel
     let connectionVM: BackendConnectionViewModel
+    let cloudConnectionVM: ConnectionViewModel
     let terminalVM: TerminalSessionViewModel
     let panelLayout: PseudoTerminalPanelLayoutState
     let contentState: FinderContentViewState
@@ -57,6 +58,11 @@ final class FinderWindowController: NSWindowController {
     init() {
         workspaceVM = WorkspaceBrowserViewModel()
         connectionVM = BackendConnectionViewModel()
+        cloudConnectionVM = ConnectionViewModel(
+            core: FFIConnectionClient(),
+            keychain: KeychainService(),
+            store: ConnectionStore()
+        )
         terminalVM = TerminalSessionViewModel()
         panelLayout = PseudoTerminalPanelLayoutState()
         contentState = FinderContentViewState()
@@ -274,7 +280,10 @@ final class FinderWindowController: NSWindowController {
 
     private func makeNativeContentViewController() -> NSViewController {
         let sidebarHost = NSHostingController(
-            rootView: FinderSidebarView(workspaceVM: workspaceVM)
+            rootView: FinderSidebarView(
+                workspaceVM: workspaceVM,
+                connectionVM: cloudConnectionVM
+            )
         )
         sidebarHost.sizingOptions = []
 

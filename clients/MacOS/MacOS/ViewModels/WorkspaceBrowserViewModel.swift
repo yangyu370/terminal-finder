@@ -95,7 +95,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                 let state = try await backendClient.getState()
                 let result = try await backendClient.listDirectory(
                     path: state.currentDirectory,
-                    connectionId: nil
+                    connectionId: state.connectionId
                 )
                 guard !Task.isCancelled else {
                     return
@@ -171,7 +171,11 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             return
         }
 
-        navigate(to: destination, mode: .back(origin: origin, destination: destination))
+        navigate(
+            to: destination,
+            mode: .back(origin: origin, destination: destination),
+            connection: .inherit
+        )
     }
 
     func goForward() {
@@ -181,7 +185,11 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             return
         }
 
-        navigate(to: destination, mode: .forward(origin: origin, destination: destination))
+        navigate(
+            to: destination,
+            mode: .forward(origin: origin, destination: destination),
+            connection: .inherit
+        )
     }
 
     func goUp() {
@@ -189,7 +197,11 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             return
         }
 
-        navigate(to: destination, mode: .new(origin: currentDirectoryPath))
+        navigate(
+            to: destination,
+            mode: .new(origin: currentDirectoryPath),
+            connection: .inherit
+        )
     }
 
     func open(_ entry: DirectoryEntry) {
@@ -198,7 +210,11 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         }
 
         if entry.isDirectory {
-            navigate(to: entry.path, mode: .new(origin: currentDirectoryPath))
+            navigate(
+                to: entry.path,
+                mode: .new(origin: currentDirectoryPath),
+                connection: .inherit
+            )
             return
         }
 
@@ -212,7 +228,24 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     }
 
     func open(_ location: WorkspaceSidebarLocation) {
-        navigate(to: location.path, mode: .new(origin: currentDirectoryPath))
+        // Local sidebar entries are always Phase-0 LocalFsProvider routes.
+        // Force-clear the carry-over so a prior S3 navigation does not leak.
+        navigate(
+            to: location.path,
+            mode: .new(origin: currentDirectoryPath),
+            connection: .local
+        )
+    }
+
+    /// Open the root of the given S3 connection. `""` is the bucket root in
+    /// the S3 provider's relative-path convention.
+    func openConnection(_ connectionId: String) {
+        navigate(
+            to: "",
+            mode: .new(origin: currentDirectoryPath),
+            connection: .connection(connectionId),
+            allowEmptyPath: true
+        )
     }
 
     func dismissFileOpenError() {
@@ -230,7 +263,10 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     /// Lazily fetches the contents of a subdirectory for inline expansion in the
     /// outline view. Applies the same hidden-file filtering as the top-level list.
     func loadChildren(path: String) async throws -> [DirectoryEntry] {
-        let result = try await backendClient.listDirectory(path: path, connectionId: nil)
+        let result = try await backendClient.listDirectory(
+            path: path,
+            connectionId: workspaceState?.connectionId
+        )
         guard !showsHiddenFiles else {
             return result.entries
         }
@@ -276,7 +312,12 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             return
         }
 
-        navigate(to: resolvedPath, mode: .new(origin: currentDirectoryPath), openFileWhenNotDirectory: true)
+        navigate(
+            to: resolvedPath,
+            mode: .new(origin: currentDirectoryPath),
+            connection: .local,
+            openFileWhenNotDirectory: true
+        )
     }
 
     private func resolvedInputPath(_ input: String) -> String {
@@ -300,22 +341,28 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     private func navigate(
         to targetPath: String,
         mode: NavigationMode,
-        openFileWhenNotDirectory: Bool = false
+        connection: ConnectionContext,
+        openFileWhenNotDirectory: Bool = false,
+        allowEmptyPath: Bool = false
     ) {
         guard !isLoading else {
             return
         }
 
         let trimmedPath = targetPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPath.isEmpty else {
-            workspaceAlertPresenter.showWarning(
-                message: "Enter a folder path to continue.",
-                informativeText: "Terminal Finder kept your current folder open.",
-                recoverySuggestion: "Type or paste a valid file or folder path, then try again."
-            )
-            restoreCurrentPathInput()
-            return
+        if !allowEmptyPath {
+            guard !trimmedPath.isEmpty else {
+                workspaceAlertPresenter.showWarning(
+                    message: "Enter a folder path to continue.",
+                    informativeText: "Terminal Finder kept your current folder open.",
+                    recoverySuggestion: "Type or paste a valid file or folder path, then try again."
+                )
+                restoreCurrentPathInput()
+                return
+            }
         }
+
+        let resolvedConnectionId = connection.resolve(carryOver: workspaceState?.connectionId)
 
         isLoading = true
         errorText = nil
@@ -324,7 +371,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             do {
                 let result = try await backendClient.openDirectory(
                     path: trimmedPath,
-                    connectionId: nil
+                    connectionId: resolvedConnectionId
                 )
                 guard !Task.isCancelled else {
                     return
@@ -342,7 +389,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                     do {
                         listing = try await backendClient.listDirectory(
                             path: result.state.currentDirectory,
-                            connectionId: nil
+                            connectionId: result.state.connectionId
                         )
                     } catch {
                         errorText = error.localizedDescription
@@ -390,7 +437,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         do {
             let refreshedListing = try await backendClient.listDirectory(
                 path: currentDirectoryPath,
-                connectionId: nil
+                connectionId: workspaceState?.connectionId
             )
             guard !Task.isCancelled else {
                 return
@@ -461,12 +508,17 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             return
         }
 
+        let resolvedConnectionId = workspaceState?.connectionId
+
         isLoading = true
         errorText = nil
 
         loadTask = Task { [backendClient] in
             do {
-                let result = try await backendClient.listDirectory(path: targetPath, connectionId: nil)
+                let result = try await backendClient.listDirectory(
+                    path: targetPath,
+                    connectionId: resolvedConnectionId
+                )
                 guard !Task.isCancelled else {
                     return
                 }
@@ -525,6 +577,27 @@ private enum NavigationMode {
     case new(origin: String?)
     case back(origin: String, destination: String)
     case forward(origin: String, destination: String)
+}
+
+/// How a navigation call should resolve its `connection_id`.
+///
+/// - `inherit`: carry over the currently-open workspace's connection id (so
+///   drilling into a subfolder of an S3 bucket stays inside that bucket).
+/// - `local`: explicitly switch back to the Phase-0 LocalFsProvider, dropping
+///   any stale carry-over (sidebar Home/Desktop/path-input, etc).
+/// - `connection(id)`: open a specific registered connection by id.
+enum ConnectionContext {
+    case inherit
+    case local
+    case connection(String)
+
+    func resolve(carryOver: String?) -> String? {
+        switch self {
+        case .inherit: return carryOver
+        case .local: return nil
+        case .connection(let id): return id
+        }
+    }
 }
 
 struct WorkspaceSidebarLocation: Identifiable {
