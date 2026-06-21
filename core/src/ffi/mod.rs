@@ -123,6 +123,52 @@ impl CoreHandle {
         id.0
     }
 
+    /// Re-register a connection using a caller-provided id. Intended for
+    /// app startup: the client side persists `connection_id` alongside the
+    /// non-sensitive config, then calls this on launch so the in-memory
+    /// `ConnectionRegistry` rebinds the SAME id from the previous run.
+    /// Without this the client would mint a new id on every restart and
+    /// the persisted sidebar rows would all reference dead ids.
+    ///
+    /// SECURITY: same credential handling rules as `connection_create` —
+    /// arguments are received by value across FFI but MUST NOT be logged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connection_restore(
+        &self,
+        connection_id: String,
+        display_name: String,
+        endpoint: String,
+        region: String,
+        bucket: String,
+        base_prefix: String,
+        path_style: bool,
+        access_key_id: String,
+        secret_access_key: String,
+    ) -> Result<(), crate::ffi::error::CoreError> {
+        use crate::connection::{
+            ConnectionConfig, ConnectionId, Credential, S3ConnectionConfig, S3Credential,
+        };
+
+        let config = ConnectionConfig::S3(S3ConnectionConfig {
+            display_name,
+            endpoint,
+            region,
+            bucket,
+            base_prefix,
+            path_style,
+        });
+        let credential = Credential::S3(S3Credential {
+            access_key_id,
+            secret_access_key,
+        });
+        let id = ConnectionId(connection_id);
+        self.state
+            .connections()
+            .insert_with_id(id, config, credential)?;
+        tracing::info!(method = "connection.restore", "connection rehydrated");
+        Ok(())
+    }
+
     /// List all registered connections (no credentials returned).
     pub fn connection_list(&self) -> Vec<crate::ffi::dto::ConnectionInfoDto> {
         use crate::connection::ConnectionConfig;
@@ -503,6 +549,63 @@ mod connection_ffi_tests {
     fn connection_list_returns_empty_initially() {
         let h = handle();
         assert!(h.connection_list().is_empty());
+    }
+
+    #[test]
+    fn connection_restore_uses_caller_supplied_id() {
+        // The whole point of restore: the id round-trips between client-side
+        // persistence and core's in-memory registry, so the sidebar rows the
+        // client renders match what core will route on click.
+        let h = handle();
+        let preset = "26e3b59e-c346-4480-a25d-07c7f8e5b467";
+        h.connection_restore(
+            preset.into(),
+            "Minio".into(),
+            "http://localhost:9000".into(),
+            "us-east-1".into(),
+            "test-bucket".into(),
+            String::new(),
+            true,
+            "minioadmin".into(),
+            "minioadmin".into(),
+        )
+        .expect("restore succeeds");
+        let listed = h.connection_list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].connection_id, preset);
+    }
+
+    #[test]
+    fn connection_restore_with_duplicate_id_returns_invalid_params() {
+        let h = handle();
+        let preset = "dup-id";
+        h.connection_restore(
+            preset.into(),
+            "a".into(),
+            "e".into(),
+            "r".into(),
+            "b".into(),
+            "".into(),
+            true,
+            "k".into(),
+            "s".into(),
+        )
+        .expect("first restore");
+        let err = h
+            .connection_restore(
+                preset.into(),
+                "a".into(),
+                "e".into(),
+                "r".into(),
+                "b".into(),
+                "".into(),
+                true,
+                "k".into(),
+                "s".into(),
+            )
+            .expect_err("duplicate restore");
+        let CoreError::Rpc { code, .. } = err;
+        assert_eq!(code, "invalid_params");
     }
 
     #[tokio::test]

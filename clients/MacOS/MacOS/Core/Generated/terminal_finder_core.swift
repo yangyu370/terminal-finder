@@ -598,6 +598,19 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func connectionRemove(connectionId: String) throws 
     
     /**
+     * Re-register a connection using a caller-provided id. Intended for
+     * app startup: the client side persists `connection_id` alongside the
+     * non-sensitive config, then calls this on launch so the in-memory
+     * `ConnectionRegistry` rebinds the SAME id from the previous run.
+     * Without this the client would mint a new id on every restart and
+     * the persisted sidebar rows would all reference dead ids.
+     *
+     * SECURITY: same credential handling rules as `connection_create` —
+     * arguments are received by value across FFI but MUST NOT be logged.
+     */
+    func connectionRestore(connectionId: String, displayName: String, endpoint: String, region: String, bucket: String, basePrefix: String, pathStyle: Bool, accessKeyId: String, secretAccessKey: String) throws 
+    
+    /**
      * 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
      * 客户端应通过 `connection_capabilities().has_native_directories`
      * 判断是否需要在 UI 上提示"零字节占位"语义。
@@ -817,6 +830,33 @@ open func connectionRemove(connectionId: String)throws   {try rustCallWithError(
     uniffi_terminal_finder_core_fn_method_corehandle_connection_remove(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(connectionId),$0
+    )
+}
+}
+    
+    /**
+     * Re-register a connection using a caller-provided id. Intended for
+     * app startup: the client side persists `connection_id` alongside the
+     * non-sensitive config, then calls this on launch so the in-memory
+     * `ConnectionRegistry` rebinds the SAME id from the previous run.
+     * Without this the client would mint a new id on every restart and
+     * the persisted sidebar rows would all reference dead ids.
+     *
+     * SECURITY: same credential handling rules as `connection_create` —
+     * arguments are received by value across FFI but MUST NOT be logged.
+     */
+open func connectionRestore(connectionId: String, displayName: String, endpoint: String, region: String, bucket: String, basePrefix: String, pathStyle: Bool, accessKeyId: String, secretAccessKey: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+    uniffi_terminal_finder_core_fn_method_corehandle_connection_restore(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(displayName),
+        FfiConverterString.lower(endpoint),
+        FfiConverterString.lower(region),
+        FfiConverterString.lower(bucket),
+        FfiConverterString.lower(basePrefix),
+        FfiConverterBool.lower(pathStyle),
+        FfiConverterString.lower(accessKeyId),
+        FfiConverterString.lower(secretAccessKey),$0
     )
 }
 }
@@ -2210,6 +2250,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 10972) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_restore() != 25135) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_remote_directory() != 18923) {

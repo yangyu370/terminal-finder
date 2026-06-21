@@ -231,6 +231,34 @@ nonisolated struct FFIConnectionClient: CoreConnectionClientProtocol {
         )
     }
 
+    func restore(
+        connectionId: String,
+        displayName: String,
+        endpoint: String,
+        region: String,
+        bucket: String,
+        basePrefix: String,
+        pathStyle: Bool,
+        accessKeyId: String,
+        secretAccessKey: String
+    ) async throws {
+        do {
+            try core.connectionRestore(
+                connectionId: connectionId,
+                displayName: displayName,
+                endpoint: endpoint,
+                region: region,
+                bucket: bucket,
+                basePrefix: basePrefix,
+                pathStyle: pathStyle,
+                accessKeyId: accessKeyId,
+                secretAccessKey: secretAccessKey
+            )
+        } catch {
+            throw FFIBackendClient.mapError(error)
+        }
+    }
+
     func list() async throws -> [CoreConnectionSummary] {
         core.connectionList().map { dto in
             CoreConnectionSummary(

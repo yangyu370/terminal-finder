@@ -52,6 +52,20 @@ public protocol CoreConnectionClientProtocol {
         accessKeyId: String,
         secretAccessKey: String
     ) async throws -> String
+    /// Re-register a connection with a caller-supplied id. Used on app startup
+    /// so the id persisted in the JSON store stays stable across restarts —
+    /// `create` would otherwise mint a fresh UUID and orphan the sidebar rows.
+    func restore(
+        connectionId: String,
+        displayName: String,
+        endpoint: String,
+        region: String,
+        bucket: String,
+        basePrefix: String,
+        pathStyle: Bool,
+        accessKeyId: String,
+        secretAccessKey: String
+    ) async throws
     func list() async throws -> [CoreConnectionSummary]
     func remove(connectionId: String) async throws
 }
@@ -99,6 +113,10 @@ public final class ConnectionViewModel: ObservableObject {
     /// metadata) are silently skipped so a bad single entry never blocks app
     /// startup. The store remains the source of truth — orphan rows are not
     /// purged here, leaving the user free to repair them.
+    ///
+    /// Uses `core.restore` (not `create`) so the connection id round-trips
+    /// between disk and core, keeping the sidebar row ids and the registry
+    /// keys aligned across app restarts.
     public func load() async throws {
         let persisted = store.load()
         var items: [ConnectionListItem] = []
@@ -106,7 +124,8 @@ public final class ConnectionViewModel: ObservableObject {
             guard let creds = try? keychain.load(connectionId: entry.connectionId) else {
                 continue
             }
-            _ = try await core.create(
+            try await core.restore(
+                connectionId: entry.connectionId,
                 displayName: entry.displayName,
                 endpoint: entry.endpoint,
                 region: entry.region,

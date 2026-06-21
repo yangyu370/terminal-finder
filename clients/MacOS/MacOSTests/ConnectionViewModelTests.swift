@@ -40,7 +40,12 @@ final class ConnectionViewModelTests: XCTestCase {
         XCTAssertEqual(vm.connections[0].displayName, "MinIO local")
     }
 
-    func test_load_restores_from_store_into_core() async throws {
+    func test_load_restores_from_store_into_core_with_stable_id() async throws {
+        // Regression guard: load() MUST route through core.restore so the id
+        // round-trips from disk into the registry. The old implementation
+        // called create() and minted a fresh UUID, leaving the sidebar rows
+        // pointing at ids core never registered ("connection not found" on
+        // first click after restart).
         let keychain = InMemoryKeychainService()
         try keychain.save(connectionId: "id-1", accessKeyId: "AKIA", secretAccessKey: "SECRET")
         let store = InMemoryConnectionStore(initial: [
@@ -63,10 +68,13 @@ final class ConnectionViewModelTests: XCTestCase {
         XCTAssertEqual(vm.connections[0].id, "id-1")
         XCTAssertEqual(vm.connections[0].displayName, "Saved")
 
-        XCTAssertEqual(core.createCalls.count, 1)
-        XCTAssertEqual(core.createCalls[0].displayName, "Saved")
-        XCTAssertEqual(core.createCalls[0].accessKeyId, "AKIA")
-        XCTAssertEqual(core.createCalls[0].secretAccessKey, "SECRET")
+        // The fix: restore is called with the persisted id; create is NOT.
+        XCTAssertEqual(core.createCalls.count, 0, "load() must not mint new ids")
+        XCTAssertEqual(core.restoreCalls.count, 1)
+        XCTAssertEqual(core.restoreCalls[0].connectionId, "id-1")
+        XCTAssertEqual(core.restoreCalls[0].displayName, "Saved")
+        XCTAssertEqual(core.restoreCalls[0].accessKeyId, "AKIA")
+        XCTAssertEqual(core.restoreCalls[0].secretAccessKey, "SECRET")
     }
 
     func test_load_skips_orphan_store_entries_with_missing_keychain_credentials() async throws {
@@ -153,7 +161,15 @@ final class MockCoreConnectionClient: CoreConnectionClientProtocol {
         let returnedId: String
     }
 
+    struct RestoreCall: Equatable {
+        let connectionId: String
+        let displayName: String
+        let accessKeyId: String
+        let secretAccessKey: String
+    }
+
     var createCalls: [CreateCall] = []
+    var restoreCalls: [RestoreCall] = []
     var removeCalls: [String] = []
     private var nextIdSeed = 0
 
@@ -178,6 +194,27 @@ final class MockCoreConnectionClient: CoreConnectionClientProtocol {
             )
         )
         return id
+    }
+
+    func restore(
+        connectionId: String,
+        displayName: String,
+        endpoint: String,
+        region: String,
+        bucket: String,
+        basePrefix: String,
+        pathStyle: Bool,
+        accessKeyId: String,
+        secretAccessKey: String
+    ) async throws {
+        restoreCalls.append(
+            RestoreCall(
+                connectionId: connectionId,
+                displayName: displayName,
+                accessKeyId: accessKeyId,
+                secretAccessKey: secretAccessKey
+            )
+        )
     }
 
     func list() async throws -> [CoreConnectionSummary] {

@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
 use super::{ConnectionConfig, ConnectionId, Credential};
+use crate::error::ApiError;
 
 /// 一条活跃连接的完整记录。
 #[derive(Debug, Clone)]
@@ -40,6 +41,33 @@ impl ConnectionRegistry {
         let mut guard = self.entries.write().unwrap_or_else(|p| p.into_inner());
         guard.insert(id.clone(), entry);
         id
+    }
+
+    /// Insert an entry with a caller-provided id. Used on app startup to
+    /// rehydrate connections from the client-side persistent store so the
+    /// `connection_id` recorded in JSON stays stable across restarts.
+    /// Returns `InvalidParams` if the id is already registered — callers
+    /// should treat this as a programmer error (double-restore in one run).
+    pub fn insert_with_id(
+        &self,
+        id: ConnectionId,
+        config: ConnectionConfig,
+        credential: Credential,
+    ) -> Result<(), ApiError> {
+        let mut guard = self.entries.write().unwrap_or_else(|p| p.into_inner());
+        if guard.contains_key(&id) {
+            return Err(ApiError::InvalidParams {
+                method: "connection.restore".into(),
+                message: format!("connection_id already registered: {}", id.0),
+            });
+        }
+        let entry = ConnectionEntry {
+            id: id.clone(),
+            config,
+            credential,
+        };
+        guard.insert(id, entry);
+        Ok(())
     }
 
     pub fn get(&self, id: &ConnectionId) -> Option<ConnectionEntry> {
@@ -131,6 +159,31 @@ mod tests {
         assert!(registry.remove(&id));
         assert!(registry.get(&id).is_none());
         assert!(!registry.remove(&id), "second remove returns false");
+    }
+
+    #[test]
+    fn insert_with_id_preserves_caller_id_for_rehydration() {
+        let registry = ConnectionRegistry::new();
+        let preset = ConnectionId("26e3b59e-c346-4480-a25d-07c7f8e5b467".into());
+        registry
+            .insert_with_id(preset.clone(), sample_config(), sample_credential())
+            .expect("first restore succeeds");
+        let entry = registry.get(&preset).expect("entry lookup by preset id");
+        assert_eq!(entry.id, preset);
+        assert_eq!(entry.config.display_name(), "test");
+    }
+
+    #[test]
+    fn insert_with_id_rejects_duplicate_id() {
+        let registry = ConnectionRegistry::new();
+        let preset = ConnectionId("dup".into());
+        registry
+            .insert_with_id(preset.clone(), sample_config(), sample_credential())
+            .expect("first restore");
+        let err = registry
+            .insert_with_id(preset.clone(), sample_config(), sample_credential())
+            .expect_err("second restore with same id must fail");
+        assert_eq!(err.code(), "invalid_params");
     }
 
     #[test]
