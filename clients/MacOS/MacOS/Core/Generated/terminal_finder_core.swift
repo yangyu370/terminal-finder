@@ -568,6 +568,13 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func closeTerminal(sessionId: String) throws 
     
     /**
+     * Capability flags for the provider behind `connection_id`. Forces the
+     * provider into the cache via `resolve_provider` so the caller sees the
+     * real OpenDAL-backed caps (not the registry's pre-construction guess).
+     */
+    func connectionCapabilities(connectionId: String) throws  -> ProviderCapsDto
+    
+    /**
      * Register an S3 connection. Credentials live in-memory only;
      * the client (Swift) owns Keychain persistence and re-passes
      * credentials on app restart.
@@ -591,10 +598,24 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func connectionRemove(connectionId: String) throws 
     
     /**
+     * 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
+     * 客户端应通过 `connection_capabilities().has_native_directories`
+     * 判断是否需要在 UI 上提示"零字节占位"语义。
+     */
+    func createRemoteDirectory(connectionId: String?, path: String) async throws 
+    
+    /**
      * 创建 PTY 会话，对应 `terminal.create`。返回 sessionId；
      * 输出 / 退出 / 错误经 `listener` 回调送达（替代 `/terminal` WebSocket 下行流）。
      */
     func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: TerminalEventListener) throws  -> String
+    
+    /**
+     * 删除 `path` 指向的对象/文件。S3 走 `delete object`，Local 区分
+     * 文件/目录递归删；删除目录的语义由各 provider 自定（S3 仅删 key 不
+     * 递归——本期 UI 只暴露单文件删除，目录删除留给后续 PR）。
+     */
+    func deleteEntry(connectionId: String?, path: String) async throws 
     
     /**
      * 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
@@ -622,14 +643,36 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func ping()  -> PingInfo
     
     /**
+     * 重命名/移动 `from` → `to`。S3 是 copy + delete（**非原子**），客户端
+     * 应通过 `connection_capabilities().can_rename == false` 在 UI 上提示。
+     * `from` 和 `to` 必须落在同一个 connection 上；本方法不做跨 provider 搬运。
+     */
+    func renameEntry(connectionId: String?, from: String, to: String) async throws 
+    
+    /**
      * 调整 PTY 尺寸，对应 `terminal.resize`。
      */
     func resizeTerminal(sessionId: String, cols: UInt16, rows: UInt16) throws 
     
     /**
+     * Send a `transfer_progress` envelope through the shared broadcast
+     * channel so Swift `EventClient` subscribers can drive progress bars.
+     * Best-effort: a closed channel just drops the event (no subscribers).
+     */
+    func sendProgressEvent(connectionId: String, path: String, bytesTransferred: UInt64, totalBytes: UInt64) 
+    
+    /**
      * 写入终端输入，对应 `terminal.input`。高频路径：同步、快返回、无 base64。
      */
     func sendTerminalInput(sessionId: String, data: Data) throws 
+    
+    /**
+     * 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
+     * 上传前后各发一次 `transfer_progress` 事件（0 / total），让 Swift
+     * 端可以驱动进度条。50 MiB 上限来自 `VfsProvider::read` 的对称约束:
+     * 这里复用同一个 inline 读取语义，避免临时落盘。
+     */
+    func uploadFile(connectionId: String?, remotePath: String, localSource: String) async throws 
     
     /**
      * 当前工作区状态，对应 `workspace.getState`。同步、只读内存状态。
@@ -716,6 +759,20 @@ open func closeTerminal(sessionId: String)throws   {try rustCallWithError(FfiCon
 }
     
     /**
+     * Capability flags for the provider behind `connection_id`. Forces the
+     * provider into the cache via `resolve_provider` so the caller sees the
+     * real OpenDAL-backed caps (not the registry's pre-construction guess).
+     */
+open func connectionCapabilities(connectionId: String)throws  -> ProviderCapsDto  {
+    return try  FfiConverterTypeProviderCapsDto_lift(try rustCallWithError(FfiConverterTypeCoreError_lift) {
+    uniffi_terminal_finder_core_fn_method_corehandle_connection_capabilities(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(connectionId),$0
+    )
+})
+}
+    
+    /**
      * Register an S3 connection. Credentials live in-memory only;
      * the client (Swift) owns Keychain persistence and re-passes
      * credentials on app restart.
@@ -765,6 +822,28 @@ open func connectionRemove(connectionId: String)throws   {try rustCallWithError(
 }
     
     /**
+     * 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
+     * 客户端应通过 `connection_capabilities().has_native_directories`
+     * 判断是否需要在 UI 上提示"零字节占位"语义。
+     */
+open func createRemoteDirectory(connectionId: String?, path: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_create_remote_directory(
+                    self.uniffiCloneHandle(),
+                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(path)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+    /**
      * 创建 PTY 会话，对应 `terminal.create`。返回 sessionId；
      * 输出 / 退出 / 错误经 `listener` 回调送达（替代 `/terminal` WebSocket 下行流）。
      */
@@ -778,6 +857,28 @@ open func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: Ter
         FfiConverterTypeTerminalEventListener_lower(listener),$0
     )
 })
+}
+    
+    /**
+     * 删除 `path` 指向的对象/文件。S3 走 `delete object`，Local 区分
+     * 文件/目录递归删；删除目录的语义由各 provider 自定（S3 仅删 key 不
+     * 递归——本期 UI 只暴露单文件删除，目录删除留给后续 PR）。
+     */
+open func deleteEntry(connectionId: String?, path: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_delete_entry(
+                    self.uniffiCloneHandle(),
+                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(path)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
 }
     
     /**
@@ -857,6 +958,28 @@ open func ping() -> PingInfo  {
 }
     
     /**
+     * 重命名/移动 `from` → `to`。S3 是 copy + delete（**非原子**），客户端
+     * 应通过 `connection_capabilities().can_rename == false` 在 UI 上提示。
+     * `from` 和 `to` 必须落在同一个 connection 上；本方法不做跨 provider 搬运。
+     */
+open func renameEntry(connectionId: String?, from: String, to: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_rename_entry(
+                    self.uniffiCloneHandle(),
+                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(from),FfiConverterString.lower(to)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+    
+    /**
      * 调整 PTY 尺寸，对应 `terminal.resize`。
      */
 open func resizeTerminal(sessionId: String, cols: UInt16, rows: UInt16)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
@@ -865,6 +988,22 @@ open func resizeTerminal(sessionId: String, cols: UInt16, rows: UInt16)throws   
         FfiConverterString.lower(sessionId),
         FfiConverterUInt16.lower(cols),
         FfiConverterUInt16.lower(rows),$0
+    )
+}
+}
+    
+    /**
+     * Send a `transfer_progress` envelope through the shared broadcast
+     * channel so Swift `EventClient` subscribers can drive progress bars.
+     * Best-effort: a closed channel just drops the event (no subscribers).
+     */
+open func sendProgressEvent(connectionId: String, path: String, bytesTransferred: UInt64, totalBytes: UInt64)  {try! rustCall() {
+    uniffi_terminal_finder_core_fn_method_corehandle_send_progress_event(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(connectionId),
+        FfiConverterString.lower(path),
+        FfiConverterUInt64.lower(bytesTransferred),
+        FfiConverterUInt64.lower(totalBytes),$0
     )
 }
 }
@@ -879,6 +1018,29 @@ open func sendTerminalInput(sessionId: String, data: Data)throws   {try rustCall
         FfiConverterData.lower(data),$0
     )
 }
+}
+    
+    /**
+     * 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
+     * 上传前后各发一次 `transfer_progress` 事件（0 / total），让 Swift
+     * 端可以驱动进度条。50 MiB 上限来自 `VfsProvider::read` 的对称约束:
+     * 这里复用同一个 inline 读取语义，避免临时落盘。
+     */
+open func uploadFile(connectionId: String?, remotePath: String, localSource: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_upload_file(
+                    self.uniffiCloneHandle(),
+                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(remotePath),FfiConverterString.lower(localSource)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
 }
     
     /**
@@ -1553,6 +1715,73 @@ public func FfiConverterTypePingInfo_lower(_ value: PingInfo) -> RustBuffer {
 
 
 /**
+ * Provider capability flags exposed to the client UI so it can gate or
+ * warn on operations the underlying store can't honour (e.g. S3 has no
+ * atomic rename and no native directories).
+ */
+public struct ProviderCapsDto: Equatable, Hashable {
+    public var canRename: Bool
+    public var canSymlink: Bool
+    public var canWrite: Bool
+    public var hasNativeDirectories: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(canRename: Bool, canSymlink: Bool, canWrite: Bool, hasNativeDirectories: Bool) {
+        self.canRename = canRename
+        self.canSymlink = canSymlink
+        self.canWrite = canWrite
+        self.hasNativeDirectories = hasNativeDirectories
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ProviderCapsDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProviderCapsDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProviderCapsDto {
+        return
+            try ProviderCapsDto(
+                canRename: FfiConverterBool.read(from: &buf), 
+                canSymlink: FfiConverterBool.read(from: &buf), 
+                canWrite: FfiConverterBool.read(from: &buf), 
+                hasNativeDirectories: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProviderCapsDto, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.canRename, into: &buf)
+        FfiConverterBool.write(value.canSymlink, into: &buf)
+        FfiConverterBool.write(value.canWrite, into: &buf)
+        FfiConverterBool.write(value.hasNativeDirectories, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderCapsDto_lift(_ buf: RustBuffer) throws -> ProviderCapsDto {
+    return try FfiConverterTypeProviderCapsDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProviderCapsDto_lower(_ value: ProviderCapsDto) -> RustBuffer {
+    return FfiConverterTypeProviderCapsDto.lower(value)
+}
+
+
+/**
  * 工作区状态，对应 `workspace.getState`。
  *
  * `scheme` 为 `"local"` 表示 LocalFsProvider；`"s3"` 表示当前 workspace 落在某个
@@ -1971,6 +2200,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_close_terminal() != 54865) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_capabilities() != 4471) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_create() != 23373) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1980,7 +2212,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 10972) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_create_remote_directory() != 18923) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_terminal() != 19440) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_delete_entry() != 51116) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_download_file() != 2091) {
@@ -1995,10 +2233,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_ping() != 37632) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_rename_entry() != 19592) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_resize_terminal() != 21001) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_send_progress_event() != 42909) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_send_terminal_input() != 1735) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_upload_file() != 9104) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_workspace_state() != 9720) {

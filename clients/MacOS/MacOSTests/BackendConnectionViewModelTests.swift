@@ -150,6 +150,27 @@ private final class MockBackendClient: BackendClientProtocol {
     ) async throws {
         // BackendConnectionViewModel tests do not exercise download_file.
     }
+
+    func uploadFile(
+        connectionId: String?,
+        remotePath: String,
+        localSource: String
+    ) async throws {}
+
+    func deleteEntry(connectionId: String?, path: String) async throws {}
+
+    func createRemoteDirectory(connectionId: String?, path: String) async throws {}
+
+    func renameEntry(connectionId: String?, from: String, to: String) async throws {}
+
+    func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto {
+        ProviderCapsDto(
+            canRename: false,
+            canSymlink: false,
+            canWrite: true,
+            hasNativeDirectories: false
+        )
+    }
 }
 
 @MainActor

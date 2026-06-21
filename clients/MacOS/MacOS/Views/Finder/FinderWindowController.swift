@@ -60,6 +60,7 @@ final class FinderWindowController: NSWindowController {
         connectionVM = BackendConnectionViewModel()
         cloudConnectionVM = ConnectionViewModel(
             core: FFIConnectionClient(),
+            capabilitiesClient: FFICapabilitiesClient(),
             keychain: KeychainService(),
             store: ConnectionStore()
         )

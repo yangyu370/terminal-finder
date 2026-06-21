@@ -274,6 +274,67 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         )
     }
 
+    /// Upload `localSource` into `remotePath` of the current workspace's
+    /// connection (or local FS if no connection). Refreshes the listing
+    /// on success so the new entry surfaces immediately.
+    func uploadFile(localSource: String, remotePath: String) async {
+        do {
+            try await backendClient.uploadFile(
+                connectionId: workspaceState?.connectionId,
+                remotePath: remotePath,
+                localSource: localSource
+            )
+            refresh()
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    /// Delete a single entry (file/object). For local directories the core
+    /// recursively removes; for S3 only the named key is dropped.
+    func deleteEntry(path: String) async {
+        do {
+            try await backendClient.deleteEntry(
+                connectionId: workspaceState?.connectionId,
+                path: path
+            )
+            refresh()
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    /// Create a directory at `path`. On S3 this writes a zero-byte marker —
+    /// callers should already have surfaced the non-native-directory warning
+    /// via `ConnectionViewModel.capabilities`.
+    func createDirectory(path: String) async {
+        do {
+            try await backendClient.createRemoteDirectory(
+                connectionId: workspaceState?.connectionId,
+                path: path
+            )
+            refresh()
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    /// Rename / move `from` → `to` within the current workspace's connection.
+    /// On S3 this is a non-atomic copy + delete; callers should surface the
+    /// warning from `ConnectionViewModel.capabilities` before calling.
+    func renameEntry(from: String, to: String) async {
+        do {
+            try await backendClient.renameEntry(
+                connectionId: workspaceState?.connectionId,
+                from: from,
+                to: to
+            )
+            refresh()
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
     /// Open the root of the given S3 connection. `""` is the bucket root in
     /// the S3 provider's relative-path convention.
     func openConnection(_ connectionId: String) {

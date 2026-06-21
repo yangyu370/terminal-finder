@@ -122,3 +122,14 @@ pub struct ConnectionInfoDto {
     pub bucket: String,
     pub base_prefix: String,
 }
+
+/// Provider capability flags exposed to the client UI so it can gate or
+/// warn on operations the underlying store can't honour (e.g. S3 has no
+/// atomic rename and no native directories).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ProviderCapsDto {
+    pub can_rename: bool,
+    pub can_symlink: bool,
+    pub can_write: bool,
+    pub has_native_directories: bool,
+}

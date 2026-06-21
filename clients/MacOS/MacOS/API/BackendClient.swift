@@ -20,6 +20,27 @@ protocol BackendClientProtocol {
         remotePath: String,
         localDestination: String
     ) async throws
+
+    /// 上传：读取 `localSource`，写到 `remotePath`。S3 走 PUT，Local 直接覆盖。
+    /// 进度通过 `transfer_progress` 事件下发到 `EventClientProtocol`。
+    func uploadFile(
+        connectionId: String?,
+        remotePath: String,
+        localSource: String
+    ) async throws
+
+    /// 删除单个对象/文件。S3 仅删 key（不递归），Local 区分文件/目录递归删除。
+    func deleteEntry(connectionId: String?, path: String) async throws
+
+    /// 创建目录。S3 写入零字节 marker 对象，调用方需通过 caps 提示用户。
+    func createRemoteDirectory(connectionId: String?, path: String) async throws
+
+    /// 重命名/移动。S3 是 copy + delete（非原子）；客户端应在 UI 上提示。
+    func renameEntry(connectionId: String?, from: String, to: String) async throws
+
+    /// 同步取该 connection 的 provider 能力声明（write/rename/symlink/native dirs）。
+    /// 用于 UI 灰显或加警告，例如 S3 上的 rename 显示"非原子"提示。
+    func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto
 }
 
 struct BackendClient: BackendClientProtocol {
@@ -91,9 +112,37 @@ struct BackendClient: BackendClientProtocol {
         remotePath: String,
         localDestination: String
     ) async throws {
-        throw BackendClientError.rpcError(
+        throw Self.unsupportedFFIOnly("downloadFile")
+    }
+
+    func uploadFile(
+        connectionId: String?,
+        remotePath: String,
+        localSource: String
+    ) async throws {
+        throw Self.unsupportedFFIOnly("uploadFile")
+    }
+
+    func deleteEntry(connectionId: String?, path: String) async throws {
+        throw Self.unsupportedFFIOnly("deleteEntry")
+    }
+
+    func createRemoteDirectory(connectionId: String?, path: String) async throws {
+        throw Self.unsupportedFFIOnly("createRemoteDirectory")
+    }
+
+    func renameEntry(connectionId: String?, from: String, to: String) async throws {
+        throw Self.unsupportedFFIOnly("renameEntry")
+    }
+
+    func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto {
+        throw Self.unsupportedFFIOnly("connectionCapabilities")
+    }
+
+    private static func unsupportedFFIOnly(_ method: String) -> BackendClientError {
+        BackendClientError.rpcError(
             code: "unsupported",
-            message: "downloadFile is not exposed by the HTTP backend; use the in-process FFI client."
+            message: "\(method) is FFI-only in Phase 1; the HTTP backend does not expose it."
         )
     }
 

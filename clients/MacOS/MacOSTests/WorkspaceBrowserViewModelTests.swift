@@ -337,6 +337,55 @@ final class WorkspaceBrowserViewModelTests: XCTestCase {
         )
     }
 
+    func test_writeActions_routeThroughCurrentWorkspaceConnection() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(
+            currentDirectory: "bucket/",
+            workspaceRoot: "bucket/",
+            scheme: "s3",
+            connectionId: "conn-99"
+        )
+        backend.listings["bucket/"] = listing(path: "bucket/")
+        let viewModel = makeViewModel(backend: backend)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        await viewModel.uploadFile(localSource: "/tmp/x.txt", remotePath: "bucket/x.txt")
+        await viewModel.deleteEntry(path: "bucket/old.txt")
+        await viewModel.createDirectory(path: "bucket/newdir")
+        await viewModel.renameEntry(from: "bucket/a.txt", to: "bucket/b.txt")
+
+        XCTAssertEqual(
+            backend.uploadCalls,
+            [
+                MockBackendClient.UploadCall(
+                    connectionId: "conn-99",
+                    remotePath: "bucket/x.txt",
+                    localSource: "/tmp/x.txt"
+                )
+            ]
+        )
+        XCTAssertEqual(
+            backend.deleteCalls,
+            [MockBackendClient.DeleteCall(connectionId: "conn-99", path: "bucket/old.txt")]
+        )
+        XCTAssertEqual(
+            backend.mkdirCalls,
+            [MockBackendClient.MkdirCall(connectionId: "conn-99", path: "bucket/newdir")]
+        )
+        XCTAssertEqual(
+            backend.renameCalls,
+            [
+                MockBackendClient.RenameCall(
+                    connectionId: "conn-99",
+                    from: "bucket/a.txt",
+                    to: "bucket/b.txt"
+                )
+            ]
+        )
+    }
+
     func test_openS3File_downloadsThenOpensLocally() async throws {
         let backend = MockBackendClient()
         backend.state = WorkspaceState(
@@ -494,6 +543,65 @@ private final class MockBackendClient: BackendClientProtocol {
         )
         downloadCalls.append(call)
         try downloadHandler?(call)
+    }
+
+    struct UploadCall: Equatable {
+        let connectionId: String?
+        let remotePath: String
+        let localSource: String
+    }
+    private(set) var uploadCalls: [UploadCall] = []
+
+    func uploadFile(
+        connectionId: String?,
+        remotePath: String,
+        localSource: String
+    ) async throws {
+        uploadCalls.append(
+            UploadCall(connectionId: connectionId, remotePath: remotePath, localSource: localSource)
+        )
+    }
+
+    struct DeleteCall: Equatable {
+        let connectionId: String?
+        let path: String
+    }
+    private(set) var deleteCalls: [DeleteCall] = []
+
+    func deleteEntry(connectionId: String?, path: String) async throws {
+        deleteCalls.append(DeleteCall(connectionId: connectionId, path: path))
+    }
+
+    struct MkdirCall: Equatable {
+        let connectionId: String?
+        let path: String
+    }
+    private(set) var mkdirCalls: [MkdirCall] = []
+
+    func createRemoteDirectory(connectionId: String?, path: String) async throws {
+        mkdirCalls.append(MkdirCall(connectionId: connectionId, path: path))
+    }
+
+    struct RenameCall: Equatable {
+        let connectionId: String?
+        let from: String
+        let to: String
+    }
+    private(set) var renameCalls: [RenameCall] = []
+
+    func renameEntry(connectionId: String?, from: String, to: String) async throws {
+        renameCalls.append(RenameCall(connectionId: connectionId, from: from, to: to))
+    }
+
+    var capabilitiesStub: ProviderCapsDto = ProviderCapsDto(
+        canRename: false,
+        canSymlink: false,
+        canWrite: true,
+        hasNativeDirectories: false
+    )
+
+    func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto {
+        capabilitiesStub
     }
 }
 

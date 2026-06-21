@@ -77,6 +77,54 @@ nonisolated struct FFIBackendClient: BackendClientProtocol {
         }
     }
 
+    func uploadFile(
+        connectionId: String?,
+        remotePath: String,
+        localSource: String
+    ) async throws {
+        do {
+            try await core.uploadFile(
+                connectionId: connectionId,
+                remotePath: remotePath,
+                localSource: localSource
+            )
+        } catch {
+            throw Self.mapError(error)
+        }
+    }
+
+    func deleteEntry(connectionId: String?, path: String) async throws {
+        do {
+            try await core.deleteEntry(connectionId: connectionId, path: path)
+        } catch {
+            throw Self.mapError(error)
+        }
+    }
+
+    func createRemoteDirectory(connectionId: String?, path: String) async throws {
+        do {
+            try await core.createRemoteDirectory(connectionId: connectionId, path: path)
+        } catch {
+            throw Self.mapError(error)
+        }
+    }
+
+    func renameEntry(connectionId: String?, from: String, to: String) async throws {
+        do {
+            try await core.renameEntry(connectionId: connectionId, from: from, to: to)
+        } catch {
+            throw Self.mapError(error)
+        }
+    }
+
+    func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto {
+        do {
+            return try core.connectionCapabilities(connectionId: connectionId)
+        } catch {
+            throw Self.mapError(error)
+        }
+    }
+
     private func pingResult() -> PingResult {
         let info = core.ping()
         return PingResult(service: info.service, version: info.version)
@@ -132,6 +180,24 @@ private extension EntryKind {
 }
 
 // MARK: - Connection registry
+
+/// `CoreCapabilitiesClientProtocol` 的进程内实现：转调 `connectionCapabilities`，
+/// 把 `CoreError.Rpc` 透传为 `BackendClientError.rpcError`，与其余 client 一致。
+nonisolated struct FFICapabilitiesClient: CoreCapabilitiesClientProtocol {
+    private let core: CoreHandle
+
+    init(core: CoreHandle = CoreFFI.handle) {
+        self.core = core
+    }
+
+    func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto {
+        do {
+            return try core.connectionCapabilities(connectionId: connectionId)
+        } catch {
+            throw FFIBackendClient.mapError(error)
+        }
+    }
+}
 
 /// `CoreConnectionClientProtocol` 的进程内实现。直接转调 `CoreHandle` 上的
 /// `connectionCreate / connectionList / connectionRemove`，并把 uniffi 的

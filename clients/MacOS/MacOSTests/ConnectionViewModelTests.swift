@@ -91,6 +91,31 @@ final class ConnectionViewModelTests: XCTestCase {
         XCTAssertEqual(core.createCalls.count, 0)
     }
 
+    func test_loadCapabilities_populatesMapFromCapabilitiesClient() {
+        let core = MockCoreConnectionClient()
+        let caps = MockCapabilitiesClient(
+            stub: ProviderCapsDto(
+                canRename: false,
+                canSymlink: false,
+                canWrite: true,
+                hasNativeDirectories: false
+            )
+        )
+        let vm = ConnectionViewModel(
+            core: core,
+            capabilitiesClient: caps,
+            keychain: InMemoryKeychainService(),
+            store: InMemoryConnectionStore()
+        )
+
+        vm.loadCapabilities(for: "conn-1")
+
+        XCTAssertEqual(caps.queries, ["conn-1"])
+        XCTAssertEqual(vm.capabilities["conn-1"]?.canRename, false)
+        XCTAssertEqual(vm.capabilities["conn-1"]?.canWrite, true)
+        XCTAssertEqual(vm.capabilities["conn-1"]?.hasNativeDirectories, false)
+    }
+
     func test_remove_clears_core_keychain_and_store() async throws {
         let keychain = InMemoryKeychainService()
         try keychain.save(connectionId: "id-1", accessKeyId: "AKIA", secretAccessKey: "SECRET")
@@ -161,6 +186,20 @@ final class MockCoreConnectionClient: CoreConnectionClientProtocol {
 
     func remove(connectionId: String) async throws {
         removeCalls.append(connectionId)
+    }
+}
+
+final class MockCapabilitiesClient: CoreCapabilitiesClientProtocol {
+    let stub: ProviderCapsDto
+    private(set) var queries: [String] = []
+
+    init(stub: ProviderCapsDto) {
+        self.stub = stub
+    }
+
+    func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto {
+        queries.append(connectionId)
+        return stub
     }
 }
 

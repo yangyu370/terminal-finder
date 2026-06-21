@@ -182,6 +182,27 @@ private final class LayoutTestBackendClient: BackendClientProtocol {
     ) async throws {
         // Layout tests never exercise download paths.
     }
+
+    func uploadFile(
+        connectionId: String?,
+        remotePath: String,
+        localSource: String
+    ) async throws {}
+
+    func deleteEntry(connectionId: String?, path: String) async throws {}
+
+    func createRemoteDirectory(connectionId: String?, path: String) async throws {}
+
+    func renameEntry(connectionId: String?, from: String, to: String) async throws {}
+
+    func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto {
+        ProviderCapsDto(
+            canRename: true,
+            canSymlink: true,
+            canWrite: true,
+            hasNativeDirectories: true
+        )
+    }
 }
 
 private final class LayoutTestWorkspaceItemOpener: WorkspaceItemOpening {

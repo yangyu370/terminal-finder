@@ -144,6 +144,27 @@ impl CoreHandle {
             .collect()
     }
 
+    /// Capability flags for the provider behind `connection_id`. Forces the
+    /// provider into the cache via `resolve_provider` so the caller sees the
+    /// real OpenDAL-backed caps (not the registry's pre-construction guess).
+    pub fn connection_capabilities(
+        &self,
+        connection_id: String,
+    ) -> Result<crate::ffi::dto::ProviderCapsDto, crate::ffi::error::CoreError> {
+        let (_, provider) = crate::workspace::service::resolve_provider(
+            &self.state,
+            Some(connection_id.as_str()),
+            std::path::Path::new(""),
+        )?;
+        let caps = provider.capabilities();
+        Ok(crate::ffi::dto::ProviderCapsDto {
+            can_rename: caps.can_rename,
+            can_symlink: caps.can_symlink,
+            can_write: caps.can_write,
+            has_native_directories: caps.has_native_directories,
+        })
+    }
+
     /// Remove a connection and its in-memory credentials. Also drops any
     /// cached `S3Provider` for that connection so a future call with the same
     /// `connection_id` cannot reuse the old OpenDAL `Operator` (and its
@@ -200,6 +221,132 @@ impl CoreHandle {
         };
         let response = workspace::list_directory(&self.state, params).await?;
         Ok(response.into())
+    }
+
+    /// 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
+    /// 上传前后各发一次 `transfer_progress` 事件（0 / total），让 Swift
+    /// 端可以驱动进度条。50 MiB 上限来自 `VfsProvider::read` 的对称约束:
+    /// 这里复用同一个 inline 读取语义，避免临时落盘。
+    pub async fn upload_file(
+        &self,
+        connection_id: Option<String>,
+        remote_path: String,
+        local_source: String,
+    ) -> Result<(), CoreError> {
+        use crate::error::ApiError;
+
+        let path_buf = std::path::PathBuf::from(&local_source);
+        let read_path = path_buf.clone();
+        let data = tokio::task::spawn_blocking(move || std::fs::read(&read_path))
+            .await
+            .map_err(|e| ApiError::BackgroundTask {
+                operation: "ffi.upload_file",
+                message: e.to_string(),
+            })?
+            .map_err(|source| ApiError::FileSystemRead {
+                path: path_buf,
+                source,
+            })?;
+
+        let (location, provider) = crate::workspace::service::resolve_provider(
+            &self.state,
+            connection_id.as_deref(),
+            std::path::Path::new(&remote_path),
+        )?;
+        let total = data.len() as u64;
+        let conn_label = connection_id.as_deref().unwrap_or("");
+        self.send_progress_event(conn_label, &remote_path, 0, total);
+        provider.write(&location.path, data).await?;
+        self.send_progress_event(conn_label, &remote_path, total, total);
+        tracing::info!(
+            method = "workspace.uploadFile",
+            connection_id = conn_label,
+            bytes = total,
+            "upload complete"
+        );
+        Ok(())
+    }
+
+    /// 删除 `path` 指向的对象/文件。S3 走 `delete object`，Local 区分
+    /// 文件/目录递归删；删除目录的语义由各 provider 自定（S3 仅删 key 不
+    /// 递归——本期 UI 只暴露单文件删除，目录删除留给后续 PR）。
+    pub async fn delete_entry(
+        &self,
+        connection_id: Option<String>,
+        path: String,
+    ) -> Result<(), CoreError> {
+        let (location, provider) = crate::workspace::service::resolve_provider(
+            &self.state,
+            connection_id.as_deref(),
+            std::path::Path::new(&path),
+        )?;
+        provider.delete(&location.path).await?;
+        Ok(())
+    }
+
+    /// 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
+    /// 客户端应通过 `connection_capabilities().has_native_directories`
+    /// 判断是否需要在 UI 上提示"零字节占位"语义。
+    pub async fn create_remote_directory(
+        &self,
+        connection_id: Option<String>,
+        path: String,
+    ) -> Result<(), CoreError> {
+        let (location, provider) = crate::workspace::service::resolve_provider(
+            &self.state,
+            connection_id.as_deref(),
+            std::path::Path::new(&path),
+        )?;
+        provider.create_directory(&location.path).await?;
+        Ok(())
+    }
+
+    /// 重命名/移动 `from` → `to`。S3 是 copy + delete（**非原子**），客户端
+    /// 应通过 `connection_capabilities().can_rename == false` 在 UI 上提示。
+    /// `from` 和 `to` 必须落在同一个 connection 上；本方法不做跨 provider 搬运。
+    pub async fn rename_entry(
+        &self,
+        connection_id: Option<String>,
+        from: String,
+        to: String,
+    ) -> Result<(), CoreError> {
+        let (location, provider) = crate::workspace::service::resolve_provider(
+            &self.state,
+            connection_id.as_deref(),
+            std::path::Path::new(&from),
+        )?;
+        // `from` 经 resolve 拿到 location.path；`to` 也要经过同一个 provider 的
+        // path 规范（base_prefix 等），所以这里再次调 resolve_provider 取
+        // location 即可。两次 resolve 共享同一个 provider 缓存条目，没有额外开销。
+        let (target_location, _) = crate::workspace::service::resolve_provider(
+            &self.state,
+            connection_id.as_deref(),
+            std::path::Path::new(&to),
+        )?;
+        provider
+            .rename(&location.path, &target_location.path)
+            .await?;
+        Ok(())
+    }
+
+    /// Send a `transfer_progress` envelope through the shared broadcast
+    /// channel so Swift `EventClient` subscribers can drive progress bars.
+    /// Best-effort: a closed channel just drops the event (no subscribers).
+    fn send_progress_event(
+        &self,
+        connection_id: &str,
+        path: &str,
+        bytes_transferred: u64,
+        total_bytes: u64,
+    ) {
+        let payload = serde_json::json!({
+            "type": "transfer_progress",
+            "connection_id": connection_id,
+            "path": path,
+            "bytes_transferred": bytes_transferred,
+            "total_bytes": total_bytes,
+        });
+        let _ = self.state.events().send(payload.to_string());
     }
 
     /// 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
@@ -387,6 +534,95 @@ mod connection_ffi_tests {
         let _ = std::fs::remove_file(&dst);
 
         assert_eq!(written, b"payload");
+    }
+
+    #[tokio::test]
+    async fn upload_then_delete_roundtrip_on_local() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let label = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let src = std::env::temp_dir().join(format!("tf-upload-src-{label}"));
+        let dst = std::env::temp_dir().join(format!("tf-upload-dst-{label}"));
+        std::fs::write(&src, b"payload").expect("write src");
+
+        let handle = CoreHandle::new();
+        handle
+            .upload_file(
+                None,
+                dst.to_string_lossy().into_owned(),
+                src.to_string_lossy().into_owned(),
+            )
+            .await
+            .expect("upload succeeds");
+        let written = std::fs::read(&dst).expect("dst exists");
+        assert_eq!(written, b"payload");
+
+        handle
+            .delete_entry(None, dst.to_string_lossy().into_owned())
+            .await
+            .expect("delete succeeds");
+        assert!(!dst.exists());
+
+        let _ = std::fs::remove_file(&src);
+    }
+
+    #[tokio::test]
+    async fn create_remote_directory_and_rename_on_local() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let label = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("tf-rename-{label}"));
+        let from = base.join("from.txt");
+        let to = base.join("to.txt");
+
+        let handle = CoreHandle::new();
+        handle
+            .create_remote_directory(None, base.to_string_lossy().into_owned())
+            .await
+            .expect("mkdir");
+        std::fs::write(&from, b"x").expect("seed from");
+        handle
+            .rename_entry(
+                None,
+                from.to_string_lossy().into_owned(),
+                to.to_string_lossy().into_owned(),
+            )
+            .await
+            .expect("rename");
+
+        assert!(!from.exists());
+        assert!(to.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn connection_capabilities_reports_local_caps_for_an_offline_s3_connection() {
+        // capabilities() should still report the OpenDAL-backed flags even
+        // before the first network call. We verify by registering an S3
+        // connection with an unreachable endpoint; `connection_capabilities`
+        // must succeed and report S3 caps (can_rename=false, etc).
+        let h = handle();
+        let id = h.connection_create(
+            "test".into(),
+            "http://127.0.0.1:1".into(),
+            "us-east-1".into(),
+            "x".into(),
+            String::new(),
+            true,
+            "x".into(),
+            "x".into(),
+        );
+        let caps = h.connection_capabilities(id).expect("caps lookup");
+        assert!(!caps.can_rename);
+        assert!(!caps.can_symlink);
+        assert!(caps.can_write);
+        assert!(!caps.has_native_directories);
     }
 
     #[tokio::test]

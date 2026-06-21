@@ -277,6 +277,75 @@ impl crate::vfs::VfsProvider for LocalFsProvider {
             })
     }
 
+    async fn write(&self, path: &str, data: Vec<u8>) -> Result<(), ApiError> {
+        let path_buf = PathBuf::from(path);
+        let p = path_buf.clone();
+        tokio::task::spawn_blocking(move || fs::write(&p, &data))
+            .await
+            .map_err(|e| ApiError::BackgroundTask {
+                operation: "vfs.local.write",
+                message: e.to_string(),
+            })?
+            .map_err(|source| ApiError::FileSystemRead {
+                path: path_buf,
+                source,
+            })
+    }
+
+    async fn delete(&self, path: &str) -> Result<(), ApiError> {
+        let path_buf = PathBuf::from(path);
+        let p = path_buf.clone();
+        tokio::task::spawn_blocking(move || {
+            let metadata = fs::symlink_metadata(&p)?;
+            if metadata.is_dir() {
+                fs::remove_dir_all(&p)
+            } else {
+                fs::remove_file(&p)
+            }
+        })
+        .await
+        .map_err(|e| ApiError::BackgroundTask {
+            operation: "vfs.local.delete",
+            message: e.to_string(),
+        })?
+        .map_err(|source| ApiError::FileSystemRead {
+            path: path_buf,
+            source,
+        })
+    }
+
+    async fn create_directory(&self, path: &str) -> Result<(), ApiError> {
+        let path_buf = PathBuf::from(path);
+        let p = path_buf.clone();
+        tokio::task::spawn_blocking(move || fs::create_dir_all(&p))
+            .await
+            .map_err(|e| ApiError::BackgroundTask {
+                operation: "vfs.local.create_directory",
+                message: e.to_string(),
+            })?
+            .map_err(|source| ApiError::FileSystemRead {
+                path: path_buf,
+                source,
+            })
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<(), ApiError> {
+        let from_buf = PathBuf::from(from);
+        let to_buf = PathBuf::from(to);
+        let f = from_buf.clone();
+        let t = to_buf.clone();
+        tokio::task::spawn_blocking(move || fs::rename(&f, &t))
+            .await
+            .map_err(|e| ApiError::BackgroundTask {
+                operation: "vfs.local.rename",
+                message: e.to_string(),
+            })?
+            .map_err(|source| ApiError::FileSystemRead {
+                path: from_buf,
+                source,
+            })
+    }
+
     fn capabilities(&self) -> crate::vfs::ProviderCaps {
         crate::vfs::ProviderCaps {
             can_rename: true,
@@ -539,6 +608,70 @@ mod tests {
 
         fs::remove_file(&path).expect("cleanup");
         assert_eq!(data, b"hello-world");
+    }
+
+    #[tokio::test]
+    async fn local_write_then_read_roundtrip() {
+        let path = unique_test_path("local-write-roundtrip");
+        let provider = LocalFsProvider;
+        provider
+            .write(&path.to_string_lossy(), b"hello-write".to_vec())
+            .await
+            .expect("write");
+        let data = provider
+            .read(&path.to_string_lossy())
+            .await
+            .expect("read back");
+        fs::remove_file(&path).expect("cleanup");
+        assert_eq!(data, b"hello-write");
+    }
+
+    #[tokio::test]
+    async fn local_delete_removes_file() {
+        let path = unique_test_path("local-delete-file");
+        fs::write(&path, b"x").expect("seed file");
+        let provider = LocalFsProvider;
+        provider
+            .delete(&path.to_string_lossy())
+            .await
+            .expect("delete file");
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn local_delete_recursively_removes_directory_tree() {
+        let base = unique_test_path("local-delete-tree");
+        fs::create_dir_all(base.join("inner")).expect("seed tree");
+        fs::write(base.join("inner/leaf.txt"), b"x").expect("seed leaf");
+        let provider = LocalFsProvider;
+        provider
+            .delete(&base.to_string_lossy())
+            .await
+            .expect("recursive delete");
+        assert!(!base.exists());
+    }
+
+    #[tokio::test]
+    async fn local_create_directory_and_rename() {
+        let base = unique_test_path("local-rename");
+        let from = base.join("a.txt");
+        let to = base.join("b.txt");
+        let provider = LocalFsProvider;
+        provider
+            .create_directory(&base.to_string_lossy())
+            .await
+            .expect("mkdir base");
+        provider
+            .write(&from.to_string_lossy(), b"x".to_vec())
+            .await
+            .expect("write a");
+        provider
+            .rename(&from.to_string_lossy(), &to.to_string_lossy())
+            .await
+            .expect("rename a->b");
+        assert!(!from.exists());
+        assert!(to.exists());
+        fs::remove_dir_all(&base).expect("cleanup");
     }
 
     #[tokio::test]

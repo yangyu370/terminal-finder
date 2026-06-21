@@ -76,6 +76,20 @@ pub trait VfsProvider: Send + Sync {
     /// 一次性读取整个对象/文件到内存。调用方应先确保对象 size <=
     /// `MAX_INLINE_READ_BYTES`；超限的 provider 会以 `ProviderError` 拒绝。
     async fn read(&self, path: &str) -> Result<Vec<u8>, ApiError>;
+    /// 写入或覆盖 `path` 内容为 `data`。Local 走 `fs::write`（atomic-ish on POSIX），
+    /// S3 走 `Operator::write`（PUT object）。
+    async fn write(&self, path: &str, data: Vec<u8>) -> Result<(), ApiError>;
+    /// 删除 `path`。Local 区分文件/目录递归删；S3 删单个对象 key（目录请按需
+    /// 由调用方递归列+删，这里不偷偷代劳）。
+    async fn delete(&self, path: &str) -> Result<(), ApiError>;
+    /// 创建目录。Local 走 `create_dir_all`；S3 写入一个 `<path>/` 形式的零字节
+    /// marker 对象——S3 没有原生目录，UI 上的"新建文件夹"通过这个 marker
+    /// 体现，调用方需通过 `capabilities().has_native_directories` 提示用户。
+    async fn create_directory(&self, path: &str) -> Result<(), ApiError>;
+    /// 重命名/移动 `from` → `to`。Local atomic（同盘），S3 走 copy + delete
+    /// 模拟（**非原子**：copy 成功而 delete 失败会留下两份对象，调用方需通过
+    /// `capabilities().can_rename` 提示用户）。
+    async fn rename(&self, from: &str, to: &str) -> Result<(), ApiError>;
     /// 声明 provider 的能力边界。
     fn capabilities(&self) -> ProviderCaps;
 }

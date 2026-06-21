@@ -261,10 +261,58 @@ impl crate::vfs::VfsProvider for S3Provider {
         })
     }
 
+    async fn write(&self, path: &str, data: Vec<u8>) -> Result<(), ApiError> {
+        let key = self.absolute_path(path);
+        let connection_id = self.connection_id.0.clone();
+        self.operator
+            .write(&key, data)
+            .await
+            .map(|_| ())
+            .map_err(|e| map_opendal_error("s3.write", connection_id, e))
+    }
+
+    async fn delete(&self, path: &str) -> Result<(), ApiError> {
+        let key = self.absolute_path(path);
+        let connection_id = self.connection_id.0.clone();
+        self.operator
+            .delete(&key)
+            .await
+            .map_err(|e| map_opendal_error("s3.delete", connection_id, e))
+    }
+
+    async fn create_directory(&self, path: &str) -> Result<(), ApiError> {
+        // S3 没有真正的目录概念：写一个以 '/' 结尾的零字节对象作为占位 marker，
+        // 让随后的 list 调用能在 UI 上看到这个"目录"。caller 通过
+        // `capabilities().has_native_directories == false` 已被告知这一点。
+        let key = format!("{}/", self.absolute_path(path).trim_end_matches('/'));
+        let connection_id = self.connection_id.0.clone();
+        self.operator
+            .write(&key, Vec::<u8>::new())
+            .await
+            .map(|_| ())
+            .map_err(|e| map_opendal_error("s3.create_directory", connection_id, e))
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<(), ApiError> {
+        // S3 没有原子 rename：copy 成功而 delete 失败时会留下两份对象，
+        // 调用方应通过 `capabilities().can_rename == false` 提示用户。
+        let from_key = self.absolute_path(from);
+        let to_key = self.absolute_path(to);
+        let connection_id = self.connection_id.0.clone();
+        self.operator
+            .copy(&from_key, &to_key)
+            .await
+            .map_err(|e| map_opendal_error("s3.rename.copy", connection_id.clone(), e))?;
+        self.operator
+            .delete(&from_key)
+            .await
+            .map_err(|e| map_opendal_error("s3.rename.delete", connection_id, e))
+    }
+
     fn capabilities(&self) -> crate::vfs::ProviderCaps {
-        // can_write: true 在此刻是给客户端 UI 的能力广播；trait 上还没有 write 方法，
-        // PR 7/8 落地后就直接生效。can_rename / can_symlink / has_native_directories
-        // 反映 S3 对象语义：没有原子 rename、没有符号链接、目录是逻辑前缀。
+        // can_rename / can_symlink / has_native_directories 反映 S3 对象语义：
+        // 没有原子 rename、没有符号链接、目录是逻辑前缀。客户端据此灰显或
+        // 加警告（"非原子 rename" / "零字节占位目录"）。
         crate::vfs::ProviderCaps {
             can_rename: false,
             can_symlink: false,

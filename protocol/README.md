@@ -270,6 +270,78 @@ Other error codes mirror the underlying provider:
 - `authentication_failed` — S3 credentials were rejected.
 - `network_error` — transient S3 transport issue.
 
+## workspace.uploadFile
+
+### Request (FFI only)
+
+```text
+upload_file(connection_id: Option<String>, remote_path: String, local_source: String) -> Result<(), CoreError>
+```
+
+Reads `local_source` from disk and writes the contents to `remote_path` on the addressed provider. Local writes overwrite; S3 PUTs the object. Emits two `transfer_progress` events on the event channel: one with `bytes_transferred == 0` and one with `bytes_transferred == total_bytes`. Phase 1 reads the source into memory inline, so callers should respect the 50 MiB convention used by `download_file` until phase 2 lands streaming uploads.
+
+## workspace.deleteEntry
+
+### Request (FFI only)
+
+```text
+delete_entry(connection_id: Option<String>, path: String) -> Result<(), CoreError>
+```
+
+Deletes one entry. Local removes file or recursively removes directory; S3 deletes only the named key (no recursive prefix sweep — phase 2 owns that).
+
+## workspace.createRemoteDirectory
+
+### Request (FFI only)
+
+```text
+create_remote_directory(connection_id: Option<String>, path: String) -> Result<(), CoreError>
+```
+
+Creates a directory at `path`. Local uses `create_dir_all`; S3 writes a zero-byte object keyed `<path>/` as a placeholder so subsequent `list` calls surface it. Clients should check `connection_capabilities().has_native_directories` first and warn the user when it is `false`.
+
+## workspace.renameEntry
+
+### Request (FFI only)
+
+```text
+rename_entry(connection_id: Option<String>, from: String, to: String) -> Result<(), CoreError>
+```
+
+Renames / moves `from` → `to` on the same provider. Local is atomic on the same volume; S3 performs copy + delete and is **not atomic** — a failure between the two steps leaves both `from` and `to` in the bucket. Clients should check `connection_capabilities().can_rename` and warn the user when it is `false`.
+
+## workspace.connectionCapabilities
+
+### Request (FFI only)
+
+```text
+connection_capabilities(connection_id: String) -> Result<ProviderCapsDto, CoreError>
+```
+
+Returns:
+- `can_rename` — provider supports atomic rename (Local `true`, S3 `false`).
+- `can_symlink` — provider supports symbolic links (Local `true`, S3 `false`).
+- `can_write` — provider exposes `write`/`delete`/`create_directory`/`rename` at all (Local and S3 both `true` in phase 1).
+- `has_native_directories` — `false` means "directories are simulated via marker objects" (S3); `true` means the underlying store actually tracks directories (Local).
+
+Caps are read directly from the resolved provider so callers see the same capabilities the operations themselves honour.
+
+### Event: `transfer_progress`
+
+Sent through the `EventClientProtocol` channel during long transfers (`upload_file` today, future streaming `download_file`):
+
+```json
+{
+  "type": "transfer_progress",
+  "connection_id": "a1b2c3d4-...",
+  "path": "bucket/key.bin",
+  "bytes_transferred": 0,
+  "total_bytes": 5242880
+}
+```
+
+`bytes_transferred == total_bytes` signals completion. Multiple in-flight transfers share the channel — clients should key progress UI off `(connection_id, path)`.
+
 ## Errors
 
 RPC errors use a shared shape:

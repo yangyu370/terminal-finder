@@ -64,21 +64,32 @@ public protocol CoreConnectionClientProtocol {
 /// SECURITY: credentials are passed by value through `create(...)` and forwarded
 /// to core + Keychain. They are NEVER cached on `self`, NEVER persisted to the
 /// JSON store, and NEVER logged.
+/// Protocol the ViewModel uses to fetch provider caps. Decoupled from
+/// `CoreConnectionClientProtocol` so tests can stub caps independently of
+/// the create/list/remove flow.
+public protocol CoreCapabilitiesClientProtocol {
+    func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto
+}
+
 @MainActor
 public final class ConnectionViewModel: ObservableObject {
     @Published public private(set) var connections: [ConnectionListItem] = []
+    @Published public private(set) var capabilities: [String: ProviderCapsDto] = [:]
     @Published public var errorText: String?
 
     private let core: CoreConnectionClientProtocol
+    private let capabilitiesClient: CoreCapabilitiesClientProtocol?
     private let keychain: KeychainServicing
     private let store: ConnectionStoring
 
     public init(
         core: CoreConnectionClientProtocol,
+        capabilitiesClient: CoreCapabilitiesClientProtocol? = nil,
         keychain: KeychainServicing,
         store: ConnectionStoring
     ) {
         self.core = core
+        self.capabilitiesClient = capabilitiesClient
         self.keychain = keychain
         self.store = store
     }
@@ -175,5 +186,20 @@ public final class ConnectionViewModel: ObservableObject {
         try? keychain.delete(connectionId: id)
         try? store.remove(connectionId: id)
         connections.removeAll { $0.id == id }
+        capabilities.removeValue(forKey: id)
+    }
+
+    /// Pull provider capability flags for `id` into the published `capabilities`
+    /// map so UI can gate destructive/non-atomic actions. Caps lookup forces the
+    /// provider into core's cache (via resolve_provider) — it can fail if the
+    /// connection id is not registered. Failures clear the entry rather than
+    /// throw, so a connect-then-loading-spinner state collapses gracefully.
+    public func loadCapabilities(for id: String) {
+        guard let client = capabilitiesClient else { return }
+        do {
+            capabilities[id] = try client.connectionCapabilities(connectionId: id)
+        } catch {
+            capabilities[id] = nil
+        }
     }
 }
