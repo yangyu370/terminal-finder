@@ -250,6 +250,26 @@ Returns connection summaries (`ConnectionInfoDto` cross-FFI). Credentials are in
 
 Removes the connection, its in-memory credentials, and any cached S3 provider so the `connection_id` can no longer be used to access objects. Returns the `connection_not_found` error code when the `connection_id` is unknown.
 
+## workspace.downloadFile
+
+### Request (FFI only)
+
+```text
+download_file(connection_id: Option<String>, remote_path: String, local_destination: String) -> Result<(), CoreError>
+```
+
+### Response
+
+Returns `Ok(())` on success. There is no JSON-RPC equivalent in this phase: the in-process Swift client invokes it directly through the UniFFI `CoreHandle`.
+
+Reads `remote_path` from the addressed provider (`connection_id == None` → local FS, `Some(id)` → registered S3 connection) and writes the bytes to `local_destination`. The provider enforces a 50 MiB per-object cap and returns `provider_error` when the source is larger; oversized objects must be streamed by future phases.
+
+Other error codes mirror the underlying provider:
+- `connection_not_found` — `connection_id` is not in the registry.
+- `object_not_found` / `filesystem_read_failed` — the remote/local path is missing.
+- `authentication_failed` — S3 credentials were rejected.
+- `network_error` — transient S3 transport issue.
+
 ## Errors
 
 RPC errors use a shared shape:

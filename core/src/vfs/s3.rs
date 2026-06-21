@@ -195,6 +195,35 @@ impl crate::vfs::VfsProvider for S3Provider {
         Ok((canonical, listing))
     }
 
+    async fn read(&self, path: &str) -> Result<Vec<u8>, ApiError> {
+        let key = self.absolute_path(path);
+        let connection_id = self.connection_id.0.clone();
+        // stat 先校验大小：避免对 GB 级对象触发一次完整 GET 才发现超限。
+        let metadata = self
+            .operator
+            .stat(&key)
+            .await
+            .map_err(|e| map_opendal_error("s3.read.stat", connection_id.clone(), e))?;
+
+        if metadata.content_length() > crate::vfs::MAX_INLINE_READ_BYTES {
+            return Err(ApiError::ProviderError {
+                operation: "s3.read",
+                message: format!(
+                    "object too large for inline read: {} bytes (limit {} bytes)",
+                    metadata.content_length(),
+                    crate::vfs::MAX_INLINE_READ_BYTES
+                ),
+            });
+        }
+
+        let buffer = self
+            .operator
+            .read(&key)
+            .await
+            .map_err(|e| map_opendal_error("s3.read", connection_id, e))?;
+        Ok(buffer.to_vec())
+    }
+
     async fn stat(&self, path: &str) -> Result<DirectoryEntry, ApiError> {
         let key = self.absolute_path(path);
         let connection_id = self.connection_id.0.clone();

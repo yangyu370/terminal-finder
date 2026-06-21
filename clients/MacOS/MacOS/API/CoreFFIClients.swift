@@ -61,6 +61,22 @@ nonisolated struct FFIBackendClient: BackendClientProtocol {
         }
     }
 
+    func downloadFile(
+        connectionId: String?,
+        remotePath: String,
+        localDestination: String
+    ) async throws {
+        do {
+            try await core.downloadFile(
+                connectionId: connectionId,
+                remotePath: remotePath,
+                localDestination: localDestination
+            )
+        } catch {
+            throw Self.mapError(error)
+        }
+    }
+
     private func pingResult() -> PingResult {
         let info = core.ping()
         return PingResult(service: info.service, version: info.version)

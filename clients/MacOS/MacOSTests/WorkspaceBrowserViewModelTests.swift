@@ -337,6 +337,46 @@ final class WorkspaceBrowserViewModelTests: XCTestCase {
         )
     }
 
+    func test_openS3File_downloadsThenOpensLocally() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(
+            currentDirectory: "bucket/",
+            workspaceRoot: "bucket/",
+            scheme: "s3",
+            connectionId: "conn-42"
+        )
+        backend.listings["bucket/"] = listing(
+            path: "bucket/",
+            entries: [entry(name: "report.txt", path: "bucket/report.txt")]
+        )
+        let opener = MockWorkspaceItemOpener()
+        let viewModel = makeViewModel(backend: backend, opener: opener)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        viewModel.open(entry(name: "report.txt", path: "bucket/report.txt"))
+
+        // Drive the unstructured Task we kicked off in open(_:).
+        for _ in 0..<100 where backend.downloadCalls.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(backend.downloadCalls.count, 1)
+        let call = backend.downloadCalls[0]
+        XCTAssertEqual(call.connectionId, "conn-42")
+        XCTAssertEqual(call.remotePath, "bucket/report.txt")
+        XCTAssertTrue(
+            call.localDestination.hasSuffix("/com.terminal-finder/downloads/report.txt"),
+            "Expected sandboxed cache path, got: \(call.localDestination)"
+        )
+
+        for _ in 0..<100 where opener.openedPaths.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(opener.openedPaths, [call.localDestination])
+    }
+
     private func waitUntilLoaded(_ viewModel: WorkspaceBrowserViewModel) async throws {
         for _ in 0..<100 {
             if !viewModel.isLoading {
@@ -392,6 +432,14 @@ private final class MockBackendClient: BackendClientProtocol {
     private(set) var openDirectoryPaths: [String] = []
     private(set) var openDirectoryConnectionIds: [String?] = []
 
+    struct DownloadCall: Equatable {
+        let connectionId: String?
+        let remotePath: String
+        let localDestination: String
+    }
+    private(set) var downloadCalls: [DownloadCall] = []
+    var downloadHandler: ((DownloadCall) throws -> Void)?
+
     func health() async throws -> PingResult {
         PingResult(service: "test-core", version: "test")
     }
@@ -432,6 +480,20 @@ private final class MockBackendClient: BackendClientProtocol {
         }
 
         return listing
+    }
+
+    func downloadFile(
+        connectionId: String?,
+        remotePath: String,
+        localDestination: String
+    ) async throws {
+        let call = DownloadCall(
+            connectionId: connectionId,
+            remotePath: remotePath,
+            localDestination: localDestination
+        )
+        downloadCalls.append(call)
+        try downloadHandler?(call)
     }
 }
 

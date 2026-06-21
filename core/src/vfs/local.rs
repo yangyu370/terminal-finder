@@ -237,6 +237,46 @@ impl crate::vfs::VfsProvider for LocalFsProvider {
             })?
     }
 
+    async fn read(&self, path: &str) -> Result<Vec<u8>, ApiError> {
+        let path_buf = PathBuf::from(path);
+        let path_for_meta = path_buf.clone();
+        // 先在 spawn_blocking 内拿 metadata：避免主线程拒绝 51MB 这种轻判定也阻塞，
+        // 且让 metadata 失败与 read 失败共享同一条 spawn_blocking 错误链。
+        let metadata = tokio::task::spawn_blocking(move || fs::metadata(&path_for_meta))
+            .await
+            .map_err(|e| ApiError::BackgroundTask {
+                operation: "vfs.local.read",
+                message: e.to_string(),
+            })?
+            .map_err(|source| ApiError::FileSystemRead {
+                path: path_buf.clone(),
+                source,
+            })?;
+
+        if metadata.len() > crate::vfs::MAX_INLINE_READ_BYTES {
+            return Err(ApiError::ProviderError {
+                operation: "vfs.local.read",
+                message: format!(
+                    "file too large for inline read: {} bytes (limit {} bytes)",
+                    metadata.len(),
+                    crate::vfs::MAX_INLINE_READ_BYTES
+                ),
+            });
+        }
+
+        let path_for_read = path_buf.clone();
+        tokio::task::spawn_blocking(move || fs::read(&path_for_read))
+            .await
+            .map_err(|e| ApiError::BackgroundTask {
+                operation: "vfs.local.read",
+                message: e.to_string(),
+            })?
+            .map_err(|source| ApiError::FileSystemRead {
+                path: path_buf,
+                source,
+            })
+    }
+
     fn capabilities(&self) -> crate::vfs::ProviderCaps {
         crate::vfs::ProviderCaps {
             can_rename: true,
@@ -484,5 +524,38 @@ mod tests {
             assert_eq!(p.is_directory, d.is_directory);
             assert_eq!(p.size, d.size);
         }
+    }
+
+    #[tokio::test]
+    async fn local_read_returns_file_bytes() {
+        let path = unique_test_path("local-read-roundtrip");
+        fs::write(&path, b"hello-world").expect("write file");
+
+        let provider = LocalFsProvider;
+        let data = provider
+            .read(&path.to_string_lossy())
+            .await
+            .expect("read returns bytes");
+
+        fs::remove_file(&path).expect("cleanup");
+        assert_eq!(data, b"hello-world");
+    }
+
+    #[tokio::test]
+    async fn local_read_rejects_files_above_limit() {
+        let path = unique_test_path("local-read-oversize");
+        // Just over the 50 MiB cap so we exercise the size guard without
+        // actually round-tripping through fs::read.
+        let oversize = (crate::vfs::MAX_INLINE_READ_BYTES as usize) + 1;
+        fs::write(&path, vec![0u8; oversize]).expect("write oversize file");
+
+        let provider = LocalFsProvider;
+        let err = provider
+            .read(&path.to_string_lossy())
+            .await
+            .expect_err("oversize must error");
+
+        fs::remove_file(&path).expect("cleanup");
+        assert_eq!(err.code(), "provider_error");
     }
 }

@@ -174,6 +174,14 @@ private final class LayoutTestBackendClient: BackendClientProtocol {
 
         return listing
     }
+
+    func downloadFile(
+        connectionId: String?,
+        remotePath: String,
+        localDestination: String
+    ) async throws {
+        // Layout tests never exercise download paths.
+    }
 }
 
 private final class LayoutTestWorkspaceItemOpener: WorkspaceItemOpening {

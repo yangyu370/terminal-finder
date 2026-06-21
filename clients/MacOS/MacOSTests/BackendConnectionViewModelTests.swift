@@ -142,6 +142,14 @@ private final class MockBackendClient: BackendClientProtocol {
     func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing {
         DirectoryListing(path: path, entries: [])
     }
+
+    func downloadFile(
+        connectionId: String?,
+        remotePath: String,
+        localDestination: String
+    ) async throws {
+        // BackendConnectionViewModel tests do not exercise download_file.
+    }
 }
 
 @MainActor

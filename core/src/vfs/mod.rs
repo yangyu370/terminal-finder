@@ -57,8 +57,15 @@ pub struct ProviderCaps {
     pub has_native_directories: bool,
 }
 
-/// 虚拟文件系统 provider trait。Phase 0 只定义当前 workspace 浏览所需的方法，
-/// 不预先声明 `read`/`write`/`delete` 等未实现接口（避免空 impl 与 trait drift）。
+/// 客户端可一次性 inline read 的最大字节数。超过此阈值的对象/文件必须由
+/// 上层走分块下载/流式 API（Phase 1 暂未实现，触及上限即返回 `ProviderError`）。
+/// 50 MiB 是 Phase 1 download/preview 的安全上限：MinIO/R2 单对象 GET 在
+/// 该体量下延迟可控，OpenDAL 的 `Buffer` 也不会撑爆移动端内存。
+pub const MAX_INLINE_READ_BYTES: u64 = 50 * 1024 * 1024;
+
+/// 虚拟文件系统 provider trait。Phase 0 提供浏览能力，Phase 1 (PR 1g) 增加
+/// `read` 用于下载与预览。`write`/`delete` 等仍按需逐 PR 引入，避免空 impl
+/// 与 trait drift。
 #[async_trait::async_trait]
 pub trait VfsProvider: Send + Sync {
     async fn list(&self, path: &str) -> Result<ListDirectoryResponse, ApiError>;
@@ -66,6 +73,9 @@ pub trait VfsProvider: Send + Sync {
     -> Result<(String, ListDirectoryResponse), ApiError>;
     /// 取单一条目的元数据。S3 用于「stat 一个对象」，Local 走 symlink_metadata。
     async fn stat(&self, path: &str) -> Result<DirectoryEntry, ApiError>;
+    /// 一次性读取整个对象/文件到内存。调用方应先确保对象 size <=
+    /// `MAX_INLINE_READ_BYTES`；超限的 provider 会以 `ProviderError` 拒绝。
+    async fn read(&self, path: &str) -> Result<Vec<u8>, ApiError>;
     /// 声明 provider 的能力边界。
     fn capabilities(&self) -> ProviderCaps;
 }

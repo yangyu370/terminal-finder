@@ -13,6 +13,13 @@ protocol BackendClientProtocol {
     func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryResult
     /// 见 `openDirectory(path:connectionId:)` 的路由规则。
     func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing
+    /// 把 `remotePath` 内容写到 `localDestination`。S3 通过注册的连接读取，
+    /// `connectionId == nil` 走本地。50 MiB 上限由 core 强制。
+    func downloadFile(
+        connectionId: String?,
+        remotePath: String,
+        localDestination: String
+    ) async throws
 }
 
 struct BackendClient: BackendClientProtocol {
@@ -73,6 +80,20 @@ struct BackendClient: BackendClientProtocol {
         try await send(
             method: "workspace.listDirectory",
             params: ListDirectoryParams(path: path, connectionId: connectionId)
+        )
+    }
+
+    /// download_file is FFI-only in Phase 1; the legacy HTTP backend never
+    /// shipped a matching JSON-RPC method, so the HTTP client surfaces a
+    /// stable `unsupported` rpc error rather than silently no-op'ing.
+    func downloadFile(
+        connectionId: String?,
+        remotePath: String,
+        localDestination: String
+    ) async throws {
+        throw BackendClientError.rpcError(
+            code: "unsupported",
+            message: "downloadFile is not exposed by the HTTP backend; use the in-process FFI client."
         )
     }
 

@@ -218,12 +218,49 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             return
         }
 
+        if let connectionId = workspaceState?.connectionId {
+            openRemoteFile(entry: entry, connectionId: connectionId)
+            return
+        }
+
         errorText = nil
         do {
             try workspaceItemOpener.openFile(atPath: entry.path)
             fileOpenErrorText = nil
         } catch {
             fileOpenErrorText = error.localizedDescription
+        }
+    }
+
+    private func openRemoteFile(entry: DirectoryEntry, connectionId: String) {
+        fileOpenErrorText = nil
+        let backendClient = backendClient
+        let opener = workspaceItemOpener
+        Task { @MainActor in
+            do {
+                let cacheBase = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+                    ?? URL(fileURLWithPath: NSTemporaryDirectory())
+                let cacheDir = cacheBase
+                    .appendingPathComponent("com.terminal-finder", isDirectory: true)
+                    .appendingPathComponent("downloads", isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: cacheDir,
+                    withIntermediateDirectories: true
+                )
+                // Sanitize the basename so a malicious key like "../escape"
+                // can't smuggle the download outside the cache directory.
+                let fileName = URL(fileURLWithPath: entry.name).lastPathComponent
+                let safeFileName = fileName.isEmpty ? UUID().uuidString : fileName
+                let localURL = cacheDir.appendingPathComponent(safeFileName)
+                try await backendClient.downloadFile(
+                    connectionId: connectionId,
+                    remotePath: entry.path,
+                    localDestination: localURL.path
+                )
+                try opener.openFile(atPath: localURL.path)
+            } catch {
+                fileOpenErrorText = error.localizedDescription
+            }
         }
     }
 

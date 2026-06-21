@@ -583,8 +583,10 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func connectionList()  -> [ConnectionInfoDto]
     
     /**
-     * Remove a connection and its in-memory credentials. Returns
-     * `Err(ConnectionNotFound)` if the id is unknown.
+     * Remove a connection and its in-memory credentials. Also drops any
+     * cached `S3Provider` for that connection so a future call with the same
+     * `connection_id` cannot reuse the old OpenDAL `Operator` (and its
+     * embedded credentials). Returns `Err(ConnectionNotFound)` if unknown.
      */
     func connectionRemove(connectionId: String) throws 
     
@@ -593,6 +595,13 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
      * 输出 / 退出 / 错误经 `listener` 回调送达（替代 `/terminal` WebSocket 下行流）。
      */
     func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: TerminalEventListener) throws  -> String
+    
+    /**
+     * 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
+     * 50 MiB 上限由 `VfsProvider::read` 强制；超限返回 `provider_error`。
+     * 二进制写盘走 `spawn_blocking`，避免阻塞 tokio runtime。
+     */
+    func downloadFile(connectionId: String?, remotePath: String, localDestination: String) async throws 
     
     /**
      * 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
@@ -742,8 +751,10 @@ open func connectionList() -> [ConnectionInfoDto]  {
 }
     
     /**
-     * Remove a connection and its in-memory credentials. Returns
-     * `Err(ConnectionNotFound)` if the id is unknown.
+     * Remove a connection and its in-memory credentials. Also drops any
+     * cached `S3Provider` for that connection so a future call with the same
+     * `connection_id` cannot reuse the old OpenDAL `Operator` (and its
+     * embedded credentials). Returns `Err(ConnectionNotFound)` if unknown.
      */
 open func connectionRemove(connectionId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
     uniffi_terminal_finder_core_fn_method_corehandle_connection_remove(
@@ -767,6 +778,28 @@ open func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: Ter
         FfiConverterTypeTerminalEventListener_lower(listener),$0
     )
 })
+}
+    
+    /**
+     * 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
+     * 50 MiB 上限由 `VfsProvider::read` 强制；超限返回 `provider_error`。
+     * 二进制写盘走 `spawn_blocking`，避免阻塞 tokio runtime。
+     */
+open func downloadFile(connectionId: String?, remotePath: String, localDestination: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_download_file(
+                    self.uniffiCloneHandle(),
+                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(remotePath),FfiConverterString.lower(localDestination)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
 }
     
     /**
@@ -1944,10 +1977,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_list() != 19818) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 11534) {
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 10972) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_terminal() != 19440) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_download_file() != 2091) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_list_directory() != 7913) {

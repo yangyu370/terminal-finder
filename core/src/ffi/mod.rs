@@ -201,6 +201,40 @@ impl CoreHandle {
         let response = workspace::list_directory(&self.state, params).await?;
         Ok(response.into())
     }
+
+    /// 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
+    /// 50 MiB 上限由 `VfsProvider::read` 强制；超限返回 `provider_error`。
+    /// 二进制写盘走 `spawn_blocking`，避免阻塞 tokio runtime。
+    pub async fn download_file(
+        &self,
+        connection_id: Option<String>,
+        remote_path: String,
+        local_destination: String,
+    ) -> Result<(), CoreError> {
+        use crate::error::ApiError;
+
+        let (location, provider) = crate::workspace::service::resolve_provider(
+            &self.state,
+            connection_id.as_deref(),
+            std::path::Path::new(&remote_path),
+        )?;
+        let bytes = provider.read(&location.path).await?;
+        let dst = std::path::PathBuf::from(local_destination);
+        let dst_for_write = dst.clone();
+        tokio::task::spawn_blocking(move || std::fs::write(&dst_for_write, &bytes))
+            .await
+            .map_err(|e| ApiError::BackgroundTask {
+                operation: "ffi.download_file",
+                message: e.to_string(),
+            })?
+            .map_err(|source| ApiError::FileSystemRead { path: dst, source })?;
+        tracing::info!(
+            method = "workspace.downloadFile",
+            connection_id = connection_id.as_deref().unwrap_or(""),
+            "download complete"
+        );
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -322,6 +356,56 @@ mod connection_ffi_tests {
     fn connection_list_returns_empty_initially() {
         let h = handle();
         assert!(h.connection_list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn download_file_with_nil_connection_writes_to_local_path() {
+        // Regression guard: download_file must route a Local read all the
+        // way to a writable destination, with no S3 dependencies.
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let label = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let src = std::env::temp_dir().join(format!("tf-ffi-download-src-{label}"));
+        let dst = std::env::temp_dir().join(format!("tf-ffi-download-dst-{label}"));
+        std::fs::write(&src, b"payload").expect("write source");
+
+        let handle = CoreHandle::new();
+        handle
+            .download_file(
+                None,
+                src.to_string_lossy().into_owned(),
+                dst.to_string_lossy().into_owned(),
+            )
+            .await
+            .expect("download succeeds");
+
+        let written = std::fs::read(&dst).expect("read dst");
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dst);
+
+        assert_eq!(written, b"payload");
+    }
+
+    #[tokio::test]
+    async fn download_file_with_unknown_connection_returns_error() {
+        let handle = CoreHandle::new();
+        let err = handle
+            .download_file(
+                Some("ghost".into()),
+                "ignored".into(),
+                std::env::temp_dir()
+                    .join("tf-never-written")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .await
+            .expect_err("ghost connection id must error");
+
+        let CoreError::Rpc { code, .. } = err;
+        assert_eq!(code, "connection_not_found");
     }
 
     #[test]

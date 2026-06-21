@@ -123,7 +123,10 @@ pub async fn list_directory(
 /// - `connection_id == None` → Phase 0 LocalFsProvider，不触碰 `ConnectionRegistry`。
 /// - `connection_id == Some(id)` → 在 `ConnectionRegistry` 找到对应配置后，按需懒构造 `S3Provider`
 ///   并缓存在 `ProviderRegistry::by_connection`；未注册的 id 直接 `ConnectionNotFound`。
-fn resolve_provider(
+///
+/// `pub(crate)` so FFI helpers (`download_file`) can reuse the same
+/// dispatch rules without duplicating the cache-priming logic.
+pub(crate) fn resolve_provider(
     state: &AppState,
     connection_id: Option<&str>,
     path: &Path,
