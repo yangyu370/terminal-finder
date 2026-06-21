@@ -266,7 +266,7 @@ private final class FinderIconGridItem: NSCollectionViewItem {
     }
 
     func configure(with entry: DirectoryEntry) {
-        let icon = NSWorkspace.shared.icon(forFile: entry.path)
+        let icon = FinderEntryIcon.image(for: entry)
         icon.size = NSSize(width: FinderIconGridMetrics.iconSize, height: FinderIconGridMetrics.iconSize)
         iconView.image = icon
         titleField.stringValue = FinderListFormatters.displayName(for: entry)

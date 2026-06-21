@@ -341,7 +341,7 @@ final class FinderGalleryBrowserNSView: NSView {
             requestThumbnailForCurrentEntryIfNeeded()
         }
 
-        let inspectorIcon = NSWorkspace.shared.icon(forFile: entry.path)
+        let inspectorIcon = FinderEntryIcon.image(for: entry)
         inspectorIcon.size = NSSize(
             width: FinderGalleryMetrics.inspectorIconSize,
             height: FinderGalleryMetrics.inspectorIconSize
@@ -422,7 +422,7 @@ final class FinderGalleryBrowserNSView: NSView {
     }
 
     private func showFallbackIcon(for entry: DirectoryEntry) {
-        let icon = NSWorkspace.shared.icon(forFile: entry.path)
+        let icon = FinderEntryIcon.image(for: entry)
         icon.size = NSSize(
             width: FinderGalleryMetrics.previewIconSize,
             height: FinderGalleryMetrics.previewIconSize
@@ -655,7 +655,7 @@ private final class FinderGalleryStripItem: NSCollectionViewItem {
     }
 
     func configure(with entry: DirectoryEntry) {
-        let icon = NSWorkspace.shared.icon(forFile: entry.path)
+        let icon = FinderEntryIcon.image(for: entry)
         icon.size = NSSize(
             width: FinderGalleryMetrics.filmstripIconSize,
             height: FinderGalleryMetrics.filmstripIconSize

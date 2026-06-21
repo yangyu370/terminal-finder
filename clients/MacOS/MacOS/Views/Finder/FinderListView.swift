@@ -376,7 +376,7 @@ struct FinderListView: NSViewRepresentable {
         private func makeNameCell(entry: DirectoryEntry) -> NSTableCellView {
             let cell = FinderNameCell()
             let imageView = NSImageView()
-            let icon = NSWorkspace.shared.icon(forFile: entry.path)
+            let icon = FinderEntryIcon.image(for: entry)
             icon.size = NSSize(width: 16, height: 16)
             imageView.image = icon
             imageView.imageScaling = .scaleProportionallyDown

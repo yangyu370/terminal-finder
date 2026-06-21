@@ -812,7 +812,7 @@ final class FinderColumnPreviewPane: NSView {
     }
 
     private func showFallbackIcon() {
-        let icon = NSWorkspace.shared.icon(forFile: entry.path)
+        let icon = FinderEntryIcon.image(for: entry)
         icon.size = NSSize(
             width: FinderColumnMetrics.previewFallbackIconSize,
             height: FinderColumnMetrics.previewFallbackIconSize
@@ -992,7 +992,7 @@ private final class FinderColumnItemCell: NSTableCellView {
 
     private func setup(entry: DirectoryEntry) {
         let iconView = NSImageView()
-        let icon = NSWorkspace.shared.icon(forFile: entry.path)
+        let icon = FinderEntryIcon.image(for: entry)
         icon.size = NSSize(width: FinderColumnMetrics.iconSize, height: FinderColumnMetrics.iconSize)
         iconView.image = icon
         iconView.imageScaling = .scaleProportionallyDown
