@@ -21,3 +21,11 @@ DEVELOPMENT_PLAN.md
 clients/MacOS/agent.md
 core/agent.md
 core/CODE_REVIEW.md
+phase1.md
+2026-06-19-phase1-object-storage.md
+WIN98_SKIN_DESIGN.md
+XP_SKIN_DESIGN.md
+
+# Local test/coverage artifacts
+*.profraw
+.codex-screenshots/
