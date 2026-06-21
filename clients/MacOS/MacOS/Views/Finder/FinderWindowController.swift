@@ -47,6 +47,7 @@ final class FinderWindowController: NSWindowController {
     let contentState: FinderContentViewState
     let displayModeState: FinderDisplayModeState
     let shellModeState: ClientShellModeState
+    let transferActivityVM: TransferActivityViewModel
 
     private var toolbarController: FinderToolbarController?
     private var windows98ContentViewController: NSViewController?
@@ -56,7 +57,8 @@ final class FinderWindowController: NSWindowController {
     private var terminalShortcutMonitor: Any?
 
     init() {
-        workspaceVM = WorkspaceBrowserViewModel()
+        let transferActivityVM = TransferActivityViewModel()
+        workspaceVM = WorkspaceBrowserViewModel(transferActivityVM: transferActivityVM)
         connectionVM = BackendConnectionViewModel()
         cloudConnectionVM = ConnectionViewModel(
             core: FFIConnectionClient(),
@@ -69,6 +71,7 @@ final class FinderWindowController: NSWindowController {
         contentState = FinderContentViewState()
         displayModeState = FinderDisplayModeState()
         shellModeState = ClientShellModeState(mode: ClientShellMode.initialMode())
+        self.transferActivityVM = transferActivityVM
 
         let window = FinderWindow(
             contentRect: NSRect(origin: .zero, size: Self.initialContentSize),
@@ -164,6 +167,169 @@ final class FinderWindowController: NSWindowController {
 
     @objc func goToFolderAction(_ sender: Any?) {
         contentState.isGoToFolderSheetPresented = true
+    }
+
+    // MARK: - Write-op actions
+
+    @objc func newFolderAction(_ sender: Any?) {
+        guard let window else { return }
+        let name = FinderWriteOpDialogs.promptForName(
+            window: window,
+            title: "新建文件夹",
+            informativeText: "请输入文件夹名称。",
+            defaultName: "未命名文件夹",
+            confirmTitle: "新建"
+        )
+        guard let name, !name.isEmpty else { return }
+
+        let parent = workspaceVM.terminalCwdPath
+        let directoryPath = joinPath(parent, name)
+        let warning = nonNativeDirectoryWarningIfNeeded()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let warning {
+                guard FinderWriteOpDialogs.confirm(
+                    window: self.window ?? window,
+                    title: "云端目录注意事项",
+                    informativeText: warning,
+                    confirmTitle: "继续创建",
+                    confirmIsDestructive: false
+                ) else { return }
+            }
+            await self.workspaceVM.createDirectory(path: directoryPath)
+        }
+    }
+
+    @objc func uploadFileAction(_ sender: Any?) {
+        guard let window else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.title = "上传文件"
+        panel.prompt = "上传"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK else { return }
+            let urls = panel.urls
+            let parent = self.workspaceVM.terminalCwdPath
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                for url in urls {
+                    let remotePath = self.joinPath(parent, url.lastPathComponent)
+                    await self.workspaceVM.uploadFile(
+                        localSource: url.path,
+                        remotePath: remotePath
+                    )
+                }
+            }
+        }
+    }
+
+    @objc func downloadSelectedAction(_ sender: Any?) {
+        guard let window,
+              let entry = workspaceVM.selectedEntryForActions,
+              !entry.isDirectory
+        else { return }
+
+        let panel = NSSavePanel()
+        panel.title = "下载到"
+        panel.prompt = "下载"
+        panel.nameFieldStringValue = entry.name
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            Task { @MainActor [weak self] in
+                await self?.workspaceVM.downloadEntry(entry, to: url)
+            }
+        }
+    }
+
+    @objc func renameSelectedAction(_ sender: Any?) {
+        guard let window,
+              let entry = workspaceVM.selectedEntryForActions
+        else { return }
+
+        let newName = FinderWriteOpDialogs.promptForName(
+            window: window,
+            title: "重命名",
+            informativeText: "请输入新名称。",
+            defaultName: entry.name,
+            confirmTitle: "重命名"
+        )
+        guard let newName, !newName.isEmpty, newName != entry.name else { return }
+
+        let parent = (entry.path as NSString).deletingLastPathComponent
+        let target = parent.isEmpty
+            ? newName
+            : joinPath(parent, newName)
+        let warning = nonAtomicRenameWarningIfNeeded()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let warning {
+                guard FinderWriteOpDialogs.confirm(
+                    window: self.window ?? window,
+                    title: "重命名注意事项",
+                    informativeText: warning,
+                    confirmTitle: "继续重命名",
+                    confirmIsDestructive: false
+                ) else { return }
+            }
+            await self.workspaceVM.renameEntry(from: entry.path, to: target)
+        }
+    }
+
+    @objc func deleteSelectedAction(_ sender: Any?) {
+        guard let window,
+              let entry = workspaceVM.selectedEntryForActions
+        else { return }
+
+        let info = workspaceVM.currentConnectionId == nil
+            ? "项目将被移到废纸篓 / 移除。"
+            : "对象将从云端永久删除，且无法撤销。"
+        guard FinderWriteOpDialogs.confirm(
+            window: window,
+            title: "确定要删除 \(entry.name) 吗？",
+            informativeText: info,
+            confirmTitle: "删除",
+            confirmIsDestructive: true
+        ) else { return }
+
+        Task { @MainActor [weak self] in
+            await self?.workspaceVM.deleteEntry(path: entry.path)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func joinPath(_ parent: String, _ child: String) -> String {
+        // For S3 (relative paths), avoid leading "/" which would become an
+        // empty-prefix key; for local (absolute), pathComponent appending DTRT.
+        if parent.isEmpty {
+            return child
+        }
+        if parent.hasPrefix("/") {
+            return (parent as NSString).appendingPathComponent(child)
+        }
+        if parent.hasSuffix("/") {
+            return parent + child
+        }
+        return "\(parent)/\(child)"
+    }
+
+    private func nonNativeDirectoryWarningIfNeeded() -> String? {
+        guard let connectionId = workspaceVM.currentConnectionId,
+              let caps = cloudConnectionVM.capabilities[connectionId],
+              !caps.hasNativeDirectories
+        else { return nil }
+        return "此连接的存储后端（如 S3）没有原生目录概念。新建文件夹将写入一个零字节占位对象，后续放入文件后占位对象可被忽略。"
+    }
+
+    private func nonAtomicRenameWarningIfNeeded() -> String? {
+        guard let connectionId = workspaceVM.currentConnectionId,
+              let caps = cloudConnectionVM.capabilities[connectionId],
+              !caps.canRename
+        else { return nil }
+        return "此连接的存储后端（如 S3）不支持原子重命名。操作将复制后删除原对象，过程中失败可能导致原文件丢失或残留副本。"
     }
 
     @objc func reconnectAction(_ sender: Any?) {
@@ -295,6 +461,7 @@ final class FinderWindowController: NSWindowController {
                 panelLayout: panelLayout,
                 contentState: contentState,
                 displayModeState: displayModeState,
+                transferActivityVM: transferActivityVM,
                 onCloseTerminal: { [weak self] in
                     self?.closeTerminalSession()
                 }
@@ -470,6 +637,15 @@ extension FinderWindowController: NSMenuItemValidation {
             return true
         case #selector(reconnectAction(_:)):
             return true
+        case #selector(newFolderAction(_:)),
+             #selector(uploadFileAction(_:)):
+            return !workspaceVM.isLoading
+        case #selector(downloadSelectedAction(_:)):
+            guard let entry = workspaceVM.selectedEntryForActions else { return false }
+            return !workspaceVM.isLoading && !entry.isDirectory
+        case #selector(renameSelectedAction(_:)),
+             #selector(deleteSelectedAction(_:)):
+            return !workspaceVM.isLoading && workspaceVM.selectedEntryForActions != nil
         case #selector(selectShellAction(_:)):
             if let rawValue = menuItem.representedObject as? String,
                let mode = ClientShellMode(rawValue: rawValue) {

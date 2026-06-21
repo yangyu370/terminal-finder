@@ -146,8 +146,13 @@ impl crate::vfs::VfsProvider for S3Provider {
             .into_iter()
             .filter_map(|entry| {
                 let raw_name = entry.name().to_string();
-                // OpenDAL 在列结果里会把 prefix 自身回填一次（name == ""），过滤掉。
-                if raw_name.is_empty() || raw_name == "/" {
+                // OpenDAL 在列结果里会把 prefix 自身回填一次。理论上 name 应该是
+                // ""，但实测某些后端（MinIO + create_dir 写出来的 0-byte marker）
+                // 会把 marker 的 basename 当作 name 返回（如 prefix="foo/"
+                // 时 name="foo"），让目录里出现自指嵌套（"foo > foo > ..."）。
+                // 用 `entry.path() == dir_prefix` 兜底——绝对路径相等就一定是
+                // 自指 marker。
+                if raw_name.is_empty() || raw_name == "/" || entry.path() == dir_prefix {
                     return None;
                 }
                 let metadata = entry.metadata();
@@ -274,22 +279,51 @@ impl crate::vfs::VfsProvider for S3Provider {
     async fn delete(&self, path: &str) -> Result<(), ApiError> {
         let key = self.absolute_path(path);
         let connection_id = self.connection_id.0.clone();
-        self.operator
-            .delete(&key)
-            .await
-            .map_err(|e| map_opendal_error("s3.delete", connection_id, e))
+
+        // 区分文件与目录：
+        // - 文件：S3 key 不带尾 '/'，`delete(key)` 即可。
+        // - 目录：marker 是 `<key>/`，且可能内部还有子对象。直接 `delete(key)`
+        //   是 NoSuchKey（S3 返回 200 静默成功，但 marker 仍在），表现为
+        //   "点删除无反应"。改用 `remove_all(<key>/)`，OpenDAL 会递归把
+        //   marker + 全部子对象一并删除——与本地 `fs::remove_dir_all` 对齐。
+        //
+        // 用 stat 探测一下 `<key>/` 是否存在；存在则按目录处理。
+        let dir_key = format!("{}/", key.trim_end_matches('/'));
+        let is_directory_marker = matches!(
+            self.operator
+                .stat(&dir_key)
+                .await
+                .ok()
+                .map(|metadata| metadata.mode()),
+            Some(EntryMode::DIR)
+        );
+
+        if is_directory_marker {
+            self.operator
+                .remove_all(&dir_key)
+                .await
+                .map_err(|e| map_opendal_error("s3.delete", connection_id, e))
+        } else {
+            self.operator
+                .delete(&key)
+                .await
+                .map_err(|e| map_opendal_error("s3.delete", connection_id, e))
+        }
     }
 
     async fn create_directory(&self, path: &str) -> Result<(), ApiError> {
-        // S3 没有真正的目录概念：写一个以 '/' 结尾的零字节对象作为占位 marker，
-        // 让随后的 list 调用能在 UI 上看到这个"目录"。caller 通过
+        // S3 没有真正的目录概念：用 OpenDAL 的 `create_dir`，它对对象存储后端
+        // 等价于写一个以 '/' 结尾的零字节对象 marker。caller 通过
         // `capabilities().has_native_directories == false` 已被告知这一点。
+        //
+        // 注意：必须用 `create_dir`，**不**能用 `write(key_ending_with_slash, [])`。
+        // OpenDAL 0.53 把以 '/' 结尾的 key 当成目录路径，对 `write` 会以
+        // `IsADirectory` 类错误拒绝。
         let key = format!("{}/", self.absolute_path(path).trim_end_matches('/'));
         let connection_id = self.connection_id.0.clone();
         self.operator
-            .write(&key, Vec::<u8>::new())
+            .create_dir(&key)
             .await
-            .map(|_| ())
             .map_err(|e| map_opendal_error("s3.create_directory", connection_id, e))
     }
 

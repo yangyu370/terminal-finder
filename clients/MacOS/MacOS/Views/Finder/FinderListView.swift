@@ -64,9 +64,54 @@ struct FinderListView: NSViewRepresentable {
         scrollView.autohidesScrollers = true
         scrollView.documentView = outlineView
 
+        outlineView.menu = Self.makeContextMenu()
+
         context.coordinator.outlineView = outlineView
         context.coordinator.rebuildRoots(with: entries)
         return scrollView
+    }
+
+    /// Context menu attached to the outline view. AppKit's default
+    /// `NSOutlineView` right-click behavior auto-selects the clicked row first,
+    /// keeping `WorkspaceBrowserViewModel.selectedEntryPath` in sync before
+    /// any item action fires. Items have `target = nil` so they flow up the
+    /// responder chain to `FinderWindowController`, whose `validateMenuItem`
+    /// gates them by selection / loading state.
+    private static func makeContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = true
+
+        let entries: [(String, Selector)] = [
+            ("打开", #selector(FinderWindowController.openAction(_:))),
+            ("下载到…", #selector(FinderWindowController.downloadSelectedAction(_:))),
+            ("重命名…", #selector(FinderWindowController.renameSelectedAction(_:))),
+            ("删除…", #selector(FinderWindowController.deleteSelectedAction(_:)))
+        ]
+        for (title, selector) in entries {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = nil
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+
+        let mkdir = NSMenuItem(
+            title: "新建文件夹…",
+            action: #selector(FinderWindowController.newFolderAction(_:)),
+            keyEquivalent: ""
+        )
+        mkdir.target = nil
+        menu.addItem(mkdir)
+
+        let upload = NSMenuItem(
+            title: "上传文件…",
+            action: #selector(FinderWindowController.uploadFileAction(_:)),
+            keyEquivalent: ""
+        )
+        upload.target = nil
+        menu.addItem(upload)
+
+        return menu
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {

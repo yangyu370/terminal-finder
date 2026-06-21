@@ -341,6 +341,26 @@ extension FinderToolbarController: NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let writeOps: [(String, Selector, Bool)] = [
+            ("新建文件夹…", #selector(FinderWindowController.newFolderAction(_:)), !workspaceVM.isLoading),
+            ("上传文件…", #selector(FinderWindowController.uploadFileAction(_:)), !workspaceVM.isLoading),
+            ("下载到…", #selector(FinderWindowController.downloadSelectedAction(_:)),
+             !workspaceVM.isLoading
+             && workspaceVM.selectedEntryForActions.map { !$0.isDirectory } == true),
+            ("重命名…", #selector(FinderWindowController.renameSelectedAction(_:)),
+             !workspaceVM.isLoading && workspaceVM.selectedEntryForActions != nil),
+            ("删除…", #selector(FinderWindowController.deleteSelectedAction(_:)),
+             !workspaceVM.isLoading && workspaceVM.selectedEntryForActions != nil)
+        ]
+        for (title, selector, enabled) in writeOps {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = actionTarget
+            item.isEnabled = enabled
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+
         let hidden = NSMenuItem(
             title: "显示隐藏文件",
             action: #selector(FinderWindowController.toggleHiddenFilesAction(_:)),

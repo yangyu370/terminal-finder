@@ -25,6 +25,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     private let backendClient: any BackendClientProtocol
     private let workspaceItemOpener: any WorkspaceItemOpening
     private let workspaceAlertPresenter: any WorkspaceAlertPresenting
+    private let transferActivityVM: TransferActivityViewModel?
     private var loadTask: Task<Void, Never>?
     private var shouldReloadInitialState = false
 
@@ -34,13 +35,23 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         backendClient: (any BackendClientProtocol)? = nil,
         workspaceItemOpener: (any WorkspaceItemOpening)? = nil,
         workspaceAlertPresenter: (any WorkspaceAlertPresenting)? = nil,
+        transferActivityVM: TransferActivityViewModel? = nil,
         initialPath: String = WorkspaceBrowserViewModel.defaultInitialPath()
     ) {
         self.backendClient = backendClient ?? FFIBackendClient()
         self.workspaceItemOpener = workspaceItemOpener ?? WorkspaceItemOpener()
         self.workspaceAlertPresenter = workspaceAlertPresenter ?? WorkspaceAlertPresenter()
+        self.transferActivityVM = transferActivityVM
         self.path = initialPath
         sidebarLocations = WorkspaceBrowserViewModel.defaultSidebarLocations(homePath: initialPath)
+    }
+
+    var currentConnectionId: String? {
+        workspaceState?.connectionId
+    }
+
+    var selectedEntryForActions: DirectoryEntry? {
+        selectedEntry
     }
 
     deinit {
@@ -171,10 +182,14 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             return
         }
 
+        // S3 connection 的 root path 是空字符串，已被记进 history；navigate
+        // 默认 `allowEmptyPath: false`（防用户空输入），这里要显式放行——
+        // history 里的 path 都是之前 navigate 成功落地的，必然合法。
         navigate(
             to: destination,
             mode: .back(origin: origin, destination: destination),
-            connection: .inherit
+            connection: .inherit,
+            allowEmptyPath: true
         )
     }
 
@@ -188,7 +203,8 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         navigate(
             to: destination,
             mode: .forward(origin: origin, destination: destination),
-            connection: .inherit
+            connection: .inherit,
+            allowEmptyPath: true
         )
     }
 
@@ -278,6 +294,10 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     /// connection (or local FS if no connection). Refreshes the listing
     /// on success so the new entry surfaces immediately.
     func uploadFile(localSource: String, remotePath: String) async {
+        let activityId = "upload|\(remotePath)"
+        let title = (localSource as NSString).lastPathComponent
+        transferActivityVM?.start(id: activityId, title: "上传 \(title)", kind: .upload)
+        defer { transferActivityVM?.finish(id: activityId) }
         do {
             try await backendClient.uploadFile(
                 connectionId: workspaceState?.connectionId,
@@ -286,36 +306,44 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             )
             refresh()
         } catch {
-            errorText = error.localizedDescription
+            reportWriteOpFailure(operation: "上传文件", target: title, error: error)
         }
     }
 
     /// Delete a single entry (file/object). For local directories the core
     /// recursively removes; for S3 only the named key is dropped.
-    func deleteEntry(path: String) async {
+    func deleteEntry(path entryPath: String) async {
+        let activityId = "delete|\(entryPath)"
+        let title = (entryPath as NSString).lastPathComponent
+        transferActivityVM?.start(id: activityId, title: "删除 \(title)", kind: .delete)
+        defer { transferActivityVM?.finish(id: activityId) }
         do {
             try await backendClient.deleteEntry(
                 connectionId: workspaceState?.connectionId,
-                path: path
+                path: entryPath
             )
             refresh()
         } catch {
-            errorText = error.localizedDescription
+            reportWriteOpFailure(operation: "删除", target: title, error: error)
         }
     }
 
     /// Create a directory at `path`. On S3 this writes a zero-byte marker —
     /// callers should already have surfaced the non-native-directory warning
     /// via `ConnectionViewModel.capabilities`.
-    func createDirectory(path: String) async {
+    func createDirectory(path directoryPath: String) async {
+        let activityId = "mkdir|\(directoryPath)"
+        let title = (directoryPath as NSString).lastPathComponent
+        transferActivityVM?.start(id: activityId, title: "新建文件夹 \(title)", kind: .createDirectory)
+        defer { transferActivityVM?.finish(id: activityId) }
         do {
             try await backendClient.createRemoteDirectory(
                 connectionId: workspaceState?.connectionId,
-                path: path
+                path: directoryPath
             )
             refresh()
         } catch {
-            errorText = error.localizedDescription
+            reportWriteOpFailure(operation: "新建文件夹", target: title, error: error)
         }
     }
 
@@ -323,6 +351,10 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     /// On S3 this is a non-atomic copy + delete; callers should surface the
     /// warning from `ConnectionViewModel.capabilities` before calling.
     func renameEntry(from: String, to: String) async {
+        let activityId = "rename|\(from)"
+        let title = (from as NSString).lastPathComponent
+        transferActivityVM?.start(id: activityId, title: "重命名 \(title)", kind: .rename)
+        defer { transferActivityVM?.finish(id: activityId) }
         do {
             try await backendClient.renameEntry(
                 connectionId: workspaceState?.connectionId,
@@ -331,8 +363,41 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             )
             refresh()
         } catch {
-            errorText = error.localizedDescription
+            reportWriteOpFailure(operation: "重命名", target: title, error: error)
         }
+    }
+
+    /// Download `entry` to a caller-chosen local URL (Save Panel flow).
+    /// Distinct from `openRemoteFile` which downloads to a sandboxed cache
+    /// and then asks NSWorkspace to open it.
+    func downloadEntry(_ entry: DirectoryEntry, to localURL: URL) async {
+        let activityId = "download|\(entry.path)"
+        transferActivityVM?.start(id: activityId, title: "下载 \(entry.name)", kind: .download)
+        defer { transferActivityVM?.finish(id: activityId) }
+        do {
+            try await backendClient.downloadFile(
+                connectionId: workspaceState?.connectionId,
+                remotePath: entry.path,
+                localDestination: localURL.path
+            )
+        } catch {
+            reportWriteOpFailure(operation: "下载", target: entry.name, error: error)
+        }
+    }
+
+    /// Surface a write-op failure via both `errorText` (for empty-folder
+    /// overlay) and a user-facing alert. The bare `errorText` path was
+    /// invisible whenever the directory had other entries — the alert
+    /// guarantees the user sees the failure regardless of UI state.
+    private func reportWriteOpFailure(operation: String, target: String, error: Error) {
+        let detail = error.localizedDescription
+        errorText = detail
+        workspaceAlertPresenter.showWarning(
+            message: "\(operation)失败",
+            informativeText: "无法\(operation) \(target)。",
+            detailText: detail,
+            recoverySuggestion: "检查路径、权限或网络连接后重试。"
+        )
     }
 
     /// Open the root of the given S3 connection. `""` is the bucket root in

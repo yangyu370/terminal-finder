@@ -624,9 +624,10 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: TerminalEventListener) throws  -> String
     
     /**
-     * 删除 `path` 指向的对象/文件。S3 走 `delete object`，Local 区分
-     * 文件/目录递归删；删除目录的语义由各 provider 自定（S3 仅删 key 不
-     * 递归——本期 UI 只暴露单文件删除，目录删除留给后续 PR）。
+     * 删除 `path` 指向的对象/文件/目录。Local 区分文件 / 目录，目录走
+     * `remove_dir_all`；S3 同样按 stat 探测 `<key>/` 是否为目录 marker，
+     * 是就走 `remove_all(<key>/)` 递归删除 marker + 子对象，否则按单 key
+     * 删。两边行为对齐：删一个非空目录会把里面所有内容一并清掉。
      */
     func deleteEntry(connectionId: String?, path: String) async throws 
     
@@ -900,9 +901,10 @@ open func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: Ter
 }
     
     /**
-     * 删除 `path` 指向的对象/文件。S3 走 `delete object`，Local 区分
-     * 文件/目录递归删；删除目录的语义由各 provider 自定（S3 仅删 key 不
-     * 递归——本期 UI 只暴露单文件删除，目录删除留给后续 PR）。
+     * 删除 `path` 指向的对象/文件/目录。Local 区分文件 / 目录，目录走
+     * `remove_dir_all`；S3 同样按 stat 探测 `<key>/` 是否为目录 marker，
+     * 是就走 `remove_all(<key>/)` 递归删除 marker + 子对象，否则按单 key
+     * 删。两边行为对齐：删一个非空目录会把里面所有内容一并清掉。
      */
 open func deleteEntry(connectionId: String?, path: String)async throws   {
     return
@@ -2261,7 +2263,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_terminal() != 19440) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_delete_entry() != 51116) {
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_delete_entry() != 50742) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_download_file() != 2091) {

@@ -19,6 +19,7 @@ struct FinderContentView: View {
     @ObservedObject var panelLayout: PseudoTerminalPanelLayoutState
     @ObservedObject var contentState: FinderContentViewState
     @ObservedObject var displayModeState: FinderDisplayModeState
+    @ObservedObject var transferActivityVM: TransferActivityViewModel
 
     let onCloseTerminal: () -> Void
 
@@ -27,6 +28,9 @@ struct FinderContentView: View {
             VStack(spacing: 0) {
                 browserArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                FinderTransferActivityStrip(transferActivityVM: transferActivityVM)
+                    .animation(.easeOut(duration: 0.18), value: transferActivityVM.activeTransfers)
 
                 if panelLayout.isOpen {
                     FinderTerminalResizeHandle { verticalDrag in

@@ -313,9 +313,10 @@ impl CoreHandle {
         Ok(())
     }
 
-    /// 删除 `path` 指向的对象/文件。S3 走 `delete object`，Local 区分
-    /// 文件/目录递归删；删除目录的语义由各 provider 自定（S3 仅删 key 不
-    /// 递归——本期 UI 只暴露单文件删除，目录删除留给后续 PR）。
+    /// 删除 `path` 指向的对象/文件/目录。Local 区分文件 / 目录，目录走
+    /// `remove_dir_all`；S3 同样按 stat 探测 `<key>/` 是否为目录 marker，
+    /// 是就走 `remove_all(<key>/)` 递归删除 marker + 子对象，否则按单 key
+    /// 删。两边行为对齐：删一个非空目录会把里面所有内容一并清掉。
     pub async fn delete_entry(
         &self,
         connection_id: Option<String>,
