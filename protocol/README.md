@@ -72,13 +72,15 @@ GET /health
   "result": {
     "state": {
       "workspaceRoot": "/Users/mac",
-      "currentDirectory": "/Users/mac"
+      "currentDirectory": "/Users/mac",
+      "scheme": "local",
+      "connectionId": null
     }
   }
 }
 ```
 
-`workspace.getState` returns the backend-owned workspace state. In the current Phase 1 shape, `workspaceRoot` is the root of the current workspace and `currentDirectory` is the directory currently shown by the client.
+`workspace.getState` returns the backend-owned workspace state. `workspaceRoot` is the root of the current workspace and `currentDirectory` is the directory currently shown by the client. `scheme` is `"local"` for the LocalFsProvider or `"s3"` when the workspace is browsing an S3 connection. `connectionId` is `null` for local browsing or the registered S3 connection id when `scheme == "s3"`.
 
 ## workspace.openDirectory
 
@@ -88,10 +90,13 @@ GET /health
 {
   "method": "workspace.openDirectory",
   "params": {
-    "path": "/Users/mac/Desktop"
+    "path": "/Users/mac/Desktop",
+    "connection_id": null
   }
 }
 ```
+
+`connection_id` is optional. `null` (or omitted) routes the request to the LocalFsProvider — `path` is interpreted as an OS path. A registered S3 connection id routes to that connection's `S3Provider`; `path` is then a bucket-relative prefix (the configured `base_prefix` is prepended on the server side and is never sent by the client).
 
 ### Response
 
@@ -101,7 +106,9 @@ GET /health
   "result": {
     "state": {
       "workspaceRoot": "/Users/mac",
-      "currentDirectory": "/Users/mac/Desktop"
+      "currentDirectory": "/Users/mac/Desktop",
+      "scheme": "local",
+      "connectionId": null
     },
     "listing": {
       "path": "/Users/mac/Desktop",
@@ -120,7 +127,11 @@ GET /health
 }
 ```
 
-`workspace.openDirectory` validates that `path` exists and is a directory, then returns the refreshed state plus a non-recursive directory listing so clients can redraw immediately. Opening a directory inside the canonical current `workspaceRoot` preserves that root and updates `currentDirectory`. Opening a directory outside it, opening an ancestor of it, or opening a directory after the current root can no longer be canonicalized sets both `workspaceRoot` and `currentDirectory` to the canonical target directory.
+`workspace.openDirectory` validates that `path` exists and is a directory, then returns the refreshed state plus a non-recursive directory listing so clients can redraw immediately.
+
+For `connection_id == null` (local): opening a directory inside the canonical current `workspaceRoot` preserves that root and updates `currentDirectory`. Opening a directory outside it, opening an ancestor of it, or opening a directory after the current root can no longer be canonicalized sets both `workspaceRoot` and `currentDirectory` to the canonical target directory.
+
+For a registered S3 `connection_id` (`scheme: "s3"`): there is no canonical-path / workspace-root concept; both `workspaceRoot` and `currentDirectory` report the resolved S3 prefix (with a trailing `/` for non-empty prefixes). The local workspace store is untouched. An unknown `connection_id` returns the `connection_not_found` error code.
 
 ## workspace.listDirectory
 
@@ -130,10 +141,13 @@ GET /health
 {
   "method": "workspace.listDirectory",
   "params": {
-    "path": "/Users/mac"
+    "path": "/Users/mac",
+    "connection_id": null
   }
 }
 ```
+
+`connection_id` follows the same routing rules as `workspace.openDirectory`.
 
 ### Response
 
@@ -156,7 +170,7 @@ GET /health
 }
 ```
 
-Entries are non-recursive. Directories are returned before files, then sorted by name.
+Entries are non-recursive. Directories are returned before files, then sorted by name. For S3 routing, entries reflect the bucket-relative paths under the connection's `base_prefix`.
 
 ## connection.create
 
@@ -234,7 +248,7 @@ Returns connection summaries (`ConnectionInfoDto` cross-FFI). Credentials are in
 { "ok": true, "result": {} }
 ```
 
-Removes the connection and its in-memory credentials. Returns an error (currently `invalid_params`; will become `connection_not_found` in Phase 1c with the dedicated `ApiError::ConnectionNotFound` variant) when the `connection_id` is unknown.
+Removes the connection, its in-memory credentials, and any cached S3 provider so the `connection_id` can no longer be used to access objects. Returns the `connection_not_found` error code when the `connection_id` is unknown.
 
 ## Errors
 

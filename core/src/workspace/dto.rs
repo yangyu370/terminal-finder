@@ -5,11 +5,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 pub struct ListDirectoryParams {
     pub path: PathBuf,
+    #[serde(default)]
+    pub connection_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct OpenDirectoryParams {
     pub path: PathBuf,
+    #[serde(default)]
+    pub connection_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -30,6 +34,10 @@ pub struct OpenDirectoryResponse {
 pub struct WorkspaceStateResponse {
     pub workspace_root: String,
     pub current_directory: String,
+    /// `"local"` for Phase 0 LocalFsProvider, `"s3"` once Phase 1 routes through `S3Provider`.
+    pub scheme: String,
+    /// `None` for local workspace; set to the registered S3 connection id when browsing a bucket.
+    pub connection_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -144,8 +144,10 @@ impl CoreHandle {
             .collect()
     }
 
-    /// Remove a connection and its in-memory credentials. Returns
-    /// `Err(ConnectionNotFound)` if the id is unknown.
+    /// Remove a connection and its in-memory credentials. Also drops any
+    /// cached `S3Provider` for that connection so a future call with the same
+    /// `connection_id` cannot reuse the old OpenDAL `Operator` (and its
+    /// embedded credentials). Returns `Err(ConnectionNotFound)` if unknown.
     pub fn connection_remove(
         &self,
         connection_id: String,
@@ -155,6 +157,7 @@ impl CoreHandle {
 
         let id = ConnectionId(connection_id);
         if self.state.connections().remove(&id) {
+            self.state.providers().remove_connection(&id);
             tracing::info!(method = "connection.remove", "connection removed");
             Ok(())
         } else {
@@ -168,19 +171,32 @@ impl CoreHandle {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl CoreHandle {
-    /// 打开目录，对应 `workspace.openDirectory`。异步：内部走 spawn_blocking 读文件系统。
-    pub async fn open_directory(&self, path: String) -> Result<OpenDirectoryDto, CoreError> {
+    /// 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
+    /// S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
+    /// 传入注册过的 S3 connection id 时落到对应 S3Provider。
+    pub async fn open_directory(
+        &self,
+        path: String,
+        connection_id: Option<String>,
+    ) -> Result<OpenDirectoryDto, CoreError> {
         let params = OpenDirectoryParams {
             path: PathBuf::from(path),
+            connection_id,
         };
         let response = workspace::open_directory(&self.state, params).await?;
         Ok(response.into())
     }
 
-    /// 列目录，对应 `workspace.listDirectory`。异步：内部走 spawn_blocking 读文件系统。
-    pub async fn list_directory(&self, path: String) -> Result<DirectoryListingDto, CoreError> {
+    /// 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
+    /// connection 路由规则。
+    pub async fn list_directory(
+        &self,
+        path: String,
+        connection_id: Option<String>,
+    ) -> Result<DirectoryListingDto, CoreError> {
         let params = ListDirectoryParams {
             path: PathBuf::from(path),
+            connection_id,
         };
         let response = workspace::list_directory(&self.state, params).await?;
         Ok(response.into())
@@ -217,7 +233,7 @@ mod tests {
         std::fs::write(dir.join("entry.txt"), b"x").expect("temp file writes");
 
         let listing = handle
-            .list_directory(dir.to_string_lossy().into_owned())
+            .list_directory(dir.to_string_lossy().into_owned(), None)
             .await
             .expect("known directory lists");
 
@@ -240,7 +256,7 @@ mod tests {
         std::fs::write(&file, b"not a directory").expect("temp file writes");
 
         let error = handle
-            .open_directory(file.to_string_lossy().into_owned())
+            .open_directory(file.to_string_lossy().into_owned(), None)
             .await
             .expect_err("opening a file must fail");
 
@@ -306,5 +322,41 @@ mod connection_ffi_tests {
     fn connection_list_returns_empty_initially() {
         let h = handle();
         assert!(h.connection_list().is_empty());
+    }
+
+    #[test]
+    fn connection_remove_drops_cached_provider() {
+        // Regression guard for C1: connection_remove must also drop any
+        // S3Provider cached in ProviderRegistry::by_connection. Without
+        // this, the removed connection's OpenDAL Operator (and its
+        // credentials) would live on until the AppState is dropped.
+        use crate::connection::ConnectionId;
+        use crate::vfs::{LocalFsProvider, VfsProvider};
+
+        let h = handle();
+        let id_string = h.connection_create(
+            "test".into(),
+            "http://localhost:9000".into(),
+            "us-east-1".into(),
+            "test-bucket".into(),
+            String::new(),
+            true,
+            "minioadmin".into(),
+            "minioadmin".into(),
+        );
+        let id = ConnectionId(id_string.clone());
+        // Simulate the cache as if open_directory had run (LocalFsProvider
+        // stands in for any VfsProvider — the test only cares that the slot
+        // is occupied and then dropped).
+        let dummy: Arc<dyn VfsProvider> = Arc::new(LocalFsProvider);
+        h.state.providers().register_connection(&id, dummy);
+        assert!(h.state.providers().get_by_connection(&id).is_some());
+
+        h.connection_remove(id_string).expect("remove succeeds");
+
+        assert!(
+            h.state.providers().get_by_connection(&id).is_none(),
+            "connection_remove must drop the cached provider entry"
+        );
     }
 }

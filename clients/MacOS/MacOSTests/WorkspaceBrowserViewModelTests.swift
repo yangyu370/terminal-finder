@@ -3,6 +3,47 @@ import XCTest
 
 @MainActor
 final class WorkspaceBrowserViewModelTests: XCTestCase {
+    /// PR 1e firewall guarantee: the ViewModel never sends a non-nil
+    /// connection_id to the backend. S3 routing is wired up in PR 1f via a
+    /// dedicated connection-aware ViewModel; this contract guards against
+    /// accidental drift before then.
+    func testFirewall_viewModelAlwaysRoutesWithNilConnectionId() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(
+            path: "/workspace",
+            entries: [
+                entry(name: "child", path: "/workspace/child", isDirectory: true),
+                entry(name: "leaf.txt", path: "/workspace/leaf.txt")
+            ]
+        )
+        backend.listings["/workspace/child"] = listing(path: "/workspace/child")
+        backend.openResults["/workspace/child"] = openResult(path: "/workspace/child")
+        let viewModel = makeViewModel(backend: backend)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        viewModel.open(entry(name: "child", path: "/workspace/child", isDirectory: true))
+        try await waitUntilLoaded(viewModel)
+
+        viewModel.refresh()
+        try await waitUntilLoaded(viewModel)
+
+        _ = try await viewModel.loadChildren(path: "/workspace/child")
+
+        XCTAssertFalse(backend.listDirectoryConnectionIds.isEmpty)
+        XCTAssertFalse(backend.openDirectoryConnectionIds.isEmpty)
+        XCTAssertTrue(
+            backend.listDirectoryConnectionIds.allSatisfy { $0 == nil },
+            "ViewModel must route every listDirectory through connectionId: nil. Saw: \(backend.listDirectoryConnectionIds)"
+        )
+        XCTAssertTrue(
+            backend.openDirectoryConnectionIds.allSatisfy { $0 == nil },
+            "ViewModel must route every openDirectory through connectionId: nil. Saw: \(backend.openDirectoryConnectionIds)"
+        )
+    }
+
     func testInitialLoadFiltersHiddenEntriesAndToggleRestoresThem() async throws {
         let backend = MockBackendClient()
         backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
@@ -347,7 +388,9 @@ private final class MockBackendClient: BackendClientProtocol {
     var openDirectoryDelayNanoseconds: UInt64 = 0
 
     private(set) var listDirectoryPaths: [String] = []
+    private(set) var listDirectoryConnectionIds: [String?] = []
     private(set) var openDirectoryPaths: [String] = []
+    private(set) var openDirectoryConnectionIds: [String?] = []
 
     func health() async throws -> PingResult {
         PingResult(service: "test-core", version: "test")
@@ -361,8 +404,9 @@ private final class MockBackendClient: BackendClientProtocol {
         state
     }
 
-    func openDirectory(path: String) async throws -> OpenDirectoryResult {
+    func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryResult {
         openDirectoryPaths.append(path)
+        openDirectoryConnectionIds.append(connectionId)
 
         if openDirectoryDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: openDirectoryDelayNanoseconds)
@@ -379,8 +423,9 @@ private final class MockBackendClient: BackendClientProtocol {
         return result
     }
 
-    func listDirectory(path: String) async throws -> DirectoryListing {
+    func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing {
         listDirectoryPaths.append(path)
+        listDirectoryConnectionIds.append(connectionId)
 
         guard let listing = listings[path] else {
             throw MockBackendClientError.missingListing(path)

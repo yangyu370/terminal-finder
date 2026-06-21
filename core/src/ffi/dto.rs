@@ -15,10 +15,15 @@ pub struct PingInfo {
 }
 
 /// 工作区状态，对应 `workspace.getState`。
+///
+/// `scheme` 为 `"local"` 表示 LocalFsProvider；`"s3"` 表示当前 workspace 落在某个
+/// S3 连接的前缀上，`connection_id` 同时被设。Phase 0 始终是 local / None。
 #[derive(Debug, uniffi::Record)]
 pub struct WorkspaceStateDto {
     pub workspace_root: String,
     pub current_directory: String,
+    pub scheme: String,
+    pub connection_id: Option<String>,
 }
 
 /// 目录条目类型。
@@ -60,6 +65,8 @@ impl From<WorkspaceStateResponse> for WorkspaceStateDto {
         Self {
             workspace_root: value.workspace_root,
             current_directory: value.current_directory,
+            scheme: value.scheme,
+            connection_id: value.connection_id,
         }
     }
 }

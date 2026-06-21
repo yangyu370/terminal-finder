@@ -163,11 +163,11 @@ private final class LayoutTestBackendClient: BackendClientProtocol {
         state
     }
 
-    func openDirectory(path: String) async throws -> OpenDirectoryResult {
+    func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryResult {
         OpenDirectoryResult(state: WorkspaceState(currentDirectory: path), listing: listings[path])
     }
 
-    func listDirectory(path: String) async throws -> DirectoryListing {
+    func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing {
         guard let listing = listings[path] else {
             throw LayoutTestError.missingScrollView
         }

@@ -584,11 +584,7 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     
     /**
      * Remove a connection and its in-memory credentials. Returns
-     * `Err` if the id is unknown.
-     *
-     * TEMPORARY (until PR 3 introduces `ApiError::ConnectionNotFound`):
-     * uses `ApiError::InvalidParams` for the not-found case. PR 3 will
-     * swap this to `ConnectionNotFound { connection_id: id.0 }`.
+     * `Err(ConnectionNotFound)` if the id is unknown.
      */
     func connectionRemove(connectionId: String) throws 
     
@@ -599,14 +595,17 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: TerminalEventListener) throws  -> String
     
     /**
-     * 列目录，对应 `workspace.listDirectory`。异步：内部走 spawn_blocking 读文件系统。
+     * 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
+     * connection 路由规则。
      */
-    func listDirectory(path: String) async throws  -> DirectoryListingDto
+    func listDirectory(path: String, connectionId: String?) async throws  -> DirectoryListingDto
     
     /**
-     * 打开目录，对应 `workspace.openDirectory`。异步：内部走 spawn_blocking 读文件系统。
+     * 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
+     * S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
+     * 传入注册过的 S3 connection id 时落到对应 S3Provider。
      */
-    func openDirectory(path: String) async throws  -> OpenDirectoryDto
+    func openDirectory(path: String, connectionId: String?) async throws  -> OpenDirectoryDto
     
     /**
      * 连通性检查，对应 `core.ping`。同步、无 I/O。
@@ -744,11 +743,7 @@ open func connectionList() -> [ConnectionInfoDto]  {
     
     /**
      * Remove a connection and its in-memory credentials. Returns
-     * `Err` if the id is unknown.
-     *
-     * TEMPORARY (until PR 3 introduces `ApiError::ConnectionNotFound`):
-     * uses `ApiError::InvalidParams` for the not-found case. PR 3 will
-     * swap this to `ConnectionNotFound { connection_id: id.0 }`.
+     * `Err(ConnectionNotFound)` if the id is unknown.
      */
 open func connectionRemove(connectionId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
     uniffi_terminal_finder_core_fn_method_corehandle_connection_remove(
@@ -775,15 +770,16 @@ open func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: Ter
 }
     
     /**
-     * 列目录，对应 `workspace.listDirectory`。异步：内部走 spawn_blocking 读文件系统。
+     * 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
+     * connection 路由规则。
      */
-open func listDirectory(path: String)async throws  -> DirectoryListingDto  {
+open func listDirectory(path: String, connectionId: String?)async throws  -> DirectoryListingDto  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_terminal_finder_core_fn_method_corehandle_list_directory(
                     self.uniffiCloneHandle(),
-                    FfiConverterString.lower(path)
+                    FfiConverterString.lower(path),FfiConverterOptionString.lower(connectionId)
                 )
             },
             pollFunc: ffi_terminal_finder_core_rust_future_poll_rust_buffer,
@@ -795,15 +791,17 @@ open func listDirectory(path: String)async throws  -> DirectoryListingDto  {
 }
     
     /**
-     * 打开目录，对应 `workspace.openDirectory`。异步：内部走 spawn_blocking 读文件系统。
+     * 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
+     * S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
+     * 传入注册过的 S3 connection id 时落到对应 S3Provider。
      */
-open func openDirectory(path: String)async throws  -> OpenDirectoryDto  {
+open func openDirectory(path: String, connectionId: String?)async throws  -> OpenDirectoryDto  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_terminal_finder_core_fn_method_corehandle_open_directory(
                     self.uniffiCloneHandle(),
-                    FfiConverterString.lower(path)
+                    FfiConverterString.lower(path),FfiConverterOptionString.lower(connectionId)
                 )
             },
             pollFunc: ffi_terminal_finder_core_rust_future_poll_rust_buffer,
@@ -1523,16 +1521,23 @@ public func FfiConverterTypePingInfo_lower(_ value: PingInfo) -> RustBuffer {
 
 /**
  * 工作区状态，对应 `workspace.getState`。
+ *
+ * `scheme` 为 `"local"` 表示 LocalFsProvider；`"s3"` 表示当前 workspace 落在某个
+ * S3 连接的前缀上，`connection_id` 同时被设。Phase 0 始终是 local / None。
  */
 public struct WorkspaceStateDto: Equatable, Hashable {
     public var workspaceRoot: String
     public var currentDirectory: String
+    public var scheme: String
+    public var connectionId: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(workspaceRoot: String, currentDirectory: String) {
+    public init(workspaceRoot: String, currentDirectory: String, scheme: String, connectionId: String?) {
         self.workspaceRoot = workspaceRoot
         self.currentDirectory = currentDirectory
+        self.scheme = scheme
+        self.connectionId = connectionId
     }
 
     
@@ -1552,13 +1557,17 @@ public struct FfiConverterTypeWorkspaceStateDto: FfiConverterRustBuffer {
         return
             try WorkspaceStateDto(
                 workspaceRoot: FfiConverterString.read(from: &buf), 
-                currentDirectory: FfiConverterString.read(from: &buf)
+                currentDirectory: FfiConverterString.read(from: &buf), 
+                scheme: FfiConverterString.read(from: &buf), 
+                connectionId: FfiConverterOptionString.read(from: &buf)
         )
     }
 
     public static func write(_ value: WorkspaceStateDto, into buf: inout [UInt8]) {
         FfiConverterString.write(value.workspaceRoot, into: &buf)
         FfiConverterString.write(value.currentDirectory, into: &buf)
+        FfiConverterString.write(value.scheme, into: &buf)
+        FfiConverterOptionString.write(value.connectionId, into: &buf)
     }
 }
 
@@ -1935,16 +1944,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_list() != 19818) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 33760) {
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 11534) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_terminal() != 19440) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_list_directory() != 12060) {
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_list_directory() != 7913) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_open_directory() != 24705) {
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_open_directory() != 40737) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_ping() != 37632) {

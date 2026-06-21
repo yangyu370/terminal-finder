@@ -75,6 +75,24 @@ impl S3Provider {
             }
         }
     }
+
+    /// 把内部 S3 key 还原成客户端可见的相对路径，去掉 `base_prefix` 前缀。
+    /// `absolute_path` 的反操作：客户端拿回相对路径，下次再调 list/stat 时
+    /// `absolute_path` 会再把 base_prefix 加回去，**永远不重叠**。
+    fn relative_path(&self, absolute: &str) -> String {
+        if self.base_prefix.is_empty() {
+            return absolute.to_string();
+        }
+        let base = self.base_prefix.trim_end_matches('/');
+        if absolute == base {
+            return String::new();
+        }
+        let base_with_slash = format!("{base}/");
+        absolute
+            .strip_prefix(&base_with_slash)
+            .unwrap_or(absolute)
+            .to_string()
+    }
 }
 
 /// 把 opendal::Error 翻译成 ApiError，保持与 `error::ApiError::code()` 的稳定 code 一致。
@@ -120,6 +138,10 @@ impl crate::vfs::VfsProvider for S3Provider {
             .await
             .map_err(|e| map_opendal_error("s3.list", connection_id.clone(), e))?;
 
+        // 返回给客户端的路径必须去掉 base_prefix；客户端下次再传回时
+        // `absolute_path` 会重新 prepend，保证 round-trip 不双前缀。
+        let client_dir_prefix = self.relative_path(&dir_prefix);
+
         let mut directory_entries: Vec<DirectoryEntry> = entries
             .into_iter()
             .filter_map(|entry| {
@@ -133,7 +155,7 @@ impl crate::vfs::VfsProvider for S3Provider {
                 let display_name = raw_name.trim_end_matches('/').to_string();
                 Some(DirectoryEntry {
                     name: display_name.clone(),
-                    path: format!("{dir_prefix}{display_name}"),
+                    path: format!("{client_dir_prefix}{display_name}"),
                     kind: if is_dir {
                         VfsEntryKind::Directory
                     } else {
@@ -159,7 +181,7 @@ impl crate::vfs::VfsProvider for S3Provider {
         });
 
         Ok(ListDirectoryResponse {
-            path: dir_prefix,
+            path: client_dir_prefix,
             entries: directory_entries,
         })
     }
@@ -189,10 +211,12 @@ impl crate::vfs::VfsProvider for S3Provider {
             .next()
             .unwrap_or("")
             .to_string();
+        // Strip base_prefix for the client-facing path so stat → list/open round-trips.
+        let client_path = self.relative_path(&key);
 
         Ok(DirectoryEntry {
             name,
-            path: key,
+            path: client_path,
             kind: if is_dir {
                 VfsEntryKind::Directory
             } else {
@@ -293,6 +317,60 @@ mod tests {
         let provider = S3Provider::new(id, &cfg, &sample_credential()).expect("constructs");
         assert_eq!(provider.absolute_path(""), "");
         assert_eq!(provider.absolute_path("docs"), "docs");
+    }
+
+    #[test]
+    fn s3_provider_relative_path_strips_base_prefix() {
+        let mut cfg = sample_config();
+        cfg.base_prefix = "users/me".into();
+        let id = ConnectionId("conn-rel-1".into());
+        let provider = S3Provider::new(id, &cfg, &sample_credential()).expect("constructs");
+
+        assert_eq!(provider.relative_path("users/me/"), "");
+        assert_eq!(provider.relative_path("users/me"), "");
+        assert_eq!(provider.relative_path("users/me/docs"), "docs");
+        assert_eq!(
+            provider.relative_path("users/me/docs/leaf.txt"),
+            "docs/leaf.txt"
+        );
+    }
+
+    #[test]
+    fn s3_provider_relative_path_is_noop_when_base_empty() {
+        let cfg = sample_config();
+        let id = ConnectionId("conn-rel-2".into());
+        let provider = S3Provider::new(id, &cfg, &sample_credential()).expect("constructs");
+
+        assert_eq!(provider.relative_path(""), "");
+        assert_eq!(provider.relative_path("alpha/beta"), "alpha/beta");
+    }
+
+    #[test]
+    fn s3_provider_absolute_then_relative_round_trips_without_double_prefix() {
+        // Regression guard for the 1c base_prefix double-prepend bug
+        // (PR1e self-review I3). list() returns paths via relative_path();
+        // the client then passes them back into the next list/stat call,
+        // which runs absolute_path() again. The round-trip must NOT
+        // accumulate base_prefix.
+        let mut cfg = sample_config();
+        cfg.base_prefix = "users/me".into();
+        let id = ConnectionId("conn-roundtrip".into());
+        let provider = S3Provider::new(id, &cfg, &sample_credential()).expect("constructs");
+
+        for client_visible in ["", "docs", "docs/leaf.txt", "docs/sub/leaf.txt"] {
+            let server_key = provider.absolute_path(client_visible);
+            let bounced = provider.relative_path(&server_key);
+            assert_eq!(
+                bounced, client_visible,
+                "absolute_path then relative_path must round-trip for {client_visible:?}"
+            );
+            // And one more round of absolute_path must NOT double-prepend.
+            let key_again = provider.absolute_path(&bounced);
+            assert_eq!(
+                key_again, server_key,
+                "second absolute_path must NOT double-prepend base_prefix for {client_visible:?}"
+            );
+        }
     }
 
     #[test]

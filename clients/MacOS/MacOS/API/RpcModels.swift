@@ -27,11 +27,24 @@ struct WorkspaceState: Decodable {
     let currentDirectory: String
     let workspaceRoot: String?
     let version: UInt64?
+    /// `"local"` 或 `"s3"`，对应 core 的 `WorkspaceStateResponse.scheme`。
+    /// 缺省 `"local"`，让旧的本地 mock 和 HTTP 路径不破坏。
+    let scheme: String
+    /// 仅当 `scheme == "s3"` 时携带，等于注册到 core 的 S3 connection id。
+    let connectionId: String?
 
-    init(currentDirectory: String, workspaceRoot: String? = nil, version: UInt64? = nil) {
+    init(
+        currentDirectory: String,
+        workspaceRoot: String? = nil,
+        version: UInt64? = nil,
+        scheme: String = "local",
+        connectionId: String? = nil
+    ) {
         self.currentDirectory = currentDirectory
         self.workspaceRoot = workspaceRoot
         self.version = version
+        self.scheme = scheme
+        self.connectionId = connectionId
     }
 
     init(from decoder: any Decoder) throws {
@@ -45,6 +58,8 @@ struct WorkspaceState: Decodable {
         version = try container.decodeFirstPresentUInt64IfPresent(
             for: [.version, .revision]
         )
+        scheme = try container.decodeIfPresent(String.self, forKey: .scheme) ?? "local"
+        connectionId = try container.decodeIfPresent(String.self, forKey: .connectionId)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -57,6 +72,8 @@ struct WorkspaceState: Decodable {
         case root
         case version
         case revision
+        case scheme
+        case connectionId
     }
 }
 
@@ -80,6 +97,18 @@ struct WorkspaceStateResult: Decodable {
 
 struct OpenDirectoryParams: Encodable {
     let path: String
+    let connectionId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case connectionId = "connection_id"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        try container.encodeIfPresent(connectionId, forKey: .connectionId)
+    }
 }
 
 struct OpenDirectoryResult: Decodable {
@@ -117,6 +146,18 @@ struct OpenDirectoryResult: Decodable {
 
 struct ListDirectoryParams: Encodable {
     let path: String
+    let connectionId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case connectionId = "connection_id"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        try container.encodeIfPresent(connectionId, forKey: .connectionId)
+    }
 }
 
 struct DirectoryListing: Decodable {

@@ -39,9 +39,9 @@ nonisolated struct FFIBackendClient: BackendClientProtocol {
         WorkspaceState(from: core.workspaceState())
     }
 
-    func openDirectory(path: String) async throws -> OpenDirectoryResult {
+    func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryResult {
         do {
-            let result = try await core.openDirectory(path: path)
+            let result = try await core.openDirectory(path: path, connectionId: connectionId)
             return OpenDirectoryResult(
                 state: WorkspaceState(from: result.state),
                 listing: DirectoryListing(from: result.listing)
@@ -51,9 +51,11 @@ nonisolated struct FFIBackendClient: BackendClientProtocol {
         }
     }
 
-    func listDirectory(path: String) async throws -> DirectoryListing {
+    func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing {
         do {
-            return DirectoryListing(from: try await core.listDirectory(path: path))
+            return DirectoryListing(
+                from: try await core.listDirectory(path: path, connectionId: connectionId)
+            )
         } catch {
             throw Self.mapError(error)
         }
@@ -76,7 +78,9 @@ private extension WorkspaceState {
     init(from dto: WorkspaceStateDto) {
         self.init(
             currentDirectory: dto.currentDirectory,
-            workspaceRoot: dto.workspaceRoot
+            workspaceRoot: dto.workspaceRoot,
+            scheme: dto.scheme,
+            connectionId: dto.connectionId
         )
     }
 }
