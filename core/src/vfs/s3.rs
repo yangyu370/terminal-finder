@@ -328,17 +328,77 @@ impl crate::vfs::VfsProvider for S3Provider {
     }
 
     async fn rename(&self, from: &str, to: &str) -> Result<(), ApiError> {
-        // S3 没有原子 rename：copy 成功而 delete 失败时会留下两份对象，
-        // 调用方应通过 `capabilities().can_rename == false` 提示用户。
+        // S3 没有原子 rename，能力声明里 `can_rename = false`，UI 已弹过
+        // 非原子告警。
+        //
+        // 实现按 from 是文件还是目录分两条路：
+        // - 文件：单 `copy` + `delete`。
+        // - 目录：递归 — 枚举 `<from>/` 前缀下所有对象（含 marker 和子 marker），
+        //   逐个在 `<to>/` 下重建（dir → create_dir，file → copy），最后
+        //   `remove_all(<from>/)` 把源端整体清掉。OpenDAL 没现成的
+        //   `rename_dir`，且对象存储里目录 rename 本质就是 O(n) 的 copy-delete。
         let from_key = self.absolute_path(from);
         let to_key = self.absolute_path(to);
         let connection_id = self.connection_id.0.clone();
-        self.operator
-            .copy(&from_key, &to_key)
+
+        let from_dir_key = format!("{}/", from_key.trim_end_matches('/'));
+        let is_directory = matches!(
+            self.operator
+                .stat(&from_dir_key)
+                .await
+                .ok()
+                .map(|metadata| metadata.mode()),
+            Some(EntryMode::DIR)
+        );
+
+        if !is_directory {
+            self.operator
+                .copy(&from_key, &to_key)
+                .await
+                .map_err(|e| map_opendal_error("s3.rename.copy", connection_id.clone(), e))?;
+            return self
+                .operator
+                .delete(&from_key)
+                .await
+                .map_err(|e| map_opendal_error("s3.rename.delete", connection_id, e));
+        }
+
+        let to_dir_key = format!("{}/", to_key.trim_end_matches('/'));
+        let entries = self
+            .operator
+            .list_with(&from_dir_key)
+            .recursive(true)
             .await
-            .map_err(|e| map_opendal_error("s3.rename.copy", connection_id.clone(), e))?;
+            .map_err(|e| map_opendal_error("s3.rename.list", connection_id.clone(), e))?;
+
+        for entry in &entries {
+            let src_key = entry.path();
+            // src_key 是绝对 key（含 from_dir_key 前缀）；剥前缀拿到相对部分，
+            // 再拼到 to_dir_key 上。若 src_key 恰好就是 from_dir_key（marker
+            // 自指），suffix == ""，dst_key 退化成 to_dir_key，create_dir
+            // 写入新 marker。
+            let suffix = src_key.strip_prefix(&from_dir_key).unwrap_or("");
+            let dst_key = format!("{to_dir_key}{suffix}");
+
+            if matches!(entry.metadata().mode(), EntryMode::DIR) {
+                self.operator
+                    .create_dir(&dst_key)
+                    .await
+                    .map_err(|e| {
+                        map_opendal_error("s3.rename.mkdir", connection_id.clone(), e)
+                    })?;
+            } else {
+                self.operator
+                    .copy(src_key, &dst_key)
+                    .await
+                    .map_err(|e| {
+                        map_opendal_error("s3.rename.copy", connection_id.clone(), e)
+                    })?;
+            }
+        }
+
         self.operator
-            .delete(&from_key)
+            .remove_all(&from_dir_key)
             .await
             .map_err(|e| map_opendal_error("s3.rename.delete", connection_id, e))
     }
