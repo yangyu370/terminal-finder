@@ -269,6 +269,24 @@ impl CoreHandle {
         Ok(response.into())
     }
 
+    /// Open a terminal rooted at a mounted connection workspace.
+    pub async fn create_connection_terminal(
+        &self,
+        connection_id: String,
+        cols: u16,
+        rows: u16,
+        listener: Arc<dyn TerminalEventListener>,
+    ) -> Result<String, CoreError> {
+        terminal::create_connection_terminal(&self.state, connection_id, cols, rows, listener).await
+    }
+
+    /// Tear down the current workspace runtime instance.
+    pub async fn shutdown_workspace(&self) -> Result<(), CoreError> {
+        self.state.workspace_runtime().teardown().await?;
+        self.state.mounts().clear();
+        Ok(())
+    }
+
     /// 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
     /// 上传前后各发一次 `transfer_progress` 事件（0 / total），让 Swift
     /// 端可以驱动进度条。50 MiB 上限来自 `VfsProvider::read` 的对称约束:
@@ -434,6 +452,57 @@ impl CoreHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    use crate::connection::ConnectionId;
+    use crate::error::ApiError;
+    use crate::terminal::session::{SessionHandle, TerminalEvent};
+    use crate::workspace::{
+        MountHandle, MountSpec, RuntimeStatus, TerminalOpenContext, WorkspaceRuntime,
+    };
+
+    struct TestRuntime;
+
+    #[async_trait]
+    impl WorkspaceRuntime for TestRuntime {
+        async fn status(&self) -> RuntimeStatus {
+            RuntimeStatus::Ready
+        }
+
+        async fn ensure_ready(&self) -> Result<(), ApiError> {
+            Ok(())
+        }
+
+        fn propose_mountpoint(&self, display_name: &str, _taken: &[String]) -> String {
+            format!("test://{display_name}")
+        }
+
+        async fn mount(&self, spec: MountSpec) -> Result<MountHandle, ApiError> {
+            Ok(MountHandle {
+                mountpoint: spec.mountpoint,
+            })
+        }
+
+        async fn unmount(&self, _mountpoint: &str) -> Result<(), ApiError> {
+            Ok(())
+        }
+
+        async fn open_terminal(
+            &self,
+            _ctx: TerminalOpenContext,
+            _cols: u16,
+            _rows: u16,
+            _events: mpsc::Sender<TerminalEvent>,
+        ) -> Result<SessionHandle, ApiError> {
+            Ok(SessionHandle::for_test(Uuid::new_v4()))
+        }
+
+        async fn teardown(&self) -> Result<(), ApiError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn ping_reports_service_and_version() {
@@ -451,6 +520,27 @@ mod tests {
 
         assert!(!state.workspace_root.is_empty());
         assert!(!state.current_directory.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_workspace_clears_mount_registry() {
+        let handle = Arc::new(CoreHandle {
+            state: AppState::new_with_workspace_runtime("test", Arc::new(TestRuntime)),
+        });
+        let id = ConnectionId("c1".into());
+        handle
+            .state
+            .mounts()
+            .get_or_reserve(&id, |_taken| "test://mount".into());
+        handle.state.mounts().mark_ready(&id);
+        assert!(handle.state.mounts().is_mounted(&id));
+
+        handle
+            .shutdown_workspace()
+            .await
+            .expect("shutdown succeeds");
+
+        assert!(!handle.state.mounts().is_mounted(&id));
     }
 
     #[tokio::test]
