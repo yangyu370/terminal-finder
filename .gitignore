@@ -25,6 +25,8 @@ phase1.md
 2026-06-19-phase1-object-storage.md
 WIN98_SKIN_DESIGN.md
 XP_SKIN_DESIGN.md
+CLOUD_RESOURCE_MANAGER_DESIGN.md
+docs/
 
 # Local test/coverage artifacts
 *.profraw
