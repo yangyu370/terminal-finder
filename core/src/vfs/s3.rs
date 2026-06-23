@@ -384,16 +384,12 @@ impl crate::vfs::VfsProvider for S3Provider {
                 self.operator
                     .create_dir(&dst_key)
                     .await
-                    .map_err(|e| {
-                        map_opendal_error("s3.rename.mkdir", connection_id.clone(), e)
-                    })?;
+                    .map_err(|e| map_opendal_error("s3.rename.mkdir", connection_id.clone(), e))?;
             } else {
                 self.operator
                     .copy(src_key, &dst_key)
                     .await
-                    .map_err(|e| {
-                        map_opendal_error("s3.rename.copy", connection_id.clone(), e)
-                    })?;
+                    .map_err(|e| map_opendal_error("s3.rename.copy", connection_id.clone(), e))?;
             }
         }
 

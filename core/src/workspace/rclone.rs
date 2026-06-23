@@ -64,6 +64,8 @@ pub fn mount_exec_plan(
         mountpoint.to_string(),
         "--vfs-cache-mode".into(),
         "writes".into(),
+        "--vfs-write-back".into(),
+        "0s".into(),
         "--allow-other".into(),
     ]);
 
@@ -164,6 +166,8 @@ mod tests {
             "/mnt/minio".into(),
             "--vfs-cache-mode".into(),
             "writes".into(),
+            "--vfs-write-back".into(),
+            "0s".into(),
             "--allow-other".into(),
         ]));
     }
