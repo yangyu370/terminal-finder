@@ -7,7 +7,7 @@ use std::{
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::session::{SessionHandle, TerminalEvent, TerminalSession};
+use super::session::{SessionHandle, TerminalEvent, TerminalLaunch, TerminalSession};
 
 #[derive(Clone, Default)]
 pub struct TerminalRegistry {
@@ -26,13 +26,28 @@ impl TerminalRegistry {
         rows: u16,
         events: mpsc::Sender<TerminalEvent>,
     ) -> anyhow::Result<Uuid> {
-        let session = TerminalSession::spawn(cwd, cols, rows, events)?;
+        self.create_session_with_launch(TerminalLaunch::LocalShell { cwd }, cols, rows, events)
+    }
+
+    pub fn create_session_with_launch(
+        &self,
+        launch: TerminalLaunch,
+        cols: u16,
+        rows: u16,
+        events: mpsc::Sender<TerminalEvent>,
+    ) -> anyhow::Result<Uuid> {
+        let session = TerminalSession::spawn(launch, cols, rows, events)?;
+        let session_id = session.id();
+        self.insert(session);
+        Ok(session_id)
+    }
+
+    pub fn insert(&self, session: SessionHandle) {
         let session_id = session.id();
         self.sessions
             .lock()
             .expect("terminal registry lock is not poisoned")
             .insert(session_id, session);
-        Ok(session_id)
     }
 
     pub fn session(&self, session_id: Uuid) -> Option<SessionHandle> {
@@ -89,6 +104,7 @@ impl TerminalRegistry {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::mpsc;
     use uuid::Uuid;
 
     use super::*;
@@ -99,5 +115,27 @@ mod tests {
 
         assert!(registry.session(Uuid::new_v4()).is_none());
         assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn create_session_with_launch_registers_local_shell() {
+        let registry = TerminalRegistry::new();
+        let (events, _event_rx) = mpsc::channel(32);
+
+        let session_id = registry
+            .create_session_with_launch(
+                TerminalLaunch::LocalShell {
+                    cwd: std::env::current_dir().expect("current directory is available"),
+                },
+                80,
+                24,
+                events,
+            )
+            .expect("terminal session spawns");
+
+        assert!(registry.session(session_id).is_some());
+        assert_eq!(registry.len(), 1);
+
+        registry.close(session_id);
     }
 }

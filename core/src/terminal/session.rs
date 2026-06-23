@@ -20,6 +20,11 @@ const DEFAULT_UTF8_LOCALE: &str = "en_US.UTF-8";
 const DEFAULT_UTF8_LOCALE: &str = "C.UTF-8";
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+pub enum TerminalLaunch {
+    LocalShell { cwd: PathBuf },
+    DockerExec { container: String, workdir: String },
+}
+
 #[derive(Debug)]
 pub enum TerminalEvent {
     Output {
@@ -55,6 +60,17 @@ impl SessionHandle {
         self.session_id
     }
 
+    #[cfg(test)]
+    pub fn for_test(session_id: Uuid) -> Self {
+        let (commands, receiver) = mpsc::channel();
+        drop(receiver);
+
+        Self {
+            session_id,
+            commands,
+        }
+    }
+
     pub fn input(&self, bytes: Vec<u8>) -> bool {
         self.commands.send(SessionCommand::Input(bytes)).is_ok()
     }
@@ -73,7 +89,7 @@ pub struct TerminalSession;
 
 impl TerminalSession {
     pub fn spawn(
-        cwd: PathBuf,
+        launch: TerminalLaunch,
         cols: u16,
         rows: u16,
         events: tokio_mpsc::Sender<TerminalEvent>,
@@ -87,10 +103,7 @@ impl TerminalSession {
             pixel_height: 0,
         })?;
 
-        let mut command = CommandBuilder::new(DEFAULT_SHELL);
-        command.arg("-1");
-        command.cwd(cwd);
-        configure_terminal_environment(&mut command);
+        let command = build_command(&launch);
 
         let child = pair.slave.spawn_command(command)?;
         drop(pair.slave);
@@ -108,6 +121,32 @@ impl TerminalSession {
             commands: command_tx,
         })
     }
+}
+
+fn build_command(launch: &TerminalLaunch) -> CommandBuilder {
+    let mut command = match launch {
+        TerminalLaunch::LocalShell { cwd } => {
+            let mut command = CommandBuilder::new(DEFAULT_SHELL);
+            command.arg("-l");
+            command.cwd(cwd);
+            command
+        }
+        TerminalLaunch::DockerExec { container, workdir } => {
+            let mut command = CommandBuilder::new("docker");
+            command.args([
+                "exec",
+                "-it",
+                "-w",
+                workdir.as_str(),
+                container.as_str(),
+                DEFAULT_SHELL,
+                "-l",
+            ]);
+            command
+        }
+    };
+    configure_terminal_environment(&mut command);
+    command
 }
 
 fn configure_terminal_environment(command: &mut CommandBuilder) {
@@ -347,6 +386,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn docker_exec_launch_builds_expected_argv() {
+        let command = build_command(&TerminalLaunch::DockerExec {
+            container: "terminal-finder-dev".to_string(),
+            workdir: "/workspace".to_string(),
+        });
+        let argv: Vec<_> = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            argv,
+            vec![
+                "docker",
+                "exec",
+                "-it",
+                "-w",
+                "/workspace",
+                "terminal-finder-dev",
+                DEFAULT_SHELL,
+                "-l",
+            ]
+        );
+    }
+
+    #[test]
+    fn local_shell_launch_uses_default_shell() {
+        let command = build_command(&TerminalLaunch::LocalShell {
+            cwd: env::current_dir().expect("current directory is available"),
+        });
+        let argv: Vec<_> = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(argv.first().map(String::as_str), Some(DEFAULT_SHELL));
+    }
+
     #[tokio::test]
     async fn terminal_session_runs_utf8_text_through_child_shell() {
         if !PathBuf::from(DEFAULT_SHELL).exists() {
@@ -355,7 +435,9 @@ mod tests {
 
         let (events, mut event_rx) = tokio_mpsc::channel(32);
         let session = TerminalSession::spawn(
-            env::current_dir().expect("current directory is available"),
+            TerminalLaunch::LocalShell {
+                cwd: env::current_dir().expect("current directory is available"),
+            },
             80,
             24,
             events,
