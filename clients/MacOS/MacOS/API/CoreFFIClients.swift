@@ -374,12 +374,46 @@ final class FFITerminalClient: TerminalClientProtocol {
                 rows: UInt16(clamping: rows),
                 listener: listener
             )
+            guard onEvent != nil else {
+                try? core.closeTerminal(sessionId: sessionId)
+                return
+            }
             activeSessionIds.insert(sessionId)
             listener.activate(sessionId: sessionId)
             onEvent?(.created(sessionId: sessionId, id: requestId, cols: cols, rows: rows))
         } catch {
             throw FFIBackendClient.mapError(error)
         }
+    }
+
+    func createConnection(connectionId: String, cols: Int, rows: Int, requestId: String) async throws {
+        let listener = FFITerminalSessionListener { [weak self] sessionId, event in
+            Task { @MainActor [weak self] in
+                self?.handleSessionEvent(sessionId: sessionId, event: event)
+            }
+        }
+
+        do {
+            let sessionId = try await core.createConnectionTerminal(
+                connectionId: connectionId,
+                cols: UInt16(clamping: cols),
+                rows: UInt16(clamping: rows),
+                listener: listener
+            )
+            guard onEvent != nil else {
+                try? core.closeTerminal(sessionId: sessionId)
+                return
+            }
+            activeSessionIds.insert(sessionId)
+            listener.activate(sessionId: sessionId)
+            onEvent?(.created(sessionId: sessionId, id: requestId, cols: cols, rows: rows))
+        } catch {
+            throw FFIBackendClient.mapError(error)
+        }
+    }
+
+    func shutdownWorkspace() async {
+        try? await core.shutdownWorkspace()
     }
 
     func sendInput(sessionId: String, bytes: [UInt8]) async throws {
