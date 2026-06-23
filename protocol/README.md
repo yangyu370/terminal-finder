@@ -326,6 +326,38 @@ Returns:
 
 Caps are read directly from the resolved provider so callers see the same capabilities the operations themselves honour.
 
+## terminal.createConnection (FFI)
+
+### Request (FFI only)
+
+```text
+create_connection_terminal(connection_id: String, cols: u16, rows: u16, listener: TerminalEventListener) -> Result<String, CoreError>
+```
+
+Creates a terminal for a registered S3 connection. Core ensures the workspace runtime is ready, asks the runtime to expose the connection's bucket as a runtime-private path, and opens a PTY session rooted at that path. Credentials are injected only through the runtime's safe channel at mount time; they are not persisted and do not appear in command argv.
+
+The returned string is the terminal `sessionId`. After creation, `send_terminal_input`, `resize_terminal`, `close_terminal`, and `TerminalEventListener` callbacks behave the same as a local PTY session.
+
+The workspace runtime is an abstraction. The first implementation is `docker_local` (local Docker plus rclone FUSE), but the FFI method and error codes stay runtime-neutral so future sandbox runtimes can replace it without client contract changes.
+
+Error codes:
+- `connection_not_found` — `connection_id` is not in the registry.
+- `workspace_runtime_unavailable` — the workspace runtime cannot be reached.
+- `workspace_provision_failed` — runtime prerequisites are missing or cannot be prepared.
+- `workspace_start_failed` — the workspace session or terminal could not start.
+- `mount_failed` — the bucket could not be exposed as a workspace path.
+- `mount_timeout` — the mount did not become ready in time.
+
+## workspace.shutdown (FFI)
+
+### Request (FFI only)
+
+```text
+shutdown_workspace() -> Result<(), CoreError>
+```
+
+Best-effort cleanup for the current workspace runtime. The macOS client calls this during app termination. The local runtime removes the shared workspace container and clears cached mount reservations; future remote runtimes should close the corresponding sandbox session. The method is idempotent from the client's point of view.
+
 ### Event: `transfer_progress`
 
 Sent through the `EventClientProtocol` channel during long transfers (`upload_file` today, future streaming `download_file`):
@@ -506,4 +538,9 @@ resize_failed      PTY size could not be changed
 wait_failed        PTY process exit could not be observed
 unknown_session    sessionId does not match a live session
 invalid_message    envelope or data failed to parse
+workspace_runtime_unavailable   workspace runtime is not reachable
+workspace_provision_failed      workspace prerequisites are missing or could not be prepared
+workspace_start_failed          shared workspace or terminal could not start
+mount_failed                    bucket mount failed
+mount_timeout                   mount did not become ready in time
 ```
