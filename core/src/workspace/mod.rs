@@ -1,6 +1,8 @@
+pub mod docker;
 pub mod dto;
 pub mod mount_table;
 pub mod naming;
+pub mod rclone;
 pub mod service;
 pub mod state;
 

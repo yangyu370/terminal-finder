@@ -55,6 +55,24 @@ mod tests {
                 operation: "op",
                 message: "x".into(),
             },
+            ApiError::WorkspaceRuntimeUnavailable {
+                runtime: "runtime".into(),
+                message: "x".into(),
+            },
+            ApiError::WorkspaceProvisionFailed {
+                runtime: "runtime".into(),
+                message: "x".into(),
+            },
+            ApiError::WorkspaceStartFailed {
+                runtime: "runtime".into(),
+                message: "x".into(),
+            },
+            ApiError::MountFailed {
+                message: "x".into(),
+            },
+            ApiError::MountTimeout {
+                mountpoint: "/mnt/minio".into(),
+            },
         ];
 
         for err in cases {
