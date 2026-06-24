@@ -22,6 +22,15 @@ const RCLONE_REMOTE: &str = "tf";
 const MOUNT_READY_TIMEOUT: Duration = Duration::from_secs(5);
 const MOUNT_READY_POLL: Duration = Duration::from_millis(100);
 
+// macOS GUI 进程（LaunchServices 启动）默认 PATH 仅 /usr/bin:/bin:/usr/sbin:/sbin，
+// 不包含 Docker Desktop 安装位置，导致 `docker` 二进制找不到。给每个 docker 子进程
+// 注入候选目录到 PATH 前面，让 PATH lookup 能命中；同时保留宿主原 PATH 兜底。
+const DOCKER_PATH_CANDIDATES: &[&str] = &[
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/Applications/Docker.app/Contents/Resources/bin",
+];
+
 pub struct LocalDockerRuntime {
     container: String,
     image: String,
@@ -155,7 +164,7 @@ impl WorkspaceRuntime for LocalDockerRuntime {
         naming::mountpoint_for(MOUNT_ROOT, display_name, taken)
     }
 
-    async fn mount(&self, spec: MountSpec) -> Result<MountHandle, ApiError> {
+    async fn mount(&self, mut spec: MountSpec) -> Result<MountHandle, ApiError> {
         let Credential::S3(credential) = spec.credential;
         let mkdir = run_argv(&strings([
             "docker",
@@ -174,6 +183,12 @@ impl WorkspaceRuntime for LocalDockerRuntime {
                 message: "failed to prepare mountpoint".into(),
             });
         }
+
+        // 用户填的 endpoint 直觉是从宿主角度看的（典型如 http://localhost:9000）；
+        // 但 rclone 跑在容器里，对它而言 localhost 是容器自己。这里把 loopback host
+        // 改写成 host.docker.internal，让容器能访问到宿主上的服务。原 connection
+        // 配置保持不动。
+        spec.config.endpoint = rewrite_endpoint_for_container(&spec.config.endpoint);
 
         let plan = rclone::mount_exec_plan(
             &self.container,
@@ -304,10 +319,98 @@ async fn run_argv_with_env(
 ) -> Result<Output, std::io::Error> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
+    let mut caller_set_path = false;
     for (name, value) in env {
+        if name == "PATH" {
+            caller_set_path = true;
+        }
         command.env(name, value);
     }
+    if !caller_set_path {
+        command.env("PATH", augmented_docker_path());
+    }
     command.output().await
+}
+
+pub(crate) fn augmented_docker_path() -> String {
+    let parent = std::env::var("PATH").ok();
+    let home = std::env::var("HOME").ok();
+    build_augmented_docker_path(parent.as_deref(), home.as_deref())
+}
+
+fn build_augmented_docker_path(parent_path: Option<&str>, home: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(home) = home
+        && !home.is_empty()
+    {
+        parts.push(format!("{home}/.docker/bin"));
+    }
+    for candidate in DOCKER_PATH_CANDIDATES {
+        parts.push((*candidate).to_string());
+    }
+    if let Some(parent) = parent_path
+        && !parent.is_empty()
+    {
+        parts.push(parent.to_string());
+    }
+    parts.join(":")
+}
+
+// Docker Desktop (macOS/Windows) 给容器回宿主的特殊 DNS 名。Linux 默认没有，
+// 但 Linux 用户少有"宿主 loopback 跑 MinIO + 容器要访问"这种场景。
+const HOST_GATEWAY_DNS: &str = "host.docker.internal";
+
+/// 把 endpoint 里的 loopback host 改写成容器可见的宿主 gateway。
+///
+/// 命中条件（仅 host 部分）：`localhost` / `127.0.0.0/8` 全段 / `0.0.0.0` / IPv6 `::1`、`::`。
+/// 其余原样透传（公网 IP、私网 IP、域名、无 scheme、解析失败均不改）。保留 scheme、端口、
+/// path、query。
+fn rewrite_endpoint_for_container(endpoint: &str) -> String {
+    let Some(scheme_end) = endpoint.find("://") else {
+        return endpoint.to_string();
+    };
+    let after_scheme = scheme_end + 3;
+    let rest = &endpoint[after_scheme..];
+
+    let (host, tail) = if let Some(stripped) = rest.strip_prefix('[') {
+        // IPv6 字面量：[host]:port/path
+        let Some(close) = stripped.find(']') else {
+            return endpoint.to_string();
+        };
+        (&stripped[..close], &stripped[close + 1..])
+    } else {
+        let end = rest.find([':', '/']).unwrap_or(rest.len());
+        (&rest[..end], &rest[end..])
+    };
+
+    if is_loopback_host(host) {
+        let scheme = &endpoint[..scheme_end];
+        format!("{scheme}://{HOST_GATEWAY_DNS}{tail}")
+    } else {
+        endpoint.to_string()
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") || host == "0.0.0.0" {
+        return true;
+    }
+    // IPv6 loopback（含未指定地址 `::`，挂载语义上等价 loopback）
+    if host == "::1" || host == "::" {
+        return true;
+    }
+    // IPv4 127.0.0.0/8 整段
+    if let Some(rest) = host.strip_prefix("127.") {
+        let parts: Vec<&str> = rest.split('.').collect();
+        if parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.parse::<u8>().is_ok())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -389,6 +492,238 @@ mod tests {
         let runtime = LocalDockerRuntime::with_defaults();
 
         assert_eq!(runtime.propose_mountpoint("Minio", &[]), "/mnt/minio");
+    }
+
+    #[test]
+    fn rewrite_endpoint_translates_localhost_with_port() {
+        assert_eq!(
+            rewrite_endpoint_for_container("http://localhost:9000"),
+            "http://host.docker.internal:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_translates_localhost_case_insensitive() {
+        assert_eq!(
+            rewrite_endpoint_for_container("http://LocalHost:9000"),
+            "http://host.docker.internal:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_translates_127_0_0_1() {
+        assert_eq!(
+            rewrite_endpoint_for_container("http://127.0.0.1:9000"),
+            "http://host.docker.internal:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_translates_full_loopback_range() {
+        // 127.0.0.0/8 整段都是 loopback
+        assert_eq!(
+            rewrite_endpoint_for_container("http://127.0.0.5:9000"),
+            "http://host.docker.internal:9000"
+        );
+        assert_eq!(
+            rewrite_endpoint_for_container("http://127.123.45.67:9000"),
+            "http://host.docker.internal:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_translates_zero_zero_zero_zero() {
+        assert_eq!(
+            rewrite_endpoint_for_container("http://0.0.0.0:9000"),
+            "http://host.docker.internal:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_translates_ipv6_loopback() {
+        assert_eq!(
+            rewrite_endpoint_for_container("http://[::1]:9000"),
+            "http://host.docker.internal:9000"
+        );
+        assert_eq!(
+            rewrite_endpoint_for_container("http://[::]:9000"),
+            "http://host.docker.internal:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_preserves_path_and_query() {
+        assert_eq!(
+            rewrite_endpoint_for_container("https://localhost:9000/probe?ok=1"),
+            "https://host.docker.internal:9000/probe?ok=1"
+        );
+        // 无端口、有 path
+        assert_eq!(
+            rewrite_endpoint_for_container("https://localhost/probe"),
+            "https://host.docker.internal/probe"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_preserves_https_scheme() {
+        assert_eq!(
+            rewrite_endpoint_for_container("https://localhost:9000"),
+            "https://host.docker.internal:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_passes_through_public_ip() {
+        assert_eq!(
+            rewrite_endpoint_for_container("http://43.136.30.29:9000"),
+            "http://43.136.30.29:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_passes_through_private_lan_ip() {
+        // 192.168/172.16-31/10 等私网 IP 不是 loopback，不应转译
+        assert_eq!(
+            rewrite_endpoint_for_container("http://192.168.1.10:9000"),
+            "http://192.168.1.10:9000"
+        );
+        assert_eq!(
+            rewrite_endpoint_for_container("http://10.0.0.5:9000"),
+            "http://10.0.0.5:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_passes_through_domain_name() {
+        assert_eq!(
+            rewrite_endpoint_for_container("https://minio.example.com:9000/path"),
+            "https://minio.example.com:9000/path"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_does_not_match_localhost_substring_in_domain() {
+        // "localhost.evil.com" 不能被当成 loopback
+        assert_eq!(
+            rewrite_endpoint_for_container("http://localhost.evil.com:9000"),
+            "http://localhost.evil.com:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_passes_through_when_scheme_missing() {
+        // 没有 :// 就不知道哪儿是 host，原样透传让 rclone 自己报错
+        assert_eq!(
+            rewrite_endpoint_for_container("localhost:9000"),
+            "localhost:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_passes_through_unclosed_ipv6_bracket() {
+        // 畸形输入，原样透传
+        assert_eq!(
+            rewrite_endpoint_for_container("http://[::1:9000"),
+            "http://[::1:9000"
+        );
+    }
+
+    #[test]
+    fn rewrite_endpoint_does_not_match_partial_127_octets() {
+        // "1270.0.0.1" 不是 127.0.0.0/8，不应被改
+        assert_eq!(
+            rewrite_endpoint_for_container("http://1270.0.0.1:9000"),
+            "http://1270.0.0.1:9000"
+        );
+        // "127.0.0" 段不全
+        assert_eq!(
+            rewrite_endpoint_for_container("http://127.0.0:9000"),
+            "http://127.0.0:9000"
+        );
+    }
+
+    #[test]
+    fn build_augmented_docker_path_prepends_candidates_and_appends_parent_path() {
+        let path =
+            build_augmented_docker_path(Some("/usr/bin:/bin:/usr/sbin:/sbin"), Some("/Users/test"));
+
+        assert_eq!(
+            path,
+            "/Users/test/.docker/bin:/usr/local/bin:/opt/homebrew/bin:\
+/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        );
+    }
+
+    #[test]
+    fn build_augmented_docker_path_omits_home_docker_bin_when_home_missing() {
+        let path = build_augmented_docker_path(Some("/usr/bin:/bin"), None);
+
+        assert!(!path.contains(".docker/bin"));
+        assert!(path.starts_with("/usr/local/bin:"));
+        assert!(path.ends_with(":/usr/bin:/bin"));
+    }
+
+    #[test]
+    fn build_augmented_docker_path_omits_home_docker_bin_when_home_empty() {
+        let path = build_augmented_docker_path(Some("/usr/bin"), Some(""));
+
+        assert!(!path.contains(".docker/bin"));
+    }
+
+    #[test]
+    fn build_augmented_docker_path_omits_parent_path_when_empty_or_missing() {
+        let none_parent = build_augmented_docker_path(None, Some("/home/u"));
+        let empty_parent = build_augmented_docker_path(Some(""), Some("/home/u"));
+
+        let expected = "/home/u/.docker/bin:/usr/local/bin:/opt/homebrew/bin:\
+/Applications/Docker.app/Contents/Resources/bin";
+        assert_eq!(none_parent, expected);
+        assert_eq!(empty_parent, expected);
+    }
+
+    #[tokio::test]
+    async fn run_argv_with_env_injects_path_when_caller_does_not_provide_one() {
+        // 直接用 /bin/sh 绝对路径作为 argv[0]，绕过 PATH 查找，
+        // 只测"子进程实际收到的 $PATH 是不是 augmented 的"。
+        let output = run_argv_with_env(
+            &["/bin/sh".into(), "-c".into(), "printf %s \"$PATH\"".into()],
+            &[],
+        )
+        .await
+        .expect("sh runs");
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let path = String::from_utf8(output.stdout).expect("path is utf8");
+        assert!(
+            path.contains("/usr/local/bin"),
+            "expected augmented PATH, got: {path}"
+        );
+        assert!(
+            path.contains("/opt/homebrew/bin"),
+            "expected augmented PATH, got: {path}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_argv_with_env_preserves_caller_supplied_path() {
+        let output = run_argv_with_env(
+            &["/bin/sh".into(), "-c".into(), "printf %s \"$PATH\"".into()],
+            &[("PATH".into(), "/tmp/caller-path".into())],
+        )
+        .await
+        .expect("sh runs");
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let path = String::from_utf8(output.stdout).expect("path is utf8");
+        assert_eq!(path, "/tmp/caller-path");
     }
 
     #[cfg(feature = "docker-integration-test")]

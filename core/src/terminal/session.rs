@@ -154,6 +154,9 @@ fn build_command(launch: &TerminalLaunch) -> CommandBuilder {
                 DEFAULT_SHELL,
                 "-l",
             ]);
+            // macOS GUI app PATH 默认不含 Docker Desktop 安装位置；portable_pty 的
+            // search_path 会读取 CommandBuilder 自带的 PATH，所以这里显式注入。
+            command.env("PATH", crate::workspace::docker::augmented_docker_path());
             command
         }
     };
@@ -425,6 +428,51 @@ mod tests {
                 DEFAULT_SHELL,
                 "-l",
             ]
+        );
+    }
+
+    #[test]
+    fn docker_exec_launch_injects_path_for_command_lookup() {
+        // macOS GUI app 默认 PATH 不含 Docker Desktop 安装位置；DockerExec 必须
+        // 在 CommandBuilder 上显式设置 PATH，否则 portable_pty 的 search_path
+        // 会按 GUI 的窄 PATH 查找 docker 二进制并失败。
+        let command = build_command(&TerminalLaunch::DockerExec {
+            container: "terminal-finder-dev".to_string(),
+            user: "terminal".to_string(),
+            workdir: "/workspace".to_string(),
+        });
+        let path = command
+            .get_env("PATH")
+            .expect("DockerExec sets PATH for docker lookup");
+        let path = path.to_string_lossy();
+
+        assert!(
+            path.contains("/usr/local/bin"),
+            "expected augmented PATH, got: {path}"
+        );
+        assert!(
+            path.contains("/opt/homebrew/bin"),
+            "expected augmented PATH, got: {path}"
+        );
+    }
+
+    #[test]
+    fn local_shell_launch_does_not_inject_docker_candidates_into_path() {
+        // portable_pty::CommandBuilder::new 会把当前进程 env 整体作为 base env（含 PATH），
+        // 所以 LocalShell 一定能 get_env("PATH")。但它不应该被 docker PATH 覆盖：
+        // 验证方法是看 PATH 跟当前进程一致（continue inherits），而非被 DockerExec 注入。
+        let command = build_command(&TerminalLaunch::LocalShell {
+            cwd: env::current_dir().expect("current directory is available"),
+        });
+        let inherited = command
+            .get_env("PATH")
+            .expect("portable_pty inherits PATH into base env")
+            .to_string_lossy()
+            .into_owned();
+        let expected = env::var("PATH").unwrap_or_default();
+        assert_eq!(
+            inherited, expected,
+            "LocalShell should pass through parent PATH untouched"
         );
     }
 
