@@ -111,7 +111,7 @@ impl MountRegistry {
             .unwrap_or(false)
     }
 
-    fn mountpoint(&self, id: &ConnectionId) -> Option<String> {
+    pub fn mountpoint(&self, id: &ConnectionId) -> Option<String> {
         let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         guard.get(id).map(|entry| entry.mountpoint.clone())
     }

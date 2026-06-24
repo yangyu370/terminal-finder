@@ -226,12 +226,14 @@ impl CoreHandle {
         use crate::error::ApiError;
 
         let id = ConnectionId(connection_id);
-        if self.state.connections().remove(&id) {
-            self.state.providers().remove_connection(&id);
-            if let Some(mountpoint) = self.state.mounts().release(&id) {
+        if self.state.connections().get(&id).is_some() {
+            if let Some(mountpoint) = self.state.mounts().mountpoint(&id) {
                 let runtime = self.state.workspace_runtime();
-                let _ = runtime.unmount(&mountpoint).await;
+                runtime.unmount(&mountpoint).await?;
+                self.state.mounts().release(&id);
             }
+            self.state.connections().remove(&id);
+            self.state.providers().remove_connection(&id);
             tracing::info!(method = "connection.remove", "connection removed");
             Ok(())
         } else {
@@ -616,11 +618,19 @@ mod connection_ffi_tests {
     #[derive(Default)]
     struct RecordingRuntime {
         unmount_calls: AtomicUsize,
+        fail_unmount: std::sync::atomic::AtomicBool,
     }
 
     impl RecordingRuntime {
         fn unmount_calls(&self) -> usize {
             self.unmount_calls.load(Ordering::SeqCst)
+        }
+
+        fn failing_unmount() -> Self {
+            Self {
+                unmount_calls: AtomicUsize::new(0),
+                fail_unmount: std::sync::atomic::AtomicBool::new(true),
+            }
         }
     }
 
@@ -650,6 +660,11 @@ mod connection_ffi_tests {
 
         async fn unmount(&self, _mountpoint: &str) -> Result<(), ApiError> {
             self.unmount_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_unmount.load(Ordering::SeqCst) {
+                return Err(ApiError::MountFailed {
+                    message: "unmount failed".into(),
+                });
+            }
             Ok(())
         }
 
@@ -986,5 +1001,47 @@ mod connection_ffi_tests {
 
         assert!(!h.state.mounts().is_mounted(&id));
         assert_eq!(runtime.unmount_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn connection_remove_keeps_mount_reservation_when_unmount_fails() {
+        let runtime = Arc::new(RecordingRuntime::failing_unmount());
+        let h = Arc::new(CoreHandle {
+            state: AppState::new_with_workspace_runtime("test", runtime.clone()),
+        });
+        let id_string = h.connection_create(
+            "test".into(),
+            "http://localhost:9000".into(),
+            "us-east-1".into(),
+            "test-bucket".into(),
+            String::new(),
+            true,
+            "minioadmin".into(),
+            "minioadmin".into(),
+        );
+        let id = ConnectionId(id_string.clone());
+        h.state
+            .mounts()
+            .get_or_reserve(&id, |_taken| "test://mount".into());
+        h.state.mounts().mark_ready(&id);
+
+        let error = h
+            .connection_remove(id_string.clone())
+            .await
+            .expect_err("failed unmount must fail removal");
+
+        let CoreError::Rpc { code, .. } = error;
+        assert_eq!(code, "mount_failed");
+        assert!(
+            h.state.mounts().is_mounted(&id),
+            "failed cleanup must leave reservation tracked"
+        );
+        assert_eq!(
+            h.connection_list().len(),
+            1,
+            "failed cleanup must leave connection registered so removal can be retried"
+        );
+        assert_eq!(runtime.unmount_calls(), 1);
+        assert!(h.connection_remove(id_string).await.is_err());
     }
 }

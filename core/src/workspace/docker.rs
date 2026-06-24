@@ -214,8 +214,23 @@ impl WorkspaceRuntime for LocalDockerRuntime {
     }
 
     async fn unmount(&self, mountpoint: &str) -> Result<(), ApiError> {
-        let _ = run_argv(&unmount_argv(&self.container, mountpoint)).await;
-        Ok(())
+        if !self.is_exposed(mountpoint).await? {
+            return Ok(());
+        }
+
+        let output = run_argv(&unmount_argv(&self.container, mountpoint))
+            .await
+            .map_err(|error| ApiError::MountFailed {
+                message: format!("failed to unmount workspace path: {error}"),
+            })?;
+
+        if output.status.success() || !self.is_exposed(mountpoint).await? {
+            Ok(())
+        } else {
+            Err(ApiError::MountFailed {
+                message: "failed to unmount workspace path".into(),
+            })
+        }
     }
 
     async fn open_terminal(

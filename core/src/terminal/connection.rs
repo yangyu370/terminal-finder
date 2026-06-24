@@ -93,8 +93,8 @@ pub async fn create_connection_terminal(
         Ok(handle) => handle,
         Err(error) => {
             if created_mount {
+                runtime.unmount(&mountpoint).await?;
                 state.mounts().release(&id);
-                let _ = runtime.unmount(&mountpoint).await;
             }
             return Err(error);
         }
@@ -134,6 +134,7 @@ mod tests {
         opened_workdirs: Mutex<Vec<String>>,
         mount_result: Mutex<Option<Result<(), ApiError>>>,
         open_result: Mutex<Option<Result<(), ApiError>>>,
+        unmount_result: Mutex<Option<Result<(), ApiError>>>,
         block_mount: AtomicBool,
         mount_started: Notify,
         allow_mount: Notify,
@@ -149,6 +150,7 @@ mod tests {
                 opened_workdirs: Mutex::new(Vec::new()),
                 mount_result: Mutex::new(None),
                 open_result: Mutex::new(None),
+                unmount_result: Mutex::new(None),
                 block_mount: AtomicBool::new(false),
                 mount_started: Notify::new(),
                 allow_mount: Notify::new(),
@@ -167,6 +169,14 @@ mod tests {
         fn fail_open(error: ApiError) -> Self {
             Self {
                 open_result: Mutex::new(Some(Err(error))),
+                ..Self::default()
+            }
+        }
+
+        fn fail_open_and_unmount(open_error: ApiError, unmount_error: ApiError) -> Self {
+            Self {
+                open_result: Mutex::new(Some(Err(open_error))),
+                unmount_result: Mutex::new(Some(Err(unmount_error))),
                 ..Self::default()
             }
         }
@@ -247,6 +257,14 @@ mod tests {
 
         async fn unmount(&self, _mountpoint: &str) -> Result<(), ApiError> {
             self.unmount_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(result) = self
+                .unmount_result
+                .lock()
+                .expect("unmount result lock is not poisoned")
+                .take()
+            {
+                result?;
+            }
             Ok(())
         }
 
@@ -440,6 +458,35 @@ mod tests {
 
         assert_eq!(error.code(), "workspace_start_failed");
         assert!(!state.mounts().is_mounted(&connection_id));
+        assert_eq!(runtime.unmount_calls(), 1);
+        assert_eq!(state.terminals().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn open_terminal_failure_keeps_mount_reserved_when_unmount_fails() {
+        let runtime = Arc::new(MockRuntime::fail_open_and_unmount(
+            ApiError::WorkspaceStartFailed {
+                runtime: "mock".into(),
+                message: "boom".into(),
+            },
+            ApiError::MountFailed {
+                message: "unmount failed".into(),
+            },
+        ));
+        let state = AppState::new_with_workspace_runtime("test", runtime.clone());
+        let (config, credential) = sample_connection();
+        let connection_id = state.connections().create(config, credential);
+        let (events, _rx) = mpsc::channel(1);
+
+        let error = create_connection_terminal(&state, connection_id.0.clone(), 80, 24, events)
+            .await
+            .expect_err("unmount failure must surface");
+
+        assert_eq!(error.code(), "mount_failed");
+        assert!(
+            state.mounts().is_mounted(&connection_id),
+            "failed cleanup must not forget a still-exposed mount"
+        );
         assert_eq!(runtime.unmount_calls(), 1);
         assert_eq!(state.terminals().len(), 0);
     }
