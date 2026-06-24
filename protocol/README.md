@@ -334,11 +334,11 @@ Caps are read directly from the resolved provider so callers see the same capabi
 create_connection_terminal(connection_id: String, cols: u16, rows: u16, listener: TerminalEventListener) -> Result<String, CoreError>
 ```
 
-Creates a terminal for a registered S3 connection. Core ensures the workspace runtime is ready, asks the runtime to expose the connection's bucket as a runtime-private path, and opens a PTY session rooted at that path. Credentials are injected only through the runtime's safe channel at mount time; they are not persisted and do not appear in command argv.
+Creates a terminal for a registered S3 connection. Core ensures the workspace runtime is ready, asks the runtime to expose the connection's bucket as a runtime-private path, and opens a PTY session rooted at that path. Credentials are injected only through the runtime's safe channel at mount time; they are not persisted and do not appear in launch arguments.
 
 The returned string is the terminal `sessionId`. After creation, `send_terminal_input`, `resize_terminal`, `close_terminal`, and `TerminalEventListener` callbacks behave the same as a local PTY session.
 
-The workspace runtime is an abstraction. The first implementation is `docker_local` (local Docker plus rclone FUSE), but the FFI method and error codes stay runtime-neutral so future sandbox runtimes can replace it without client contract changes.
+The workspace runtime is an abstraction. The FFI method and error codes stay runtime-neutral so future runtime implementations can replace the current one without client contract changes.
 
 Error codes:
 - `connection_not_found` — `connection_id` is not in the registry.
@@ -356,7 +356,7 @@ Error codes:
 shutdown_workspace() -> Result<(), CoreError>
 ```
 
-Best-effort cleanup for the current workspace runtime. The macOS client calls this during app termination. The local runtime removes the shared workspace container and clears cached mount reservations; future remote runtimes should close the corresponding sandbox session. The method is idempotent from the client's point of view.
+Best-effort cleanup for the current workspace runtime. The macOS client calls this during app termination. The runtime releases any shared workspace resources and clears cached mount reservations. The method is idempotent from the client's point of view.
 
 ### Event: `transfer_progress`
 
