@@ -122,6 +122,10 @@ mod tests {
             })
         }
 
+        async fn is_exposed(&self, _mountpoint: &str) -> Result<bool, ApiError> {
+            Ok(true)
+        }
+
         async fn unmount(&self, _mountpoint: &str) -> Result<(), ApiError> {
             Ok(())
         }

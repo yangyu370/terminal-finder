@@ -29,7 +29,12 @@ RUN apt-get -o Acquire::Retries=3 \
  # 允许 --allow-other（多 exec 用户访问挂载点）。
  && echo 'user_allow_other' > /etc/fuse.conf
 
-# 挂载根目录。容器以 root 跑 rclone mount（fuse 需要），交互 shell 也在容器内。
-RUN mkdir -p /mnt
+# 挂载根目录。容器以 root 跑 rclone mount（fuse 需要），交互 shell 用非 root 用户进入。
+RUN groupadd --system terminal \
+ && useradd --system --create-home --gid terminal --shell /bin/zsh terminal \
+ && touch /home/terminal/.zshrc \
+ && chown terminal:terminal /home/terminal/.zshrc \
+ && mkdir -p /mnt \
+ && chmod 755 /mnt
 WORKDIR /mnt
 CMD ["sleep", "infinity"]

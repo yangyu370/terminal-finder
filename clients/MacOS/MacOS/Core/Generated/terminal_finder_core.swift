@@ -591,11 +591,11 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
 
     /**
      * Remove a connection and its in-memory credentials. Also drops any
-     * cached `S3Provider` for that connection so a future call with the same
-     * `connection_id` cannot reuse the old OpenDAL `Operator` (and its
-     * embedded credentials). Returns `Err(ConnectionNotFound)` if unknown.
+     * cached `S3Provider` and runtime mount for that connection so a future
+     * call with the same `connection_id` cannot reuse stale resources.
+     * Returns `Err(ConnectionNotFound)` if unknown.
      */
-    func connectionRemove(connectionId: String) throws
+    func connectionRemove(connectionId: String) async throws
 
     /**
      * Re-register a connection using a caller-provided id. Intended for
@@ -833,16 +833,25 @@ open func connectionList() -> [ConnectionInfoDto]  {
 
     /**
      * Remove a connection and its in-memory credentials. Also drops any
-     * cached `S3Provider` for that connection so a future call with the same
-     * `connection_id` cannot reuse the old OpenDAL `Operator` (and its
-     * embedded credentials). Returns `Err(ConnectionNotFound)` if unknown.
+     * cached `S3Provider` and runtime mount for that connection so a future
+     * call with the same `connection_id` cannot reuse stale resources.
+     * Returns `Err(ConnectionNotFound)` if unknown.
      */
-open func connectionRemove(connectionId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
-    uniffi_terminal_finder_core_fn_method_corehandle_connection_remove(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(connectionId),$0
-    )
-}
+open func connectionRemove(connectionId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_connection_remove(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(connectionId)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
 }
 
     /**
@@ -2301,7 +2310,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_list() != 19818) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 10972) {
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 31790) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_restore() != 25135) {

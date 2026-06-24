@@ -21,8 +21,14 @@ const DEFAULT_UTF8_LOCALE: &str = "C.UTF-8";
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 pub enum TerminalLaunch {
-    LocalShell { cwd: PathBuf },
-    DockerExec { container: String, workdir: String },
+    LocalShell {
+        cwd: PathBuf,
+    },
+    DockerExec {
+        container: String,
+        user: String,
+        workdir: String,
+    },
 }
 
 #[derive(Debug)]
@@ -131,11 +137,17 @@ fn build_command(launch: &TerminalLaunch) -> CommandBuilder {
             command.cwd(cwd);
             command
         }
-        TerminalLaunch::DockerExec { container, workdir } => {
+        TerminalLaunch::DockerExec {
+            container,
+            user,
+            workdir,
+        } => {
             let mut command = CommandBuilder::new("docker");
             command.args([
                 "exec",
                 "-it",
+                "--user",
+                user.as_str(),
                 "-w",
                 workdir.as_str(),
                 container.as_str(),
@@ -390,6 +402,7 @@ mod tests {
     fn docker_exec_launch_builds_expected_argv() {
         let command = build_command(&TerminalLaunch::DockerExec {
             container: "terminal-finder-dev".to_string(),
+            user: "terminal".to_string(),
             workdir: "/workspace".to_string(),
         });
         let argv: Vec<_> = command
@@ -404,6 +417,8 @@ mod tests {
                 "docker",
                 "exec",
                 "-it",
+                "--user",
+                "terminal",
                 "-w",
                 "/workspace",
                 "terminal-finder-dev",

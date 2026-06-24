@@ -248,7 +248,7 @@ Returns connection summaries (`ConnectionInfoDto` cross-FFI). Credentials are in
 { "ok": true, "result": {} }
 ```
 
-Removes the connection, its in-memory credentials, and any cached S3 provider so the `connection_id` can no longer be used to access objects. Returns the `connection_not_found` error code when the `connection_id` is unknown.
+Removes the connection, its in-memory credentials, any cached S3 provider, and any workspace runtime exposure for that connection so the `connection_id` can no longer be used to access objects. Returns the `connection_not_found` error code when the `connection_id` is unknown.
 
 ## workspace.downloadFile
 

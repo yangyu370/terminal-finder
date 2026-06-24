@@ -28,36 +28,55 @@ pub async fn create_connection_terminal(
     runtime.ensure_ready().await?;
 
     let display_name = entry.config.display_name().to_string();
+    let ConnectionConfig::S3(config) = entry.config;
+    let credential = entry.credential;
     let runtime_for_propose = runtime.clone();
-    let reservation = state.mounts().get_or_reserve(&id, |taken| {
-        runtime_for_propose.propose_mountpoint(&display_name, taken)
-    });
 
-    let (mountpoint, created_mount) = match reservation {
-        Reservation::New(mountpoint) => {
-            let ConnectionConfig::S3(config) = entry.config;
-            let spec = MountSpec {
-                connection_id: id.clone(),
-                config,
-                credential: entry.credential,
-                mountpoint: mountpoint.clone(),
-            };
+    let (mountpoint, created_mount) = loop {
+        let reservation = state.mounts().get_or_reserve(&id, |taken| {
+            runtime_for_propose.propose_mountpoint(&display_name, taken)
+        });
 
-            if let Err(error) = runtime.mount(spec).await {
-                state.mounts().release(&id);
-                return Err(error);
+        match reservation {
+            Reservation::New(mountpoint) => {
+                let spec = MountSpec {
+                    connection_id: id.clone(),
+                    config: config.clone(),
+                    credential: credential.clone(),
+                    mountpoint: mountpoint.clone(),
+                };
+
+                if let Err(error) = runtime.mount(spec).await {
+                    state.mounts().release(&id);
+                    return Err(error);
+                }
+
+                if state.mounts().mark_ready(&id).is_none() {
+                    let _ = runtime.unmount(&mountpoint).await;
+                    return Err(ApiError::ConnectionNotFound {
+                        connection_id: id.0.clone(),
+                    });
+                }
+                break (mountpoint, true);
             }
-
-            state.mounts().mark_ready(&id);
-            (mountpoint, true)
+            Reservation::Existing(mountpoint) => {
+                if runtime.is_exposed(&mountpoint).await? {
+                    break (mountpoint, false);
+                }
+                state.mounts().release(&id);
+            }
+            Reservation::Pending(pending) => {
+                let Some(mountpoint) = pending.wait().await else {
+                    return Err(ApiError::MountFailed {
+                        message: "mount did not complete".into(),
+                    });
+                };
+                if runtime.is_exposed(&mountpoint).await? {
+                    break (mountpoint, false);
+                }
+                state.mounts().release(&id);
+            }
         }
-        Reservation::Existing(mountpoint) => (mountpoint, false),
-        Reservation::Pending(pending) => (
-            pending.wait().await.ok_or_else(|| ApiError::MountFailed {
-                message: "mount did not complete".into(),
-            })?,
-            false,
-        ),
     };
 
     let handle = match runtime
@@ -111,6 +130,7 @@ mod tests {
         mount_calls: AtomicUsize,
         open_calls: AtomicUsize,
         unmount_calls: AtomicUsize,
+        exposed: AtomicBool,
         opened_workdirs: Mutex<Vec<String>>,
         mount_result: Mutex<Option<Result<(), ApiError>>>,
         open_result: Mutex<Option<Result<(), ApiError>>>,
@@ -125,6 +145,7 @@ mod tests {
                 mount_calls: AtomicUsize::new(0),
                 open_calls: AtomicUsize::new(0),
                 unmount_calls: AtomicUsize::new(0),
+                exposed: AtomicBool::new(true),
                 opened_workdirs: Mutex::new(Vec::new()),
                 mount_result: Mutex::new(None),
                 open_result: Mutex::new(None),
@@ -169,6 +190,10 @@ mod tests {
             self.unmount_calls.load(Ordering::SeqCst)
         }
 
+        fn set_exposed(&self, value: bool) {
+            self.exposed.store(value, Ordering::SeqCst);
+        }
+
         fn opened_workdirs(&self) -> Vec<String> {
             self.opened_workdirs
                 .lock()
@@ -210,9 +235,14 @@ mod tests {
             {
                 result?;
             }
+            self.exposed.store(true, Ordering::SeqCst);
             Ok(MountHandle {
                 mountpoint: spec.mountpoint,
             })
+        }
+
+        async fn is_exposed(&self, _mountpoint: &str) -> Result<bool, ApiError> {
+            Ok(self.exposed.load(Ordering::SeqCst))
         }
 
         async fn unmount(&self, _mountpoint: &str) -> Result<(), ApiError> {
@@ -305,6 +335,29 @@ mod tests {
             ]
         );
         assert_eq!(state.terminals().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stale_existing_mount_is_released_and_mounted_again() {
+        let runtime = Arc::new(MockRuntime::default());
+        let state = AppState::new_with_workspace_runtime("test", runtime.clone());
+        let (config, credential) = sample_connection();
+        let connection_id = state.connections().create(config, credential);
+        let (events_a, _rx_a) = mpsc::channel(1);
+        let (events_b, _rx_b) = mpsc::channel(1);
+
+        create_connection_terminal(&state, connection_id.0.clone(), 80, 24, events_a)
+            .await
+            .expect("first terminal opens");
+        runtime.set_exposed(false);
+
+        create_connection_terminal(&state, connection_id.0.clone(), 100, 32, events_b)
+            .await
+            .expect("second terminal remounts stale reservation");
+
+        assert_eq!(runtime.mount_calls(), 2);
+        assert_eq!(runtime.open_calls(), 2);
+        assert!(state.mounts().is_mounted(&connection_id));
     }
 
     #[tokio::test]

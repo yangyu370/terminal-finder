@@ -43,8 +43,8 @@
 //!
 //! ## Fallback
 //!
-//! If a future opendal version breaks these assumptions, see
-//! `CLOUD_RESOURCE_MANAGER_DESIGN.md §2.1` for the aws-sdk-s3 fallback decision.
+//! If a future opendal version breaks these assumptions, revisit the S3 provider
+//! choice before changing production behavior.
 
 use opendal::{Operator, services::S3};
 

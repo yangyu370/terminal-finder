@@ -17,6 +17,7 @@ pub const RUNTIME_NAME: &str = "docker_local";
 pub const MOUNT_ROOT: &str = "/mnt";
 pub const DEFAULT_CONTAINER: &str = "terminal-finder-workspace";
 pub const DEFAULT_IMAGE: &str = "terminal-finder-workspace:dev";
+pub const INTERACTIVE_USER: &str = "terminal";
 const RCLONE_REMOTE: &str = "tf";
 const MOUNT_READY_TIMEOUT: Duration = Duration::from_secs(5);
 const MOUNT_READY_POLL: Duration = Duration::from_millis(100);
@@ -205,6 +206,13 @@ impl WorkspaceRuntime for LocalDockerRuntime {
         }
     }
 
+    async fn is_exposed(&self, mountpoint: &str) -> Result<bool, ApiError> {
+        Ok(matches!(
+            run_argv(&mountpoint_check_argv(&self.container, mountpoint)).await,
+            Ok(output) if output.status.success()
+        ))
+    }
+
     async fn unmount(&self, mountpoint: &str) -> Result<(), ApiError> {
         let _ = run_argv(&unmount_argv(&self.container, mountpoint)).await;
         Ok(())
@@ -220,6 +228,7 @@ impl WorkspaceRuntime for LocalDockerRuntime {
         TerminalSession::spawn(
             TerminalLaunch::DockerExec {
                 container: self.container.clone(),
+                user: INTERACTIVE_USER.into(),
                 workdir: ctx.workdir,
             },
             cols,
@@ -291,6 +300,16 @@ async fn run_argv_with_env(
 mod tests {
     use super::*;
     use crate::workspace::WorkspaceRuntime;
+    #[cfg(feature = "docker-integration-test")]
+    use crate::{
+        connection::{ConnectionId, S3ConnectionConfig, S3Credential},
+        terminal::session::TerminalEvent,
+        workspace::{MountSpec, TerminalOpenContext},
+    };
+    #[cfg(feature = "docker-integration-test")]
+    use tokio::sync::mpsc;
+    #[cfg(feature = "docker-integration-test")]
+    use uuid::Uuid;
 
     #[test]
     fn run_container_argv_requests_fuse_capabilities() {
@@ -370,5 +389,133 @@ mod tests {
             .await
             .expect("second ensure reuses ready runtime");
         runtime.teardown().await.expect("teardown is best-effort");
+    }
+
+    #[cfg(feature = "docker-integration-test")]
+    #[tokio::test]
+    async fn mounted_bucket_is_usable_from_non_root_terminal_without_secret_leak() {
+        let unique = Uuid::new_v4().to_string();
+        let container = format!("terminal-finder-test-{unique}");
+        let mountpoint = format!("/mnt/test-{}", &unique[..8]);
+        let runtime = LocalDockerRuntime::new(container, DEFAULT_IMAGE);
+
+        runtime.ensure_ready().await.expect("runtime is ready");
+        let mount_result = runtime
+            .mount(MountSpec {
+                connection_id: ConnectionId(unique.clone()),
+                config: S3ConnectionConfig {
+                    display_name: "MinIO Local".into(),
+                    endpoint: std::env::var("TERMINAL_FINDER_DOCKER_S3_ENDPOINT")
+                        .unwrap_or_else(|_| "http://host.docker.internal:9000".into()),
+                    region: "us-east-1".into(),
+                    bucket: std::env::var("TERMINAL_FINDER_DOCKER_S3_BUCKET")
+                        .unwrap_or_else(|_| "test-bucket".into()),
+                    base_prefix: String::new(),
+                    path_style: true,
+                },
+                credential: crate::connection::Credential::S3(S3Credential {
+                    access_key_id: std::env::var("TERMINAL_FINDER_DOCKER_S3_ACCESS_KEY")
+                        .unwrap_or_else(|_| "minioadmin".into()),
+                    secret_access_key: std::env::var("TERMINAL_FINDER_DOCKER_S3_SECRET_KEY")
+                        .unwrap_or_else(|_| "minioadmin".into()),
+                }),
+                mountpoint: mountpoint.clone(),
+            })
+            .await;
+
+        let mount = match mount_result {
+            Ok(mount) => mount,
+            Err(error) => {
+                let _ = runtime.teardown().await;
+                panic!("mount succeeds against local MinIO: {error}");
+            }
+        };
+
+        let (events, mut rx) = mpsc::channel(TERMINAL_EVENT_BUFFER);
+        let session = runtime
+            .open_terminal(
+                TerminalOpenContext {
+                    workdir: mount.mountpoint.clone(),
+                },
+                100,
+                30,
+                events,
+            )
+            .await
+            .expect("terminal opens in mounted bucket");
+
+        assert!(session.input(b"stty -echo\n".to_vec()));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drain_available(&mut rx);
+
+        let script = concat!(
+            "whoami\n",
+            "pwd\n",
+            "printf 'docker-integration\\n' > codex-docker-integration.txt\n",
+            "cat codex-docker-integration.txt\n",
+            "for f in /proc/[0-9]*/environ; do ",
+            "cat \"$f\" 2>/dev/null | tr '\\0' '\\n' | grep -E 'RCLONE_CONFIG_.*(SECRET|ACCESS)' && printf 'PROC_%s\\n' SECRET; ",
+            "done\n",
+            "echo DOCKER_INTEGRATION_DONE\n",
+            "exit\n",
+        );
+        assert!(session.input(script.as_bytes().to_vec()));
+
+        let output = collect_output_until(&mut rx, "DOCKER_INTEGRATION_DONE").await;
+        assert!(output.contains(INTERACTIVE_USER), "output:\n{output}");
+        assert!(output.contains(&mount.mountpoint), "output:\n{output}");
+        assert!(output.contains("docker-integration"), "output:\n{output}");
+        assert!(
+            !output.contains("PROC_SECRET") && !output.contains("minioadmin"),
+            "non-root terminal exposed mount credentials:\n{output}"
+        );
+
+        let _ = session.close();
+        let _ = runtime.unmount(&mount.mountpoint).await;
+        runtime.teardown().await.expect("teardown is best-effort");
+    }
+
+    #[cfg(feature = "docker-integration-test")]
+    const TERMINAL_EVENT_BUFFER: usize = 128;
+
+    #[cfg(feature = "docker-integration-test")]
+    async fn collect_output_until(rx: &mut mpsc::Receiver<TerminalEvent>, needle: &str) -> String {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let mut output = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for {needle}; output:\n{}",
+                String::from_utf8_lossy(&output)
+            );
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Some(TerminalEvent::Output { bytes, .. })) => {
+                    output.extend(bytes);
+                    if String::from_utf8_lossy(&output).contains(needle) {
+                        return String::from_utf8_lossy(&output).into_owned();
+                    }
+                }
+                Ok(Some(TerminalEvent::Error { code, message, .. })) => {
+                    panic!("terminal error {code}: {message}");
+                }
+                Ok(Some(TerminalEvent::Exit { .. })) => {
+                    panic!(
+                        "terminal exited before {needle}; output:\n{}",
+                        String::from_utf8_lossy(&output)
+                    );
+                }
+                Ok(None) => panic!("terminal event channel closed"),
+                Err(_) => panic!(
+                    "timed out waiting for {needle}; output:\n{}",
+                    String::from_utf8_lossy(&output)
+                ),
+            }
+        }
+    }
+
+    #[cfg(feature = "docker-integration-test")]
+    fn drain_available(rx: &mut mpsc::Receiver<TerminalEvent>) {
+        while rx.try_recv().is_ok() {}
     }
 }

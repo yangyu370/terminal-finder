@@ -51,6 +51,8 @@ pub trait WorkspaceRuntime: Send + Sync {
 
     async fn mount(&self, spec: MountSpec) -> Result<MountHandle, ApiError>;
 
+    async fn is_exposed(&self, mountpoint: &str) -> Result<bool, ApiError>;
+
     async fn unmount(&self, mountpoint: &str) -> Result<(), ApiError>;
 
     async fn open_terminal(

@@ -273,7 +273,7 @@ nonisolated struct FFIConnectionClient: CoreConnectionClientProtocol {
 
     func remove(connectionId: String) async throws {
         do {
-            try core.connectionRemove(connectionId: connectionId)
+            try await core.connectionRemove(connectionId: connectionId)
         } catch {
             throw FFIBackendClient.mapError(error)
         }
