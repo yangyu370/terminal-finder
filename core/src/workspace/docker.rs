@@ -207,17 +207,16 @@ impl WorkspaceRuntime for LocalDockerRuntime {
     }
 
     async fn is_exposed(&self, mountpoint: &str) -> Result<bool, ApiError> {
-        Ok(matches!(
-            run_argv(&mountpoint_check_argv(&self.container, mountpoint)).await,
-            Ok(output) if output.status.success()
-        ))
+        let output = run_argv(&mountpoint_check_argv(&self.container, mountpoint))
+            .await
+            .map_err(|error| ApiError::WorkspaceStartFailed {
+                runtime: RUNTIME_NAME.into(),
+                message: format!("failed to inspect workspace path: {error}"),
+            })?;
+        Ok(output.status.success())
     }
 
     async fn unmount(&self, mountpoint: &str) -> Result<(), ApiError> {
-        if !self.is_exposed(mountpoint).await? {
-            return Ok(());
-        }
-
         let output = run_argv(&unmount_argv(&self.container, mountpoint))
             .await
             .map_err(|error| ApiError::MountFailed {
