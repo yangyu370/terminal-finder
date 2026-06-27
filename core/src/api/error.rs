@@ -32,6 +32,11 @@ impl ApiError {
                 StatusCode::NOT_FOUND
             }
             ApiError::ProviderError { .. } => StatusCode::BAD_GATEWAY,
+            ApiError::WorkspaceRuntimeUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::WorkspaceProvisionFailed { .. }
+            | ApiError::WorkspaceStartFailed { .. }
+            | ApiError::MountFailed { .. }
+            | ApiError::MountTimeout { .. } => StatusCode::BAD_GATEWAY,
         }
     }
 }

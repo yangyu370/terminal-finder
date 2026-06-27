@@ -273,7 +273,7 @@ nonisolated struct FFIConnectionClient: CoreConnectionClientProtocol {
 
     func remove(connectionId: String) async throws {
         do {
-            try core.connectionRemove(connectionId: connectionId)
+            try await core.connectionRemove(connectionId: connectionId)
         } catch {
             throw FFIBackendClient.mapError(error)
         }
@@ -361,6 +361,37 @@ final class FFITerminalClient: TerminalClientProtocol {
     }
 
     func create(cwd: String, cols: Int, rows: Int, requestId: String) async throws {
+        try await startSession(requestId: requestId, cols: cols, rows: rows) { listener in
+            try self.core.createTerminal(
+                cwd: cwd,
+                cols: UInt16(clamping: cols),
+                rows: UInt16(clamping: rows),
+                listener: listener
+            )
+        }
+    }
+
+    func createConnection(connectionId: String, cols: Int, rows: Int, requestId: String) async throws {
+        try await startSession(requestId: requestId, cols: cols, rows: rows) { listener in
+            try await self.core.createConnectionTerminal(
+                connectionId: connectionId,
+                cols: UInt16(clamping: cols),
+                rows: UInt16(clamping: rows),
+                listener: listener
+            )
+        }
+    }
+
+    /// 创建 session listener、调用 `spawn` 拿到 session id，并执行统一的 post-create
+    /// 收尾（断开窗口检查、登记 active session、激活 listener、回报 `.created`）。
+    /// `spawn` 用 `async` 闭包同时兼容同步的 `createTerminal` 与异步的
+    /// `createConnectionTerminal`。
+    private func startSession(
+        requestId: String,
+        cols: Int,
+        rows: Int,
+        spawn: (FFITerminalSessionListener) async throws -> String
+    ) async throws {
         let listener = FFITerminalSessionListener { [weak self] sessionId, event in
             Task { @MainActor [weak self] in
                 self?.handleSessionEvent(sessionId: sessionId, event: event)
@@ -368,18 +399,21 @@ final class FFITerminalClient: TerminalClientProtocol {
         }
 
         do {
-            let sessionId = try core.createTerminal(
-                cwd: cwd,
-                cols: UInt16(clamping: cols),
-                rows: UInt16(clamping: rows),
-                listener: listener
-            )
+            let sessionId = try await spawn(listener)
+            guard onEvent != nil else {
+                try? core.closeTerminal(sessionId: sessionId)
+                return
+            }
             activeSessionIds.insert(sessionId)
             listener.activate(sessionId: sessionId)
             onEvent?(.created(sessionId: sessionId, id: requestId, cols: cols, rows: rows))
         } catch {
             throw FFIBackendClient.mapError(error)
         }
+    }
+
+    func shutdownWorkspace() async {
+        try? await core.shutdownWorkspace()
     }
 
     func sendInput(sessionId: String, bytes: [UInt8]) async throws {

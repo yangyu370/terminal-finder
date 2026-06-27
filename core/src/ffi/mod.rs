@@ -210,12 +210,15 @@ impl CoreHandle {
             has_native_directories: caps.has_native_directories,
         })
     }
+}
 
+#[uniffi::export(async_runtime = "tokio")]
+impl CoreHandle {
     /// Remove a connection and its in-memory credentials. Also drops any
-    /// cached `S3Provider` for that connection so a future call with the same
-    /// `connection_id` cannot reuse the old OpenDAL `Operator` (and its
-    /// embedded credentials). Returns `Err(ConnectionNotFound)` if unknown.
-    pub fn connection_remove(
+    /// cached `S3Provider` and runtime mount for that connection so a future
+    /// call with the same `connection_id` cannot reuse stale resources.
+    /// Returns `Err(ConnectionNotFound)` if unknown.
+    pub async fn connection_remove(
         &self,
         connection_id: String,
     ) -> Result<(), crate::ffi::error::CoreError> {
@@ -223,7 +226,13 @@ impl CoreHandle {
         use crate::error::ApiError;
 
         let id = ConnectionId(connection_id);
-        if self.state.connections().remove(&id) {
+        if self.state.connections().get(&id).is_some() {
+            if let Some(mountpoint) = self.state.mounts().mountpoint(&id) {
+                let runtime = self.state.workspace_runtime();
+                runtime.unmount(&mountpoint).await?;
+                self.state.mounts().release(&id);
+            }
+            self.state.connections().remove(&id);
             self.state.providers().remove_connection(&id);
             tracing::info!(method = "connection.remove", "connection removed");
             Ok(())
@@ -234,10 +243,7 @@ impl CoreHandle {
             .into())
         }
     }
-}
 
-#[uniffi::export(async_runtime = "tokio")]
-impl CoreHandle {
     /// 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
     /// S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
     /// 传入注册过的 S3 connection id 时落到对应 S3Provider。
@@ -267,6 +273,24 @@ impl CoreHandle {
         };
         let response = workspace::list_directory(&self.state, params).await?;
         Ok(response.into())
+    }
+
+    /// Open a terminal rooted at a mounted connection workspace.
+    pub async fn create_connection_terminal(
+        &self,
+        connection_id: String,
+        cols: u16,
+        rows: u16,
+        listener: Arc<dyn TerminalEventListener>,
+    ) -> Result<String, CoreError> {
+        terminal::create_connection_terminal(&self.state, connection_id, cols, rows, listener).await
+    }
+
+    /// Tear down the current workspace runtime instance.
+    pub async fn shutdown_workspace(&self) -> Result<(), CoreError> {
+        self.state.workspace_runtime().teardown().await?;
+        self.state.mounts().clear();
+        Ok(())
     }
 
     /// 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
@@ -434,6 +458,66 @@ impl CoreHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    use crate::connection::ConnectionId;
+    use crate::error::ApiError;
+    use crate::terminal::session::{SessionHandle, TerminalEvent};
+    use crate::workspace::{
+        MountHandle, MountSpec, RuntimeStatus, TerminalOpenContext, WorkspaceRuntime,
+    };
+
+    #[derive(Default)]
+    struct TestRuntime {
+        unmount_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl WorkspaceRuntime for TestRuntime {
+        async fn status(&self) -> RuntimeStatus {
+            RuntimeStatus::Ready
+        }
+
+        async fn ensure_ready(&self) -> Result<(), ApiError> {
+            Ok(())
+        }
+
+        fn propose_mountpoint(&self, display_name: &str, _taken: &[String]) -> String {
+            format!("test://{display_name}")
+        }
+
+        async fn mount(&self, spec: MountSpec) -> Result<MountHandle, ApiError> {
+            Ok(MountHandle {
+                mountpoint: spec.mountpoint,
+            })
+        }
+
+        async fn is_exposed(&self, _mountpoint: &str) -> Result<bool, ApiError> {
+            Ok(true)
+        }
+
+        async fn unmount(&self, _mountpoint: &str) -> Result<(), ApiError> {
+            self.unmount_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn open_terminal(
+            &self,
+            _ctx: TerminalOpenContext,
+            _cols: u16,
+            _rows: u16,
+            _events: mpsc::Sender<TerminalEvent>,
+        ) -> Result<SessionHandle, ApiError> {
+            Ok(SessionHandle::for_test(Uuid::new_v4()))
+        }
+
+        async fn teardown(&self) -> Result<(), ApiError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn ping_reports_service_and_version() {
@@ -451,6 +535,27 @@ mod tests {
 
         assert!(!state.workspace_root.is_empty());
         assert!(!state.current_directory.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_workspace_clears_mount_registry() {
+        let handle = Arc::new(CoreHandle {
+            state: AppState::new_with_workspace_runtime("test", Arc::new(TestRuntime::default())),
+        });
+        let id = ConnectionId("c1".into());
+        handle
+            .state
+            .mounts()
+            .get_or_reserve(&id, |_taken| "test://mount".into());
+        handle.state.mounts().mark_ready(&id);
+        assert!(handle.state.mounts().is_mounted(&id));
+
+        handle
+            .shutdown_workspace()
+            .await
+            .expect("shutdown succeeds");
+
+        assert!(!handle.state.mounts().is_mounted(&id));
     }
 
     #[tokio::test]
@@ -498,6 +603,85 @@ mod tests {
 #[cfg(test)]
 mod connection_ffi_tests {
     use super::*;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    use crate::connection::ConnectionId;
+    use crate::error::ApiError;
+    use crate::terminal::session::{SessionHandle, TerminalEvent};
+    use crate::workspace::{
+        MountHandle, MountSpec, RuntimeStatus, TerminalOpenContext, WorkspaceRuntime,
+    };
+
+    #[derive(Default)]
+    struct RecordingRuntime {
+        unmount_calls: AtomicUsize,
+        fail_unmount: std::sync::atomic::AtomicBool,
+    }
+
+    impl RecordingRuntime {
+        fn unmount_calls(&self) -> usize {
+            self.unmount_calls.load(Ordering::SeqCst)
+        }
+
+        fn failing_unmount() -> Self {
+            Self {
+                unmount_calls: AtomicUsize::new(0),
+                fail_unmount: std::sync::atomic::AtomicBool::new(true),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceRuntime for RecordingRuntime {
+        async fn status(&self) -> RuntimeStatus {
+            RuntimeStatus::Ready
+        }
+
+        async fn ensure_ready(&self) -> Result<(), ApiError> {
+            Ok(())
+        }
+
+        fn propose_mountpoint(&self, display_name: &str, _taken: &[String]) -> String {
+            format!("test://{display_name}")
+        }
+
+        async fn mount(&self, spec: MountSpec) -> Result<MountHandle, ApiError> {
+            Ok(MountHandle {
+                mountpoint: spec.mountpoint,
+            })
+        }
+
+        async fn is_exposed(&self, _mountpoint: &str) -> Result<bool, ApiError> {
+            Ok(true)
+        }
+
+        async fn unmount(&self, _mountpoint: &str) -> Result<(), ApiError> {
+            self.unmount_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_unmount.load(Ordering::SeqCst) {
+                return Err(ApiError::MountFailed {
+                    message: "unmount failed".into(),
+                });
+            }
+            Ok(())
+        }
+
+        async fn open_terminal(
+            &self,
+            _ctx: TerminalOpenContext,
+            _cols: u16,
+            _rows: u16,
+            _events: mpsc::Sender<TerminalEvent>,
+        ) -> Result<SessionHandle, ApiError> {
+            Ok(SessionHandle::for_test(Uuid::new_v4()))
+        }
+
+        async fn teardown(&self) -> Result<(), ApiError> {
+            Ok(())
+        }
+    }
 
     fn handle() -> Arc<CoreHandle> {
         CoreHandle::new()
@@ -525,8 +709,8 @@ mod connection_ffi_tests {
         assert_eq!(listed[0].base_prefix, "");
     }
 
-    #[test]
-    fn connection_remove_makes_get_fail() {
+    #[tokio::test]
+    async fn connection_remove_makes_get_fail() {
         let h = handle();
         let id = h.connection_create(
             "test".into(),
@@ -538,10 +722,12 @@ mod connection_ffi_tests {
             "minioadmin".into(),
             "minioadmin".into(),
         );
-        h.connection_remove(id.clone()).expect("remove succeeds");
+        h.connection_remove(id.clone())
+            .await
+            .expect("remove succeeds");
         assert_eq!(h.connection_list().len(), 0);
         assert!(
-            h.connection_remove(id).is_err(),
+            h.connection_remove(id).await.is_err(),
             "removing missing id is an error"
         );
     }
@@ -748,8 +934,8 @@ mod connection_ffi_tests {
         assert_eq!(code, "connection_not_found");
     }
 
-    #[test]
-    fn connection_remove_drops_cached_provider() {
+    #[tokio::test]
+    async fn connection_remove_drops_cached_provider() {
         // Regression guard for C1: connection_remove must also drop any
         // S3Provider cached in ProviderRegistry::by_connection. Without
         // this, the removed connection's OpenDAL Operator (and its
@@ -776,11 +962,86 @@ mod connection_ffi_tests {
         h.state.providers().register_connection(&id, dummy);
         assert!(h.state.providers().get_by_connection(&id).is_some());
 
-        h.connection_remove(id_string).expect("remove succeeds");
+        h.connection_remove(id_string)
+            .await
+            .expect("remove succeeds");
 
         assert!(
             h.state.providers().get_by_connection(&id).is_none(),
             "connection_remove must drop the cached provider entry"
         );
+    }
+
+    #[tokio::test]
+    async fn connection_remove_releases_workspace_mount() {
+        let runtime = Arc::new(RecordingRuntime::default());
+        let h = Arc::new(CoreHandle {
+            state: AppState::new_with_workspace_runtime("test", runtime.clone()),
+        });
+        let id_string = h.connection_create(
+            "test".into(),
+            "http://localhost:9000".into(),
+            "us-east-1".into(),
+            "test-bucket".into(),
+            String::new(),
+            true,
+            "minioadmin".into(),
+            "minioadmin".into(),
+        );
+        let id = ConnectionId(id_string.clone());
+        h.state
+            .mounts()
+            .get_or_reserve(&id, |_taken| "test://mount".into());
+        h.state.mounts().mark_ready(&id);
+        assert!(h.state.mounts().is_mounted(&id));
+
+        h.connection_remove(id_string)
+            .await
+            .expect("remove succeeds");
+
+        assert!(!h.state.mounts().is_mounted(&id));
+        assert_eq!(runtime.unmount_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn connection_remove_keeps_mount_reservation_when_unmount_fails() {
+        let runtime = Arc::new(RecordingRuntime::failing_unmount());
+        let h = Arc::new(CoreHandle {
+            state: AppState::new_with_workspace_runtime("test", runtime.clone()),
+        });
+        let id_string = h.connection_create(
+            "test".into(),
+            "http://localhost:9000".into(),
+            "us-east-1".into(),
+            "test-bucket".into(),
+            String::new(),
+            true,
+            "minioadmin".into(),
+            "minioadmin".into(),
+        );
+        let id = ConnectionId(id_string.clone());
+        h.state
+            .mounts()
+            .get_or_reserve(&id, |_taken| "test://mount".into());
+        h.state.mounts().mark_ready(&id);
+
+        let error = h
+            .connection_remove(id_string.clone())
+            .await
+            .expect_err("failed unmount must fail removal");
+
+        let CoreError::Rpc { code, .. } = error;
+        assert_eq!(code, "mount_failed");
+        assert!(
+            h.state.mounts().is_mounted(&id),
+            "failed cleanup must leave reservation tracked"
+        );
+        assert_eq!(
+            h.connection_list().len(),
+            1,
+            "failed cleanup must leave connection registered so removal can be retried"
+        );
+        assert_eq!(runtime.unmount_calls(), 1);
+        assert!(h.connection_remove(id_string).await.is_err());
     }
 }

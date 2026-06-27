@@ -591,11 +591,11 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     
     /**
      * Remove a connection and its in-memory credentials. Also drops any
-     * cached `S3Provider` for that connection so a future call with the same
-     * `connection_id` cannot reuse the old OpenDAL `Operator` (and its
-     * embedded credentials). Returns `Err(ConnectionNotFound)` if unknown.
+     * cached `S3Provider` and runtime mount for that connection so a future
+     * call with the same `connection_id` cannot reuse stale resources.
+     * Returns `Err(ConnectionNotFound)` if unknown.
      */
-    func connectionRemove(connectionId: String) throws 
+    func connectionRemove(connectionId: String) async throws 
     
     /**
      * Re-register a connection using a caller-provided id. Intended for
@@ -609,6 +609,11 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
      * arguments are received by value across FFI but MUST NOT be logged.
      */
     func connectionRestore(connectionId: String, displayName: String, endpoint: String, region: String, bucket: String, basePrefix: String, pathStyle: Bool, accessKeyId: String, secretAccessKey: String) throws 
+    
+    /**
+     * Open a terminal rooted at a mounted connection workspace.
+     */
+    func createConnectionTerminal(connectionId: String, cols: UInt16, rows: UInt16, listener: TerminalEventListener) async throws  -> String
     
     /**
      * 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
@@ -679,6 +684,11 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
      * 写入终端输入，对应 `terminal.input`。高频路径：同步、快返回、无 base64。
      */
     func sendTerminalInput(sessionId: String, data: Data) throws 
+    
+    /**
+     * Tear down the current workspace runtime instance.
+     */
+    func shutdownWorkspace() async throws 
     
     /**
      * 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
@@ -823,16 +833,25 @@ open func connectionList() -> [ConnectionInfoDto]  {
     
     /**
      * Remove a connection and its in-memory credentials. Also drops any
-     * cached `S3Provider` for that connection so a future call with the same
-     * `connection_id` cannot reuse the old OpenDAL `Operator` (and its
-     * embedded credentials). Returns `Err(ConnectionNotFound)` if unknown.
+     * cached `S3Provider` and runtime mount for that connection so a future
+     * call with the same `connection_id` cannot reuse stale resources.
+     * Returns `Err(ConnectionNotFound)` if unknown.
      */
-open func connectionRemove(connectionId: String)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
-    uniffi_terminal_finder_core_fn_method_corehandle_connection_remove(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(connectionId),$0
-    )
-}
+open func connectionRemove(connectionId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_connection_remove(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(connectionId)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
 }
     
     /**
@@ -860,6 +879,26 @@ open func connectionRestore(connectionId: String, displayName: String, endpoint:
         FfiConverterString.lower(secretAccessKey),$0
     )
 }
+}
+    
+    /**
+     * Open a terminal rooted at a mounted connection workspace.
+     */
+open func createConnectionTerminal(connectionId: String, cols: UInt16, rows: UInt16, listener: TerminalEventListener)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_create_connection_terminal(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(connectionId),FfiConverterUInt16.lower(cols),FfiConverterUInt16.lower(rows),FfiConverterTypeTerminalEventListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
 }
     
     /**
@@ -1060,6 +1099,26 @@ open func sendTerminalInput(sessionId: String, data: Data)throws   {try rustCall
         FfiConverterData.lower(data),$0
     )
 }
+}
+    
+    /**
+     * Tear down the current workspace runtime instance.
+     */
+open func shutdownWorkspace()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_shutdown_workspace(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
 }
     
     /**
@@ -2251,10 +2310,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_list() != 19818) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 10972) {
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 31790) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_restore() != 25135) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_create_connection_terminal() != 39246) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_remote_directory() != 18923) {
@@ -2288,6 +2350,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_send_terminal_input() != 1735) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_shutdown_workspace() != 50744) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_upload_file() != 9104) {

@@ -32,6 +32,7 @@ final class TerminalSessionViewModel: ObservableObject {
     @Published private(set) var status: TerminalSessionStatus = .idle
     @Published private(set) var sessionId: String?
     @Published private(set) var cwd: String?
+    @Published private(set) var connectionId: String?
     @Published private(set) var cols = TerminalSessionViewModel.defaultColumns
     @Published private(set) var rows = TerminalSessionViewModel.defaultRows
     @Published private(set) var errorText: String?
@@ -107,6 +108,54 @@ final class TerminalSessionViewModel: ObservableObject {
         commandTask = Task { [weak self] in
             await self?.sendCreate(requestId: requestId)
         }
+    }
+
+    func startConnection(
+        connectionId: String,
+        cols initialCols: Int = TerminalSessionViewModel.defaultColumns,
+        rows initialRows: Int = TerminalSessionViewModel.defaultRows
+    ) {
+        guard status != .connecting,
+              status != .active,
+              status != .resizing,
+              status != .closing
+        else {
+            return
+        }
+
+        resetLocalState()
+        self.connectionId = connectionId
+        cols = Self.normalizedColumns(initialCols)
+        rows = Self.normalizedRows(initialRows)
+        status = .connecting
+
+        terminalClient.connect { [weak self] event in
+            self?.handle(event)
+        } onError: { [weak self] error in
+            self?.handleTransportError(error)
+        }
+
+        let requestId = requestIdGenerator()
+        pendingRequests[requestId] = .create
+        commandTask = Task { [weak self] in
+            await self?.sendCreateConnection(requestId: requestId)
+        }
+    }
+
+    func startForWorkspace(
+        _ workspaceState: WorkspaceState?,
+        fallbackCwd: String,
+        cols initialCols: Int = TerminalSessionViewModel.defaultColumns,
+        rows initialRows: Int = TerminalSessionViewModel.defaultRows
+    ) {
+        if workspaceState?.scheme == "s3",
+           let connectionId = workspaceState?.connectionId
+        {
+            startConnection(connectionId: connectionId, cols: initialCols, rows: initialRows)
+            return
+        }
+
+        start(cwd: fallbackCwd, cols: initialCols, rows: initialRows)
     }
 
     func sendInput(_ bytes: [UInt8]) {
@@ -209,6 +258,28 @@ final class TerminalSessionViewModel: ObservableObject {
                 rows: rows,
                 requestId: requestId
             )
+        } catch is CancellationError {
+            pendingRequests.removeValue(forKey: requestId)
+        } catch {
+            pendingRequests.removeValue(forKey: requestId)
+            handleTransportError(error)
+        }
+    }
+
+    private func sendCreateConnection(requestId: String) async {
+        guard let connectionId else {
+            return
+        }
+
+        do {
+            try await terminalClient.createConnection(
+                connectionId: connectionId,
+                cols: cols,
+                rows: rows,
+                requestId: requestId
+            )
+        } catch is CancellationError {
+            pendingRequests.removeValue(forKey: requestId)
         } catch {
             pendingRequests.removeValue(forKey: requestId)
             handleTransportError(error)
@@ -293,6 +364,8 @@ final class TerminalSessionViewModel: ObservableObject {
 
     private func handleTransportError(_ error: Error) {
         let wasClosing = status == .closing
+        commandTask?.cancel()
+        commandTask = nil
         terminalClient.disconnect()
         inputTask?.cancel()
         inputTask = nil
@@ -309,6 +382,8 @@ final class TerminalSessionViewModel: ObservableObject {
     }
 
     private func finishClosedSession() {
+        commandTask?.cancel()
+        commandTask = nil
         terminalClient.disconnect()
         inputTask?.cancel()
         inputTask = nil
@@ -334,6 +409,7 @@ final class TerminalSessionViewModel: ObservableObject {
         renderer?.reset()
         sessionId = nil
         cwd = nil
+        connectionId = nil
         cols = Self.defaultColumns
         rows = Self.defaultRows
         errorText = nil

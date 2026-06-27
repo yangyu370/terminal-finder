@@ -42,6 +42,16 @@ pub enum ApiError {
         operation: &'static str,
         message: String,
     },
+    #[error("workspace runtime {runtime} unavailable: {message}")]
+    WorkspaceRuntimeUnavailable { runtime: String, message: String },
+    #[error("workspace provision failed for runtime {runtime}: {message}")]
+    WorkspaceProvisionFailed { runtime: String, message: String },
+    #[error("workspace start failed for runtime {runtime}: {message}")]
+    WorkspaceStartFailed { runtime: String, message: String },
+    #[error("mount failed: {message}")]
+    MountFailed { message: String },
+    #[error("mount timed out waiting for {mountpoint}")]
+    MountTimeout { mountpoint: String },
 }
 
 impl ApiError {
@@ -57,6 +67,11 @@ impl ApiError {
             ApiError::ObjectNotFound { .. } => "object_not_found",
             ApiError::ConnectionNotFound { .. } => "connection_not_found",
             ApiError::ProviderError { .. } => "provider_error",
+            ApiError::WorkspaceRuntimeUnavailable { .. } => "workspace_runtime_unavailable",
+            ApiError::WorkspaceProvisionFailed { .. } => "workspace_provision_failed",
+            ApiError::WorkspaceStartFailed { .. } => "workspace_start_failed",
+            ApiError::MountFailed { .. } => "mount_failed",
+            ApiError::MountTimeout { .. } => "mount_timeout",
         }
     }
 
@@ -93,6 +108,19 @@ impl ApiError {
             }
             ApiError::ProviderError { operation, message } => {
                 format!("provider error during {operation}: {message}")
+            }
+            ApiError::WorkspaceRuntimeUnavailable { runtime, message } => {
+                format!("workspace runtime {runtime} unavailable: {message}")
+            }
+            ApiError::WorkspaceProvisionFailed { runtime, message } => {
+                format!("workspace provision failed for runtime {runtime}: {message}")
+            }
+            ApiError::WorkspaceStartFailed { runtime, message } => {
+                format!("workspace start failed for runtime {runtime}: {message}")
+            }
+            ApiError::MountFailed { message } => format!("mount failed: {message}"),
+            ApiError::MountTimeout { mountpoint } => {
+                format!("mount timed out waiting for {mountpoint}")
             }
         }
     }
@@ -135,6 +163,39 @@ mod tests {
                     message: "boom".into(),
                 },
                 "provider_error",
+            ),
+            (
+                ApiError::WorkspaceRuntimeUnavailable {
+                    runtime: "runtime".into(),
+                    message: "boom".into(),
+                },
+                "workspace_runtime_unavailable",
+            ),
+            (
+                ApiError::WorkspaceProvisionFailed {
+                    runtime: "runtime".into(),
+                    message: "boom".into(),
+                },
+                "workspace_provision_failed",
+            ),
+            (
+                ApiError::WorkspaceStartFailed {
+                    runtime: "runtime".into(),
+                    message: "boom".into(),
+                },
+                "workspace_start_failed",
+            ),
+            (
+                ApiError::MountFailed {
+                    message: "boom".into(),
+                },
+                "mount_failed",
+            ),
+            (
+                ApiError::MountTimeout {
+                    mountpoint: "/mnt/minio".into(),
+                },
+                "mount_timeout",
             ),
         ];
 

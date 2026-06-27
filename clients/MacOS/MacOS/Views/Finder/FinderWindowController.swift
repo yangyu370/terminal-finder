@@ -353,7 +353,12 @@ final class FinderWindowController: NSWindowController {
         } else {
             panelLayout.open()
             let grid = FinderTerminalSurfaceMetrics.gridSize(for: panelLayout.viewportSize)
-            terminalVM.start(cwd: workspaceVM.terminalCwdPath, cols: grid.cols, rows: grid.rows)
+            terminalVM.startForWorkspace(
+                workspaceVM.workspaceState,
+                fallbackCwd: workspaceVM.terminalCwdPath,
+                cols: grid.cols,
+                rows: grid.rows
+            )
         }
     }
 

@@ -60,6 +60,28 @@ pub(super) fn create_terminal(
     Ok(session_id.to_string())
 }
 
+pub(super) async fn create_connection_terminal(
+    state: &AppState,
+    connection_id: String,
+    cols: u16,
+    rows: u16,
+    listener: Arc<dyn TerminalEventListener>,
+) -> Result<String, CoreError> {
+    let (event_tx, event_rx) = mpsc::channel(TERMINAL_EVENT_BUFFER);
+    let session_id = crate::terminal::connection::create_connection_terminal(
+        state,
+        connection_id,
+        cols,
+        rows,
+        event_tx,
+    )
+    .await?;
+
+    spawn_event_forwarder(session_id, event_rx, listener, state.terminals().clone());
+
+    Ok(session_id.to_string())
+}
+
 pub(super) fn send_terminal_input(
     state: &AppState,
     session_id: String,
@@ -303,6 +325,19 @@ mod tests {
         close_terminal(&state, session_id).expect("close accepted");
         wait_for_exit(&rx);
         assert!(state.terminals().is_empty(), "close removes session");
+    }
+
+    #[tokio::test]
+    async fn create_connection_terminal_unknown_id_errors() {
+        let state = test_state();
+        let (listener, _rx) = CollectingListener::channel();
+
+        let error = super::create_connection_terminal(&state, "missing".into(), 80, 24, listener)
+            .await
+            .expect_err("unknown connection should fail");
+
+        let CoreError::Rpc { code, .. } = error;
+        assert_eq!(code, "connection_not_found");
     }
 
     #[test]

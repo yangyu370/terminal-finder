@@ -3,6 +3,25 @@ import XCTest
 @testable import MacOS
 
 final class TerminalClientTests: XCTestCase {
+    func testWebSocketClientRejectsConnectionTerminalCreation() async {
+        let client = TerminalClient()
+
+        do {
+            try await client.createConnection(
+                connectionId: "conn-1",
+                cols: 80,
+                rows: 24,
+                requestId: "req-1"
+            )
+            XCTFail("Expected connection terminal creation to require the FFI client.")
+        } catch {
+            XCTAssertEqual(
+                error as? TerminalClientError,
+                .invalidData("connection terminal requires the in-process FFI client")
+            )
+        }
+    }
+
     func testCreateEnvelopeEncodesProtocolShape() throws {
         let envelope = TerminalOutgoingEnvelope(
             type: "terminal.create",

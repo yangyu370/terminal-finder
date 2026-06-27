@@ -20,6 +20,17 @@ const DEFAULT_UTF8_LOCALE: &str = "en_US.UTF-8";
 const DEFAULT_UTF8_LOCALE: &str = "C.UTF-8";
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+pub enum TerminalLaunch {
+    LocalShell {
+        cwd: PathBuf,
+    },
+    DockerExec {
+        container: String,
+        user: String,
+        workdir: String,
+    },
+}
+
 #[derive(Debug)]
 pub enum TerminalEvent {
     Output {
@@ -55,6 +66,17 @@ impl SessionHandle {
         self.session_id
     }
 
+    #[cfg(test)]
+    pub fn for_test(session_id: Uuid) -> Self {
+        let (commands, receiver) = mpsc::channel();
+        drop(receiver);
+
+        Self {
+            session_id,
+            commands,
+        }
+    }
+
     pub fn input(&self, bytes: Vec<u8>) -> bool {
         self.commands.send(SessionCommand::Input(bytes)).is_ok()
     }
@@ -73,7 +95,7 @@ pub struct TerminalSession;
 
 impl TerminalSession {
     pub fn spawn(
-        cwd: PathBuf,
+        launch: TerminalLaunch,
         cols: u16,
         rows: u16,
         events: tokio_mpsc::Sender<TerminalEvent>,
@@ -87,10 +109,7 @@ impl TerminalSession {
             pixel_height: 0,
         })?;
 
-        let mut command = CommandBuilder::new(DEFAULT_SHELL);
-        command.arg("-1");
-        command.cwd(cwd);
-        configure_terminal_environment(&mut command);
+        let command = build_command(&launch);
 
         let child = pair.slave.spawn_command(command)?;
         drop(pair.slave);
@@ -108,6 +127,41 @@ impl TerminalSession {
             commands: command_tx,
         })
     }
+}
+
+fn build_command(launch: &TerminalLaunch) -> CommandBuilder {
+    let mut command = match launch {
+        TerminalLaunch::LocalShell { cwd } => {
+            let mut command = CommandBuilder::new(DEFAULT_SHELL);
+            command.arg("-l");
+            command.cwd(cwd);
+            command
+        }
+        TerminalLaunch::DockerExec {
+            container,
+            user,
+            workdir,
+        } => {
+            let mut command = CommandBuilder::new("docker");
+            command.args([
+                "exec",
+                "-it",
+                "--user",
+                user.as_str(),
+                "-w",
+                workdir.as_str(),
+                container.as_str(),
+                DEFAULT_SHELL,
+                "-l",
+            ]);
+            // macOS GUI app PATH 默认不含 Docker Desktop 安装位置；portable_pty 的
+            // search_path 会读取 CommandBuilder 自带的 PATH，所以这里显式注入。
+            command.env("PATH", crate::workspace::docker::augmented_docker_path());
+            command
+        }
+    };
+    configure_terminal_environment(&mut command);
+    command
 }
 
 fn configure_terminal_environment(command: &mut CommandBuilder) {
@@ -347,6 +401,95 @@ mod tests {
         }
     }
 
+    #[test]
+    fn docker_exec_launch_builds_expected_argv() {
+        let command = build_command(&TerminalLaunch::DockerExec {
+            container: "terminal-finder-dev".to_string(),
+            user: "terminal".to_string(),
+            workdir: "/workspace".to_string(),
+        });
+        let argv: Vec<_> = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            argv,
+            vec![
+                "docker",
+                "exec",
+                "-it",
+                "--user",
+                "terminal",
+                "-w",
+                "/workspace",
+                "terminal-finder-dev",
+                DEFAULT_SHELL,
+                "-l",
+            ]
+        );
+    }
+
+    #[test]
+    fn docker_exec_launch_injects_path_for_command_lookup() {
+        // macOS GUI app 默认 PATH 不含 Docker Desktop 安装位置；DockerExec 必须
+        // 在 CommandBuilder 上显式设置 PATH，否则 portable_pty 的 search_path
+        // 会按 GUI 的窄 PATH 查找 docker 二进制并失败。
+        let command = build_command(&TerminalLaunch::DockerExec {
+            container: "terminal-finder-dev".to_string(),
+            user: "terminal".to_string(),
+            workdir: "/workspace".to_string(),
+        });
+        let path = command
+            .get_env("PATH")
+            .expect("DockerExec sets PATH for docker lookup");
+        let path = path.to_string_lossy();
+
+        assert!(
+            path.contains("/usr/local/bin"),
+            "expected augmented PATH, got: {path}"
+        );
+        assert!(
+            path.contains("/opt/homebrew/bin"),
+            "expected augmented PATH, got: {path}"
+        );
+    }
+
+    #[test]
+    fn local_shell_launch_does_not_inject_docker_candidates_into_path() {
+        // portable_pty::CommandBuilder::new 会把当前进程 env 整体作为 base env（含 PATH），
+        // 所以 LocalShell 一定能 get_env("PATH")。但它不应该被 docker PATH 覆盖：
+        // 验证方法是看 PATH 跟当前进程一致（continue inherits），而非被 DockerExec 注入。
+        let command = build_command(&TerminalLaunch::LocalShell {
+            cwd: env::current_dir().expect("current directory is available"),
+        });
+        let inherited = command
+            .get_env("PATH")
+            .expect("portable_pty inherits PATH into base env")
+            .to_string_lossy()
+            .into_owned();
+        let expected = env::var("PATH").unwrap_or_default();
+        assert_eq!(
+            inherited, expected,
+            "LocalShell should pass through parent PATH untouched"
+        );
+    }
+
+    #[test]
+    fn local_shell_launch_uses_default_shell() {
+        let command = build_command(&TerminalLaunch::LocalShell {
+            cwd: env::current_dir().expect("current directory is available"),
+        });
+        let argv: Vec<_> = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(argv.first().map(String::as_str), Some(DEFAULT_SHELL));
+    }
+
     #[tokio::test]
     async fn terminal_session_runs_utf8_text_through_child_shell() {
         if !PathBuf::from(DEFAULT_SHELL).exists() {
@@ -355,7 +498,9 @@ mod tests {
 
         let (events, mut event_rx) = tokio_mpsc::channel(32);
         let session = TerminalSession::spawn(
-            env::current_dir().expect("current directory is available"),
+            TerminalLaunch::LocalShell {
+                cwd: env::current_dir().expect("current directory is available"),
+            },
             80,
             24,
             events,

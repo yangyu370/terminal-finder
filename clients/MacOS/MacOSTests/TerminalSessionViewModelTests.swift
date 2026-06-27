@@ -23,6 +23,118 @@ final class TerminalSessionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.sessionId, "session-1")
     }
 
+    func testStartConnectionCreatesSessionForConnectionInsteadOfLocalCwd() async throws {
+        let client = MockTerminalClient()
+        let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
+
+        viewModel.startConnection(connectionId: "conn-1", cols: 96, rows: 28)
+        try await waitUntil { client.connectionCreateRequests.count == 1 }
+
+        XCTAssertTrue(client.didConnect)
+        XCTAssertEqual(viewModel.status, .connecting)
+        XCTAssertNil(viewModel.cwd)
+        XCTAssertEqual(viewModel.connectionId, "conn-1")
+        XCTAssertTrue(client.createRequests.isEmpty)
+        XCTAssertEqual(
+            client.connectionCreateRequests.first,
+            MockTerminalClient.ConnectionCreateRequest(
+                connectionId: "conn-1",
+                cols: 96,
+                rows: 28,
+                requestId: "req-1"
+            )
+        )
+
+        client.emit(.created(sessionId: "session-1", id: "req-1", cols: 96, rows: 28))
+
+        XCTAssertEqual(viewModel.status, .active)
+        XCTAssertEqual(viewModel.sessionId, "session-1")
+    }
+
+    func testStartForS3WorkspaceRoutesToConnectionTerminal() async throws {
+        let client = MockTerminalClient()
+        let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
+        let state = WorkspaceState(
+            currentDirectory: "s3://bucket/prefix",
+            scheme: "s3",
+            connectionId: "conn-1"
+        )
+
+        viewModel.startForWorkspace(
+            state,
+            fallbackCwd: "/workspace",
+            cols: 88,
+            rows: 26
+        )
+        try await waitUntil { client.connectionCreateRequests.count == 1 }
+
+        XCTAssertTrue(client.createRequests.isEmpty)
+        XCTAssertEqual(client.connectionCreateRequests.first?.connectionId, "conn-1")
+        XCTAssertNil(viewModel.cwd)
+        XCTAssertEqual(viewModel.connectionId, "conn-1")
+    }
+
+    func testStartForLocalWorkspaceRoutesToLocalTerminal() async throws {
+        let client = MockTerminalClient()
+        let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
+        let state = WorkspaceState(currentDirectory: "/workspace", scheme: "local")
+
+        viewModel.startForWorkspace(
+            state,
+            fallbackCwd: "/workspace",
+            cols: 88,
+            rows: 26
+        )
+        try await waitUntil { client.createRequests.count == 1 }
+
+        XCTAssertTrue(client.connectionCreateRequests.isEmpty)
+        XCTAssertEqual(client.createRequests.first?.cwd, "/workspace")
+        XCTAssertEqual(viewModel.cwd, "/workspace")
+        XCTAssertNil(viewModel.connectionId)
+    }
+
+    func testStartConnectionWorkspaceErrorsUseExistingFailurePath() async throws {
+        for (code, message) in [
+            ("mount_failed", "Mount failed."),
+            ("workspace_runtime_unavailable", "Workspace runtime unavailable.")
+        ] {
+            let client = MockTerminalClient()
+            client.createConnectionError = BackendClientError.rpcError(code: code, message: message)
+            let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
+
+            viewModel.startConnection(connectionId: "conn-1")
+            try await waitUntil { viewModel.status == .error }
+
+            XCTAssertTrue(client.didDisconnect)
+            XCTAssertEqual(viewModel.errorText, message)
+            XCTAssertNil(viewModel.sessionId)
+            XCTAssertEqual(client.connectionCreateRequests.count, 1)
+        }
+    }
+
+    func testCloseWhileConnectionCreateIsInFlightIgnoresLateCreate() async throws {
+        let client = MockTerminalClient()
+        client.suspendConnectionCreate = true
+        let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
+
+        viewModel.startConnection(connectionId: "conn-1")
+        try await waitUntil { client.connectionCreateRequests.count == 1 }
+
+        viewModel.close()
+        try await waitUntil { client.createConnectionWasCancelled }
+
+        XCTAssertTrue(client.didDisconnect)
+        XCTAssertEqual(viewModel.status, .exited)
+        XCTAssertNil(viewModel.sessionId)
+
+        client.resumeConnectionCreate()
+        client.emit(.created(sessionId: "late-session", id: "req-1", cols: 80, rows: 24))
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(viewModel.status, .exited)
+        XCTAssertNil(viewModel.sessionId)
+    }
+
     func testOutputWritesToAttachedRenderer() async throws {
         let client = MockTerminalClient()
         let renderer = MockTerminalRenderer()
@@ -181,12 +293,17 @@ private final class MockTerminalClient: TerminalClientProtocol {
     private(set) var didConnect = false
     private(set) var didDisconnect = false
     private(set) var createRequests: [CreateRequest] = []
+    private(set) var connectionCreateRequests: [ConnectionCreateRequest] = []
     private(set) var inputRequests: [InputRequest] = []
     private(set) var resizeRequests: [ResizeRequest] = []
     private(set) var closeRequests: [CloseRequest] = []
+    var createConnectionError: Error?
+    var suspendConnectionCreate = false
+    private(set) var createConnectionWasCancelled = false
 
     private var onEvent: (@MainActor (TerminalServerEvent) -> Void)?
     private var onError: (@MainActor (Error) -> Void)?
+    private var connectionCreateContinuation: CheckedContinuation<Void, Error>?
 
     func connect(
         onEvent: @escaping @MainActor (TerminalServerEvent) -> Void,
@@ -199,12 +316,56 @@ private final class MockTerminalClient: TerminalClientProtocol {
 
     func disconnect() {
         didDisconnect = true
+        onEvent = nil
+        onError = nil
     }
 
     func create(cwd: String, cols: Int, rows: Int, requestId: String) async throws {
         createRequests.append(
             CreateRequest(cwd: cwd, cols: cols, rows: rows, requestId: requestId)
         )
+    }
+
+    func createConnection(connectionId: String, cols: Int, rows: Int, requestId: String) async throws {
+        connectionCreateRequests.append(
+            ConnectionCreateRequest(
+                connectionId: connectionId,
+                cols: cols,
+                rows: rows,
+                requestId: requestId
+            )
+        )
+        if suspendConnectionCreate {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    connectionCreateContinuation = continuation
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    self?.createConnectionWasCancelled = true
+                    self?.resumeConnectionCreate(throwing: CancellationError())
+                }
+            }
+        }
+        if let createConnectionError {
+            throw createConnectionError
+        }
+    }
+
+    func resumeConnectionCreate(throwing error: Error? = nil) {
+        guard let continuation = connectionCreateContinuation else {
+            return
+        }
+
+        connectionCreateContinuation = nil
+        if let error {
+            continuation.resume(throwing: error)
+        } else {
+            continuation.resume()
+        }
+    }
+
+    func shutdownWorkspace() async {
     }
 
     func sendInput(sessionId: String, bytes: [UInt8]) async throws {
@@ -236,6 +397,13 @@ private final class MockTerminalClient: TerminalClientProtocol {
 
     struct CreateRequest: Equatable {
         let cwd: String
+        let cols: Int
+        let rows: Int
+        let requestId: String
+    }
+
+    struct ConnectionCreateRequest: Equatable {
+        let connectionId: String
         let cols: Int
         let rows: Int
         let requestId: String

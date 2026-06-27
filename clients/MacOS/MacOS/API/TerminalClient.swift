@@ -16,6 +16,8 @@ protocol TerminalClientProtocol: AnyObject {
     )
     func disconnect()
     func create(cwd: String, cols: Int, rows: Int, requestId: String) async throws
+    func createConnection(connectionId: String, cols: Int, rows: Int, requestId: String) async throws
+    func shutdownWorkspace() async
     func sendInput(sessionId: String, bytes: [UInt8]) async throws
     func resize(sessionId: String, cols: Int, rows: Int, requestId: String) async throws
     func close(sessionId: String, requestId: String) async throws
@@ -95,6 +97,13 @@ final class TerminalClient: TerminalClientProtocol {
                 data: .create(cwd: cwd, cols: UInt16(clamping: cols), rows: UInt16(clamping: rows))
             )
         )
+    }
+
+    func createConnection(connectionId: String, cols: Int, rows: Int, requestId: String) async throws {
+        throw TerminalClientError.invalidData("connection terminal requires the in-process FFI client")
+    }
+
+    func shutdownWorkspace() async {
     }
 
     func sendInput(sessionId: String, bytes: [UInt8]) async throws {

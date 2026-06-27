@@ -37,6 +37,7 @@ server = [
 bindgen = ["uniffi/cli"]
 # 本地 MinIO 集成测试门控；默认测试和 CI 不要求启动外部服务。
 integration-test = []
+docker-integration-test = []
 
 [dependencies]
 # 库通用依赖（workspace / terminal 业务层与 FFI 都要用）。
@@ -50,7 +51,7 @@ portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 
