@@ -9,6 +9,12 @@ use crate::{
     workspace::{MountSpec, TerminalOpenContext, mount_table::Reservation},
 };
 
+// 上限保护：正常路径 1～2 轮即收敛（命中暴露的 mount，或 release 后落到 New 直接挂载）。
+// 但并发下，别的 task 可能在本 task `release` 后立刻把同一连接重新占成 Existing/Pending，
+// 加上 runtime 持续探测为未暴露（mount 进程刚起就死），就会无限自旋。给整个 reserve 循环
+// 设总轮次上限，超过即放弃，避免永久占用 executor。
+const MAX_MOUNT_ATTEMPTS: usize = 5;
+
 pub async fn create_connection_terminal(
     state: &AppState,
     connection_id: String,
@@ -32,7 +38,15 @@ pub async fn create_connection_terminal(
     let credential = entry.credential;
     let runtime_for_propose = runtime.clone();
 
+    let mut attempts = 0usize;
     let (mountpoint, created_mount) = loop {
+        attempts += 1;
+        if attempts > MAX_MOUNT_ATTEMPTS {
+            return Err(ApiError::MountFailed {
+                message: "workspace mount did not stabilize after repeated attempts".into(),
+            });
+        }
+
         let reservation = state.mounts().get_or_reserve(&id, |taken| {
             runtime_for_propose.propose_mountpoint(&display_name, taken)
         });

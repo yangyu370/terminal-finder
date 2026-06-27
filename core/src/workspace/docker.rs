@@ -105,22 +105,9 @@ impl WorkspaceRuntime for LocalDockerRuntime {
     }
 
     async fn ensure_ready(&self) -> Result<(), ApiError> {
-        if self.status().await != RuntimeStatus::Ready {
-            return Err(ApiError::WorkspaceRuntimeUnavailable {
-                runtime: RUNTIME_NAME.into(),
-                message: "runtime CLI is not available".into(),
-            });
-        }
-
-        let image = run_argv(&strings(["docker", "image", "inspect", &self.image]))
-            .await
-            .map_err(|error| {
-                provision_error(format!("failed to inspect runtime image: {error}"))
-            })?;
-        if !image.status.success() {
-            return Err(provision_error("runtime image is not available".into()));
-        }
-
+        // Happy path：容器已在运行时只需这一次 inspect 即可确认就绪。
+        // `docker info`（daemon 探活）与 `docker image inspect`（镜像存在）都只在
+        // 容器缺失/停止的慢路径才需要，前置它们会给每次开终端白白叠加两次子进程。
         let inspect = run_argv(&strings([
             "docker",
             "inspect",
@@ -128,15 +115,16 @@ impl WorkspaceRuntime for LocalDockerRuntime {
             "{{.State.Running}}",
             &self.container,
         ]))
-        .await
-        .map_err(|error| provision_error(format!("failed to inspect runtime instance: {error}")))?;
+        .await;
 
-        if inspect.status.success() {
-            let running = String::from_utf8_lossy(&inspect.stdout).trim() == "true";
-            if running {
+        if let Ok(output) = &inspect
+            && output.status.success()
+        {
+            if String::from_utf8_lossy(&output.stdout).trim() == "true" {
                 return Ok(());
             }
 
+            // 容器存在但已停止 → 启动它。
             let start = run_argv(&strings(["docker", "start", &self.container]))
                 .await
                 .map_err(|error| {
@@ -146,6 +134,25 @@ impl WorkspaceRuntime for LocalDockerRuntime {
                 return Ok(());
             }
             return Err(start_error("failed to start runtime instance".into()));
+        }
+
+        // inspect 失败：容器不存在，或 daemon 不可用。先确认 daemon 活着，
+        // 以便给出准确错误，并避免对着死 daemon 白跑 provision。
+        if self.status().await != RuntimeStatus::Ready {
+            return Err(ApiError::WorkspaceRuntimeUnavailable {
+                runtime: RUNTIME_NAME.into(),
+                message: "runtime CLI is not available".into(),
+            });
+        }
+
+        // daemon 活着但容器缺失 → 确认镜像存在后创建容器。
+        let image = run_argv(&strings(["docker", "image", "inspect", &self.image]))
+            .await
+            .map_err(|error| {
+                provision_error(format!("failed to inspect runtime image: {error}"))
+            })?;
+        if !image.status.success() {
+            return Err(provision_error("runtime image is not available".into()));
         }
 
         let run = run_argv(&run_container_argv(&self.container, &self.image))
