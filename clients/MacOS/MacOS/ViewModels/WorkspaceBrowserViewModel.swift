@@ -26,6 +26,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     private let workspaceItemOpener: any WorkspaceItemOpening
     private let workspaceAlertPresenter: any WorkspaceAlertPresenting
     private let transferActivityVM: TransferActivityViewModel?
+    private let openedDirectorySubject = PassthroughSubject<String, Never>()
     private var loadTask: Task<Void, Never>?
     private var shouldReloadInitialState = false
 
@@ -48,6 +49,10 @@ final class WorkspaceBrowserViewModel: ObservableObject {
 
     var currentConnectionId: String? {
         workspaceState?.connectionId
+    }
+
+    var openedDirectoryPublisher: AnyPublisher<String, Never> {
+        openedDirectorySubject.eraseToAnyPublisher()
     }
 
     var selectedEntryForActions: DirectoryEntry? {
@@ -138,6 +143,14 @@ final class WorkspaceBrowserViewModel: ObservableObject {
 
     func openCurrentPath() {
         openPath(path)
+    }
+
+    func openTerminalDirectory(_ directory: String) {
+        navigate(
+            to: directory,
+            mode: .new(origin: currentDirectoryPath),
+            connection: .local
+        )
     }
 
     func openSelectedItemOrCurrentPath() {
@@ -531,6 +544,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         errorText = nil
 
         loadTask = Task { [backendClient, workspaceItemOpener, workspaceAlertPresenter] in
+            var openedDirectory: String?
             do {
                 let result = try await backendClient.openDirectory(
                     path: trimmedPath,
@@ -558,6 +572,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                         errorText = error.localizedDescription
                     }
                 }
+                openedDirectory = result.state.currentDirectory
             } catch is CancellationError {
                 return
             } catch let backendError as BackendClientError
@@ -586,6 +601,9 @@ final class WorkspaceBrowserViewModel: ObservableObject {
                 return
             }
 
+            if let openedDirectory {
+                openedDirectorySubject.send(openedDirectory)
+            }
             finishLoading()
         }
     }

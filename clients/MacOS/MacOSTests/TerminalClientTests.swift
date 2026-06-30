@@ -22,6 +22,30 @@ final class TerminalClientTests: XCTestCase {
         }
     }
 
+    func testWebSocketClientRejectsWorkspaceTerminalHelpers() async {
+        let client = TerminalClient()
+
+        await assertTerminalClientInvalidData(
+            try await client.createWorkspace(cols: 80, rows: 24, requestId: "req-1"),
+            "workspace terminal requires the in-process FFI client"
+        )
+        await assertTerminalClientInvalidData(
+            try await client.updateWorkingDirectory(
+                sessionId: "session-1",
+                directoryUrl: "file://localhost/tmp"
+            ),
+            "workspace terminal cwd updates require the in-process FFI client"
+        )
+        await assertTerminalClientInvalidData(
+            try await client.compareWorkingDirectory(sessionId: "session-1"),
+            "workspace terminal cwd comparison requires the in-process FFI client"
+        )
+        await assertTerminalClientInvalidData(
+            try await client.changeDirectory(sessionId: "session-1", targetDirectory: "/tmp"),
+            "workspace terminal directory changes require the in-process FFI client"
+        )
+    }
+
     func testCreateEnvelopeEncodesProtocolShape() throws {
         let envelope = TerminalOutgoingEnvelope(
             type: "terminal.create",
@@ -100,5 +124,19 @@ final class TerminalClientTests: XCTestCase {
         let event = try TerminalClient.decode(message)
 
         XCTAssertEqual(event, .exit(sessionId: "session-1", code: nil, signal: 15))
+    }
+
+    private func assertTerminalClientInvalidData<T>(
+        _ expression: @autoclosure () async throws -> T,
+        _ message: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            _ = try await expression()
+            XCTFail("Expected invalidData error.", file: file, line: line)
+        } catch {
+            XCTAssertEqual(error as? TerminalClientError, .invalidData(message), file: file, line: line)
+        }
     }
 }

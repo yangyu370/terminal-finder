@@ -74,6 +74,8 @@ struct FinderTerminalPanelView: View {
 
             Spacer(minLength: 12)
 
+            syncLockButton
+
             if let statusText {
                 Text(statusText)
                     .font(.system(size: 11))
@@ -95,6 +97,23 @@ struct FinderTerminalPanelView: View {
         .padding(.horizontal, 12)
         .frame(height: 34)
         .background(.bar)
+    }
+
+    private var syncLockButton: some View {
+        let locked = terminalVM.workspaceTerminalSyncMode == .locked
+        return Button {
+            terminalVM.workspaceTerminalSyncMode = locked ? .synced : .locked
+        } label: {
+            Image(systemName: locked ? "lock.fill" : "lock.open")
+                .font(.system(size: 13, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(terminalVM.workspaceTerminalCapability == .launchOnly)
+        .help(locked ? "已锁定：终端与访达互不影响" : "已同步：终端与访达双向跟随")
+        .accessibilityLabel("终端同步锁定")
     }
 
     private var cwdTitle: String? {
@@ -133,19 +152,22 @@ struct FinderTerminalPanelView: View {
     }
 
     private var statusText: String? {
+        let workspaceStatus = terminalVM.workspaceTerminalStatus.displayText
         switch terminalVM.status {
         case .idle:
-            return nil
+            return workspaceStatus
         case .connecting:
             return "正在连接"
         case .active:
-            return "\(terminalVM.cols) x \(terminalVM.rows)"
+            return [workspaceStatus, "\(terminalVM.cols) x \(terminalVM.rows)"]
+                .compactMap { $0 }
+                .joined(separator: " · ")
         case .resizing:
             return "正在调整"
         case .closing:
             return "正在关闭"
         case .exited:
-            return nil
+            return workspaceStatus
         case .error:
             return terminalVM.errorText ?? "终端已断开"
         }

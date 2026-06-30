@@ -8,6 +8,46 @@
 import Foundation
 import os
 
+nonisolated enum WorkspaceTerminalKind: Equatable {
+    case local
+    case connection
+}
+
+nonisolated enum WorkspaceTerminalSyncCapability: Equatable {
+    case bidirectionalLocal
+    case launchOnly
+}
+
+nonisolated struct WorkspaceTerminalBinding: Equatable {
+    let sessionId: String
+    let kind: WorkspaceTerminalKind
+    let launchWorkspaceRoot: String
+    let launchWorkspaceCurrentDirectory: String
+    let scheme: String
+    let connectionId: String?
+    let latestTerminalWorkingDirectory: String?
+    let syncCapability: WorkspaceTerminalSyncCapability
+}
+
+nonisolated struct WorkspaceTerminalCreateResult: Equatable {
+    let binding: WorkspaceTerminalBinding
+}
+
+nonisolated struct TerminalWorkingDirectoryUpdate: Equatable {
+    let binding: WorkspaceTerminalBinding
+    let reportedDirectory: String
+    let openable: Bool
+    let matchesCurrent: Bool
+    let reason: String?
+}
+
+nonisolated struct TerminalDirectoryChange: Equatable {
+    let binding: WorkspaceTerminalBinding
+    let queued: Bool
+    let targetDirectory: String
+    let reason: String?
+}
+
 @MainActor
 protocol TerminalClientProtocol: AnyObject {
     func connect(
@@ -17,6 +57,10 @@ protocol TerminalClientProtocol: AnyObject {
     func disconnect()
     func create(cwd: String, cols: Int, rows: Int, requestId: String) async throws
     func createConnection(connectionId: String, cols: Int, rows: Int, requestId: String) async throws
+    func createWorkspace(cols: Int, rows: Int, requestId: String) async throws -> WorkspaceTerminalCreateResult
+    func updateWorkingDirectory(sessionId: String, directoryUrl: String) async throws -> TerminalWorkingDirectoryUpdate
+    func compareWorkingDirectory(sessionId: String) async throws -> TerminalWorkingDirectoryUpdate
+    func changeDirectory(sessionId: String, targetDirectory: String) async throws -> TerminalDirectoryChange
     func shutdownWorkspace() async
     func sendInput(sessionId: String, bytes: [UInt8]) async throws
     func resize(sessionId: String, cols: Int, rows: Int, requestId: String) async throws
@@ -101,6 +145,28 @@ final class TerminalClient: TerminalClientProtocol {
 
     func createConnection(connectionId: String, cols: Int, rows: Int, requestId: String) async throws {
         throw TerminalClientError.invalidData("connection terminal requires the in-process FFI client")
+    }
+
+    func createWorkspace(cols: Int, rows: Int, requestId: String) async throws -> WorkspaceTerminalCreateResult {
+        throw TerminalClientError.invalidData("workspace terminal requires the in-process FFI client")
+    }
+
+    func updateWorkingDirectory(
+        sessionId: String,
+        directoryUrl: String
+    ) async throws -> TerminalWorkingDirectoryUpdate {
+        throw TerminalClientError.invalidData("workspace terminal cwd updates require the in-process FFI client")
+    }
+
+    func compareWorkingDirectory(sessionId: String) async throws -> TerminalWorkingDirectoryUpdate {
+        throw TerminalClientError.invalidData("workspace terminal cwd comparison requires the in-process FFI client")
+    }
+
+    func changeDirectory(
+        sessionId: String,
+        targetDirectory: String
+    ) async throws -> TerminalDirectoryChange {
+        throw TerminalClientError.invalidData("workspace terminal directory changes require the in-process FFI client")
     }
 
     func shutdownWorkspace() async {

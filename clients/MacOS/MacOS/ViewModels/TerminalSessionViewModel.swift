@@ -24,6 +24,46 @@ enum TerminalSessionStatus: Equatable {
     case error
 }
 
+enum WorkspaceTerminalSyncMode: CaseIterable, Hashable {
+    case locked
+    case synced
+
+    var displayTitle: String {
+        switch self {
+        case .locked:
+            return "锁定"
+        case .synced:
+            return "同步"
+        }
+    }
+}
+
+enum WorkspaceTerminalStatus: Equatable {
+    case inactive
+    case inSync
+    case differentDirectory
+    case syncPending
+    case unsupported
+    case blocked
+
+    var displayText: String? {
+        switch self {
+        case .inactive:
+            return nil
+        case .inSync:
+            return "已同步"
+        case .differentDirectory:
+            return "目录不同"
+        case .syncPending:
+            return "同步中"
+        case .unsupported:
+            return "不支持同步"
+        case .blocked:
+            return "同步受阻"
+        }
+    }
+}
+
 @MainActor
 final class TerminalSessionViewModel: ObservableObject {
     nonisolated static let defaultColumns = 80
@@ -38,8 +78,13 @@ final class TerminalSessionViewModel: ObservableObject {
     @Published private(set) var errorText: String?
     @Published private(set) var exitCode: Int?
     @Published private(set) var exitSignal: Int?
+    @Published var workspaceTerminalSyncMode: WorkspaceTerminalSyncMode = .locked
+    @Published private(set) var workspaceTerminalStatus: WorkspaceTerminalStatus = .inactive
+    @Published private(set) var workspaceTerminalBinding: WorkspaceTerminalBinding?
+    @Published private(set) var workspaceTerminalCapability: WorkspaceTerminalSyncCapability?
 
     var onSessionEnded: (() -> Void)?
+    var onOpenDirectoryFromTerminal: ((String) -> Void)?
 
     private let terminalClient: any TerminalClientProtocol
     private let requestIdGenerator: () -> String
@@ -155,7 +200,81 @@ final class TerminalSessionViewModel: ObservableObject {
             return
         }
 
-        start(cwd: fallbackCwd, cols: initialCols, rows: initialRows)
+        startWorkspace(cwd: fallbackCwd, cols: initialCols, rows: initialRows)
+    }
+
+    func handleHostCurrentDirectoryUpdate(_ directory: String?) {
+        guard let sessionId,
+              let directory,
+              !directory.isEmpty
+        else {
+            return
+        }
+
+        commandTask = Task { [weak self, sessionId, directory] in
+            guard let self else {
+                return
+            }
+            do {
+                let result = try await terminalClient.updateWorkingDirectory(
+                    sessionId: sessionId,
+                    directoryUrl: directory
+                )
+                applyWorkingDirectoryUpdate(result)
+            } catch {
+                handleWorkspaceTerminalError(error)
+            }
+        }
+    }
+
+    func finderDidOpenDirectory(_ directory: String) {
+        guard let sessionId,
+              workspaceTerminalCapability == .bidirectionalLocal
+        else {
+            return
+        }
+
+        switch workspaceTerminalSyncMode {
+        case .locked:
+            refreshWorkspaceTerminalComparison()
+        case .synced:
+            workspaceTerminalStatus = .syncPending
+            commandTask = Task { [weak self, sessionId, directory] in
+                guard let self else {
+                    return
+                }
+                do {
+                    let result = try await terminalClient.changeDirectory(
+                        sessionId: sessionId,
+                        targetDirectory: directory
+                    )
+                    workspaceTerminalBinding = result.binding
+                    workspaceTerminalStatus = result.queued ? .syncPending : .blocked
+                } catch {
+                    handleWorkspaceTerminalError(error)
+                }
+            }
+        }
+    }
+
+    func refreshWorkspaceTerminalComparison() {
+        guard let sessionId,
+              workspaceTerminalCapability == .bidirectionalLocal
+        else {
+            return
+        }
+
+        commandTask = Task { [weak self, sessionId] in
+            guard let self else {
+                return
+            }
+            do {
+                let result = try await terminalClient.compareWorkingDirectory(sessionId: sessionId)
+                applyWorkingDirectoryUpdate(result)
+            } catch {
+                handleWorkspaceTerminalError(error)
+            }
+        }
     }
 
     func sendInput(_ bytes: [UInt8]) {
@@ -286,6 +405,56 @@ final class TerminalSessionViewModel: ObservableObject {
         }
     }
 
+    private func startWorkspace(
+        cwd: String,
+        cols initialCols: Int = TerminalSessionViewModel.defaultColumns,
+        rows initialRows: Int = TerminalSessionViewModel.defaultRows
+    ) {
+        guard status != .connecting,
+              status != .active,
+              status != .resizing,
+              status != .closing
+        else {
+            return
+        }
+
+        resetLocalState()
+        self.cwd = cwd
+        cols = Self.normalizedColumns(initialCols)
+        rows = Self.normalizedRows(initialRows)
+        status = .connecting
+
+        terminalClient.connect { [weak self] event in
+            self?.handle(event)
+        } onError: { [weak self] error in
+            self?.handleTransportError(error)
+        }
+
+        let requestId = requestIdGenerator()
+        pendingRequests[requestId] = .create
+        commandTask = Task { [weak self] in
+            await self?.sendCreateWorkspace(requestId: requestId)
+        }
+    }
+
+    private func sendCreateWorkspace(requestId: String) async {
+        do {
+            let result = try await terminalClient.createWorkspace(
+                cols: cols,
+                rows: rows,
+                requestId: requestId
+            )
+            workspaceTerminalBinding = result.binding
+            workspaceTerminalCapability = result.binding.syncCapability
+            workspaceTerminalStatus = result.binding.syncCapability == .launchOnly ? .unsupported : .differentDirectory
+        } catch is CancellationError {
+            pendingRequests.removeValue(forKey: requestId)
+        } catch {
+            pendingRequests.removeValue(forKey: requestId)
+            handleTransportError(error)
+        }
+    }
+
     private func handle(_ event: TerminalServerEvent) {
         switch event {
         case .created(let sessionId, let id, let cols, let rows):
@@ -381,6 +550,33 @@ final class TerminalSessionViewModel: ObservableObject {
         }
     }
 
+    private func handleWorkspaceTerminalError(_ error: Error) {
+        errorText = error.localizedDescription
+        workspaceTerminalStatus = .blocked
+    }
+
+    private func applyWorkingDirectoryUpdate(_ result: TerminalWorkingDirectoryUpdate) {
+        workspaceTerminalBinding = result.binding
+        workspaceTerminalCapability = result.binding.syncCapability
+
+        guard result.binding.syncCapability == .bidirectionalLocal else {
+            workspaceTerminalStatus = .unsupported
+            return
+        }
+        guard result.openable else {
+            workspaceTerminalStatus = .blocked
+            return
+        }
+
+        if workspaceTerminalSyncMode == .synced && !result.matchesCurrent {
+            workspaceTerminalStatus = .syncPending
+            onOpenDirectoryFromTerminal?(result.reportedDirectory)
+            return
+        }
+
+        workspaceTerminalStatus = result.matchesCurrent ? .inSync : .differentDirectory
+    }
+
     private func finishClosedSession() {
         commandTask?.cancel()
         commandTask = nil
@@ -393,6 +589,9 @@ final class TerminalSessionViewModel: ObservableObject {
         sessionId = nil
         pendingRequests.removeAll()
         status = .exited
+        workspaceTerminalStatus = .inactive
+        workspaceTerminalBinding = nil
+        workspaceTerminalCapability = nil
         onSessionEnded?()
     }
 
@@ -415,6 +614,9 @@ final class TerminalSessionViewModel: ObservableObject {
         errorText = nil
         exitCode = nil
         exitSignal = nil
+        workspaceTerminalStatus = .inactive
+        workspaceTerminalBinding = nil
+        workspaceTerminalCapability = nil
     }
 
     private nonisolated static func normalizedColumns(_ cols: Int) -> Int {

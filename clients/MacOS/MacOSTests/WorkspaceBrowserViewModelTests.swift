@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import MacOS
 
@@ -103,6 +104,56 @@ final class WorkspaceBrowserViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.path, "/workspace/child")
         XCTAssertTrue(viewModel.canGoBack)
         XCTAssertFalse(viewModel.canGoForward)
+    }
+
+    func testSuccessfulDirectoryNavigationPublishesOpenedDirectory() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.openResults["/workspace/child"] = openResult(path: "/workspace/child")
+        backend.openErrors["/workspace/missing"] = MockBackendClientError.missingOpenResult(
+            "/workspace/missing"
+        )
+        let viewModel = makeViewModel(backend: backend)
+        var cancellables: Set<AnyCancellable> = []
+        var openedDirectories: [String] = []
+        viewModel.openedDirectoryPublisher
+            .sink { openedDirectories.append($0) }
+            .store(in: &cancellables)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        viewModel.open(entry(name: "child", path: "/workspace/child", isDirectory: true))
+        try await waitUntilLoaded(viewModel)
+
+        viewModel.open(entry(name: "missing", path: "/workspace/missing", isDirectory: true))
+        try await waitUntilLoaded(viewModel)
+
+        XCTAssertEqual(openedDirectories, ["/workspace/child"])
+    }
+
+    func testOpenTerminalDirectoryRoutesAsLocalNavigation() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(
+            currentDirectory: "bucket/",
+            workspaceRoot: "bucket/",
+            scheme: "s3",
+            connectionId: "conn-42"
+        )
+        backend.listings["bucket/"] = listing(path: "bucket/")
+        backend.openResults["/workspace/from-terminal"] = openResult(path: "/workspace/from-terminal")
+        let viewModel = makeViewModel(backend: backend)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        viewModel.openTerminalDirectory("/workspace/from-terminal")
+        try await waitUntilLoaded(viewModel)
+
+        XCTAssertEqual(backend.openDirectoryPaths, ["/workspace/from-terminal"])
+        XCTAssertEqual(backend.openDirectoryConnectionIds, [nil])
+        XCTAssertEqual(viewModel.path, "/workspace/from-terminal")
     }
 
     func testNewNavigationAfterGoingBackClearsForwardHistory() async throws {

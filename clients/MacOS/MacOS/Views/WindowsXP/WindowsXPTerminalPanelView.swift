@@ -106,19 +106,22 @@ struct WindowsXPTerminalPanelView: View {
     }
 
     private var statusText: String? {
+        let workspaceStatus = terminalVM.workspaceTerminalStatus.displayText
         switch terminalVM.status {
         case .idle:
-            return nil
+            return workspaceStatus
         case .connecting:
             return "正在连接"
         case .active:
-            return "\(terminalVM.cols) x \(terminalVM.rows)"
+            return [workspaceStatus, "\(terminalVM.cols) x \(terminalVM.rows)"]
+                .compactMap { $0 }
+                .joined(separator: " · ")
         case .resizing:
             return "正在调整"
         case .closing:
             return "正在关闭"
         case .exited:
-            return nil
+            return workspaceStatus
         case .error:
             return terminalVM.errorText ?? "终端已断开"
         }

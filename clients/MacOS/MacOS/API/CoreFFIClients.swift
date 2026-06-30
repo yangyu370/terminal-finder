@@ -382,6 +382,33 @@ final class FFITerminalClient: TerminalClientProtocol {
         }
     }
 
+    func createWorkspace(cols: Int, rows: Int, requestId: String) async throws -> WorkspaceTerminalCreateResult {
+        let listener = FFITerminalSessionListener { [weak self] sessionId, event in
+            Task { @MainActor [weak self] in
+                self?.handleSessionEvent(sessionId: sessionId, event: event)
+            }
+        }
+
+        do {
+            let result = try await core.createWorkspaceTerminal(
+                cols: UInt16(clamping: cols),
+                rows: UInt16(clamping: rows),
+                listener: listener
+            )
+            let sessionId = result.binding.sessionId
+            guard onEvent != nil else {
+                try? core.closeTerminal(sessionId: sessionId)
+                return WorkspaceTerminalCreateResult(from: result)
+            }
+            activeSessionIds.insert(sessionId)
+            listener.activate(sessionId: sessionId)
+            onEvent?(.created(sessionId: sessionId, id: requestId, cols: cols, rows: rows))
+            return WorkspaceTerminalCreateResult(from: result)
+        } catch {
+            throw FFIBackendClient.mapError(error)
+        }
+    }
+
     /// 创建 session listener、调用 `spawn` 拿到 session id，并执行统一的 post-create
     /// 收尾（断开窗口检查、登记 active session、激活 listener、回报 `.created`）。
     /// `spawn` 用 `async` 闭包同时兼容同步的 `createTerminal` 与异步的
@@ -414,6 +441,48 @@ final class FFITerminalClient: TerminalClientProtocol {
 
     func shutdownWorkspace() async {
         try? await core.shutdownWorkspace()
+    }
+
+    func updateWorkingDirectory(
+        sessionId: String,
+        directoryUrl: String
+    ) async throws -> TerminalWorkingDirectoryUpdate {
+        do {
+            return TerminalWorkingDirectoryUpdate(
+                from: try await core.updateTerminalWorkingDirectory(
+                    sessionId: sessionId,
+                    directoryUrl: directoryUrl
+                )
+            )
+        } catch {
+            throw FFIBackendClient.mapError(error)
+        }
+    }
+
+    func compareWorkingDirectory(sessionId: String) async throws -> TerminalWorkingDirectoryUpdate {
+        do {
+            return TerminalWorkingDirectoryUpdate(
+                from: try await core.compareTerminalWorkingDirectory(sessionId: sessionId)
+            )
+        } catch {
+            throw FFIBackendClient.mapError(error)
+        }
+    }
+
+    func changeDirectory(
+        sessionId: String,
+        targetDirectory: String
+    ) async throws -> TerminalDirectoryChange {
+        do {
+            return TerminalDirectoryChange(
+                from: try await core.changeTerminalDirectory(
+                    sessionId: sessionId,
+                    targetDirectory: targetDirectory
+                )
+            )
+        } catch {
+            throw FFIBackendClient.mapError(error)
+        }
     }
 
     func sendInput(sessionId: String, bytes: [UInt8]) async throws {
@@ -457,6 +526,68 @@ final class FFITerminalClient: TerminalClientProtocol {
         case .error(let code, let message):
             onEvent?(.error(sessionId: sessionId, id: nil, code: code, message: message))
         }
+    }
+}
+
+private extension WorkspaceTerminalCreateResult {
+    init(from dto: WorkspaceTerminalCreateDto) {
+        self.init(binding: WorkspaceTerminalBinding(from: dto.binding))
+    }
+}
+
+private extension WorkspaceTerminalBinding {
+    init(from dto: WorkspaceTerminalBindingDto) {
+        self.init(
+            sessionId: dto.sessionId,
+            kind: WorkspaceTerminalKind(from: dto.kind),
+            launchWorkspaceRoot: dto.launchWorkspaceRoot,
+            launchWorkspaceCurrentDirectory: dto.launchWorkspaceCurrentDirectory,
+            scheme: dto.scheme,
+            connectionId: dto.connectionId,
+            latestTerminalWorkingDirectory: dto.latestTerminalWorkingDirectory,
+            syncCapability: WorkspaceTerminalSyncCapability(from: dto.syncCapability)
+        )
+    }
+}
+
+private extension WorkspaceTerminalKind {
+    init(from dto: WorkspaceTerminalKindDto) {
+        switch dto {
+        case .local: self = .local
+        case .connection: self = .connection
+        }
+    }
+}
+
+private extension WorkspaceTerminalSyncCapability {
+    init(from dto: WorkspaceTerminalSyncCapabilityDto) {
+        switch dto {
+        case .bidirectionalLocal: self = .bidirectionalLocal
+        case .launchOnly: self = .launchOnly
+        }
+    }
+}
+
+private extension TerminalWorkingDirectoryUpdate {
+    init(from dto: TerminalWorkingDirectoryUpdateDto) {
+        self.init(
+            binding: WorkspaceTerminalBinding(from: dto.binding),
+            reportedDirectory: dto.reportedDirectory,
+            openable: dto.openable,
+            matchesCurrent: dto.matchesCurrent,
+            reason: dto.reason
+        )
+    }
+}
+
+private extension TerminalDirectoryChange {
+    init(from dto: TerminalDirectoryChangeDto) {
+        self.init(
+            binding: WorkspaceTerminalBinding(from: dto.binding),
+            queued: dto.queued,
+            targetDirectory: dto.targetDirectory,
+            reason: dto.reason
+        )
     }
 }
 

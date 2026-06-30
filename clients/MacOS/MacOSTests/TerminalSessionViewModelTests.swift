@@ -3,6 +3,16 @@ import XCTest
 
 @MainActor
 final class TerminalSessionViewModelTests: XCTestCase {
+    func testWorkspaceTerminalModeAndStatusLabelsAreStableForHeaderUi() {
+        XCTAssertEqual(WorkspaceTerminalSyncMode.locked.displayTitle, "锁定")
+        XCTAssertEqual(WorkspaceTerminalSyncMode.synced.displayTitle, "同步")
+        XCTAssertEqual(WorkspaceTerminalStatus.inSync.displayText, "已同步")
+        XCTAssertEqual(WorkspaceTerminalStatus.differentDirectory.displayText, "目录不同")
+        XCTAssertEqual(WorkspaceTerminalStatus.syncPending.displayText, "同步中")
+        XCTAssertEqual(WorkspaceTerminalStatus.unsupported.displayText, "不支持同步")
+        XCTAssertEqual(WorkspaceTerminalStatus.blocked.displayText, "同步受阻")
+    }
+
     func testStartCreatesSessionInCurrentDirectory() async throws {
         let client = MockTerminalClient()
         let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
@@ -74,7 +84,7 @@ final class TerminalSessionViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.connectionId, "conn-1")
     }
 
-    func testStartForLocalWorkspaceRoutesToLocalTerminal() async throws {
+    func testStartForLocalWorkspaceRoutesToWorkspaceTerminal() async throws {
         let client = MockTerminalClient()
         let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
         let state = WorkspaceState(currentDirectory: "/workspace", scheme: "local")
@@ -85,12 +95,95 @@ final class TerminalSessionViewModelTests: XCTestCase {
             cols: 88,
             rows: 26
         )
-        try await waitUntil { client.createRequests.count == 1 }
+        try await waitUntil { client.workspaceCreateRequests.count == 1 }
 
         XCTAssertTrue(client.connectionCreateRequests.isEmpty)
-        XCTAssertEqual(client.createRequests.first?.cwd, "/workspace")
+        XCTAssertTrue(client.createRequests.isEmpty)
+        XCTAssertEqual(
+            client.workspaceCreateRequests.first,
+            MockTerminalClient.WorkspaceCreateRequest(cols: 88, rows: 26, requestId: "req-1")
+        )
         XCTAssertEqual(viewModel.cwd, "/workspace")
         XCTAssertNil(viewModel.connectionId)
+
+        client.emit(.created(sessionId: "session-1", id: "req-1", cols: 88, rows: 26))
+
+        XCTAssertEqual(viewModel.workspaceTerminalCapability, .bidirectionalLocal)
+        XCTAssertEqual(viewModel.workspaceTerminalStatus, .differentDirectory)
+    }
+
+    func testLockedModeRecordsTerminalCwdWithoutOpeningFinder() async throws {
+        let client = MockTerminalClient()
+        let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
+        let state = WorkspaceState(currentDirectory: "/workspace", scheme: "local")
+
+        viewModel.startForWorkspace(state, fallbackCwd: "/workspace")
+        try await waitUntil { client.workspaceCreateRequests.count == 1 }
+        client.emit(.created(sessionId: "session-1", id: "req-1", cols: 80, rows: 24))
+
+        viewModel.handleHostCurrentDirectoryUpdate("file://localhost/tmp")
+        try await waitUntil { client.cwdUpdateRequests.count == 1 }
+
+        XCTAssertEqual(
+            client.cwdUpdateRequests,
+            [MockTerminalClient.CwdUpdateRequest(sessionId: "session-1", directoryUrl: "file://localhost/tmp")]
+        )
+        XCTAssertEqual(viewModel.workspaceTerminalStatus, .inSync)
+    }
+
+    func testFollowFinderQueuesDirectoryChangeAfterSuccessfulFinderNavigation() async throws {
+        let client = MockTerminalClient()
+        let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
+        let state = WorkspaceState(currentDirectory: "/workspace", scheme: "local")
+
+        viewModel.startForWorkspace(state, fallbackCwd: "/workspace")
+        try await waitUntil { client.workspaceCreateRequests.count == 1 }
+        client.emit(.created(sessionId: "session-1", id: "req-1", cols: 80, rows: 24))
+
+        viewModel.workspaceTerminalSyncMode = .synced
+        viewModel.finderDidOpenDirectory("/workspace/next")
+        try await waitUntil { client.changeDirectoryRequests.count == 1 }
+
+        XCTAssertEqual(
+            client.changeDirectoryRequests,
+            [MockTerminalClient.ChangeDirectoryRequest(sessionId: "session-1", targetDirectory: "/workspace/next")]
+        )
+        XCTAssertEqual(viewModel.workspaceTerminalStatus, .syncPending)
+    }
+
+    func testFollowTerminalRequestsFinderOpenAfterValidatedDifferentCwd() async throws {
+        let client = MockTerminalClient()
+        client.workingDirectoryUpdate = TerminalWorkingDirectoryUpdate(
+            binding: WorkspaceTerminalBinding(
+                sessionId: "session-1",
+                kind: .local,
+                launchWorkspaceRoot: "/workspace",
+                launchWorkspaceCurrentDirectory: "/workspace",
+                scheme: "local",
+                connectionId: nil,
+                latestTerminalWorkingDirectory: "/workspace/from-terminal",
+                syncCapability: .bidirectionalLocal
+            ),
+            reportedDirectory: "/workspace/from-terminal",
+            openable: true,
+            matchesCurrent: false,
+            reason: nil
+        )
+        let viewModel = makeViewModel(client: client, requestIds: ["req-1"])
+        var openedDirectories: [String] = []
+        viewModel.onOpenDirectoryFromTerminal = { openedDirectories.append($0) }
+        let state = WorkspaceState(currentDirectory: "/workspace", scheme: "local")
+
+        viewModel.startForWorkspace(state, fallbackCwd: "/workspace")
+        try await waitUntil { client.workspaceCreateRequests.count == 1 }
+        client.emit(.created(sessionId: "session-1", id: "req-1", cols: 80, rows: 24))
+
+        viewModel.workspaceTerminalSyncMode = .synced
+        viewModel.handleHostCurrentDirectoryUpdate("file://localhost/workspace/from-terminal")
+        try await waitUntil { openedDirectories.count == 1 }
+
+        XCTAssertEqual(openedDirectories, ["/workspace/from-terminal"])
+        XCTAssertEqual(viewModel.workspaceTerminalStatus, .syncPending)
     }
 
     func testStartConnectionWorkspaceErrorsUseExistingFailurePath() async throws {
@@ -294,11 +387,16 @@ private final class MockTerminalClient: TerminalClientProtocol {
     private(set) var didDisconnect = false
     private(set) var createRequests: [CreateRequest] = []
     private(set) var connectionCreateRequests: [ConnectionCreateRequest] = []
+    private(set) var workspaceCreateRequests: [WorkspaceCreateRequest] = []
+    private(set) var cwdUpdateRequests: [CwdUpdateRequest] = []
+    private(set) var cwdCompareRequests: [String] = []
+    private(set) var changeDirectoryRequests: [ChangeDirectoryRequest] = []
     private(set) var inputRequests: [InputRequest] = []
     private(set) var resizeRequests: [ResizeRequest] = []
     private(set) var closeRequests: [CloseRequest] = []
     var createConnectionError: Error?
     var suspendConnectionCreate = false
+    var workingDirectoryUpdate: TerminalWorkingDirectoryUpdate?
     private(set) var createConnectionWasCancelled = false
 
     private var onEvent: (@MainActor (TerminalServerEvent) -> Void)?
@@ -350,6 +448,95 @@ private final class MockTerminalClient: TerminalClientProtocol {
         if let createConnectionError {
             throw createConnectionError
         }
+    }
+
+    func createWorkspace(cols: Int, rows: Int, requestId: String) async throws -> WorkspaceTerminalCreateResult {
+        workspaceCreateRequests.append(
+            WorkspaceCreateRequest(cols: cols, rows: rows, requestId: requestId)
+        )
+        return WorkspaceTerminalCreateResult(
+            binding: WorkspaceTerminalBinding(
+                sessionId: "workspace-session",
+                kind: .local,
+                launchWorkspaceRoot: "/workspace",
+                launchWorkspaceCurrentDirectory: "/workspace",
+                scheme: "local",
+                connectionId: nil,
+                latestTerminalWorkingDirectory: nil,
+                syncCapability: .bidirectionalLocal
+            )
+        )
+    }
+
+    func updateWorkingDirectory(
+        sessionId: String,
+        directoryUrl: String
+    ) async throws -> TerminalWorkingDirectoryUpdate {
+        cwdUpdateRequests.append(CwdUpdateRequest(sessionId: sessionId, directoryUrl: directoryUrl))
+        if let workingDirectoryUpdate {
+            return workingDirectoryUpdate
+        }
+
+        return TerminalWorkingDirectoryUpdate(
+            binding: WorkspaceTerminalBinding(
+                sessionId: sessionId,
+                kind: .local,
+                launchWorkspaceRoot: "/workspace",
+                launchWorkspaceCurrentDirectory: "/workspace",
+                scheme: "local",
+                connectionId: nil,
+                latestTerminalWorkingDirectory: directoryUrl,
+                syncCapability: .bidirectionalLocal
+            ),
+            reportedDirectory: directoryUrl,
+            openable: true,
+            matchesCurrent: true,
+            reason: nil
+        )
+    }
+
+    func compareWorkingDirectory(sessionId: String) async throws -> TerminalWorkingDirectoryUpdate {
+        cwdCompareRequests.append(sessionId)
+        return TerminalWorkingDirectoryUpdate(
+            binding: WorkspaceTerminalBinding(
+                sessionId: sessionId,
+                kind: .local,
+                launchWorkspaceRoot: "/workspace",
+                launchWorkspaceCurrentDirectory: "/workspace",
+                scheme: "local",
+                connectionId: nil,
+                latestTerminalWorkingDirectory: "/workspace",
+                syncCapability: .bidirectionalLocal
+            ),
+            reportedDirectory: "/workspace",
+            openable: true,
+            matchesCurrent: true,
+            reason: nil
+        )
+    }
+
+    func changeDirectory(
+        sessionId: String,
+        targetDirectory: String
+    ) async throws -> TerminalDirectoryChange {
+        changeDirectoryRequests.append(
+            ChangeDirectoryRequest(sessionId: sessionId, targetDirectory: targetDirectory)
+        )
+        return TerminalDirectoryChange(
+            binding: WorkspaceTerminalBinding(
+                sessionId: sessionId,
+                kind: .local,
+                launchWorkspaceRoot: "/workspace",
+                launchWorkspaceCurrentDirectory: "/workspace",
+                scheme: "local",
+                connectionId: nil,
+                latestTerminalWorkingDirectory: nil,
+                syncCapability: .bidirectionalLocal
+            ),
+            queued: true,
+            targetDirectory: targetDirectory,
+            reason: nil
+        )
     }
 
     func resumeConnectionCreate(throwing error: Error? = nil) {
@@ -407,6 +594,22 @@ private final class MockTerminalClient: TerminalClientProtocol {
         let cols: Int
         let rows: Int
         let requestId: String
+    }
+
+    struct WorkspaceCreateRequest: Equatable {
+        let cols: Int
+        let rows: Int
+        let requestId: String
+    }
+
+    struct CwdUpdateRequest: Equatable {
+        let sessionId: String
+        let directoryUrl: String
+    }
+
+    struct ChangeDirectoryRequest: Equatable {
+        let sessionId: String
+        let targetDirectory: String
     }
 
     struct InputRequest: Equatable {

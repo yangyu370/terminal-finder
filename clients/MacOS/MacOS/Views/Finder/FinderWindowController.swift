@@ -100,6 +100,7 @@ final class FinderWindowController: NSWindowController {
         applyShellMode(shellModeState.mode)
 
         wireTerminalLifecycle()
+        subscribeWorkspaceNavigation()
         installTerminalShortcutMonitor()
         subscribeShellModeUpdates()
         subscribeWindowChromeUpdates()
@@ -587,6 +588,9 @@ final class FinderWindowController: NSWindowController {
         terminalVM.onSessionEnded = { [weak self] in
             self?.panelLayout.close()
         }
+        terminalVM.onOpenDirectoryFromTerminal = { [weak self] directory in
+            self?.workspaceVM.openTerminalDirectory(directory)
+        }
 
         panelLayout.onViewportResize = { [weak self] size in
             guard let self else {
@@ -596,6 +600,15 @@ final class FinderWindowController: NSWindowController {
             let grid = FinderTerminalSurfaceMetrics.gridSize(for: size)
             terminalVM.resize(cols: grid.cols, rows: grid.rows)
         }
+    }
+
+    private func subscribeWorkspaceNavigation() {
+        workspaceVM.openedDirectoryPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] directory in
+                self?.terminalVM.finderDidOpenDirectory(directory)
+            }
+            .store(in: &cancellables)
     }
 
     private func subscribeWindowChromeUpdates() {

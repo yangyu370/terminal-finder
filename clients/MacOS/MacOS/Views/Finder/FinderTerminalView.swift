@@ -119,7 +119,13 @@ struct FinderTerminalView: NSViewRepresentable {
 
         func setTerminalTitle(source: TerminalView, title: String) {}
 
-        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+            guard let directory else {
+                return
+            }
+
+            viewModel.handleHostCurrentDirectoryUpdate(directory)
+        }
 
         func send(source: TerminalView, data: ArraySlice<UInt8>) {
             viewModel.sendInput(Array(data))
