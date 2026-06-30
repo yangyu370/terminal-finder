@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use crate::connection::ConnectionRegistry;
-use crate::terminal::registry::TerminalRegistry;
+use crate::terminal::{binding::WorkspaceTerminalBindings, registry::TerminalRegistry};
 use crate::vfs::registry::ProviderRegistry;
 use crate::workspace::{
     WorkspaceRuntime, docker::LocalDockerRuntime, mount_table::MountRegistry, state::WorkspaceStore,
@@ -16,6 +16,7 @@ pub struct AppState {
     pub version: &'static str,
     workspace: WorkspaceStore,
     terminals: TerminalRegistry,
+    workspace_terminal_bindings: WorkspaceTerminalBindings,
     providers: ProviderRegistry,
     connections: ConnectionRegistry,
     mounts: MountRegistry,
@@ -32,6 +33,7 @@ impl AppState {
             version,
             workspace: WorkspaceStore::with_default_directory(),
             terminals: TerminalRegistry::new(),
+            workspace_terminal_bindings: WorkspaceTerminalBindings::new(),
             providers: ProviderRegistry::new(),
             connections: ConnectionRegistry::new(),
             mounts: MountRegistry::new(),
@@ -56,6 +58,10 @@ impl AppState {
 
     pub fn terminals(&self) -> &TerminalRegistry {
         &self.terminals
+    }
+
+    pub fn workspace_terminal_bindings(&self) -> &WorkspaceTerminalBindings {
+        &self.workspace_terminal_bindings
     }
 
     pub fn providers(&self) -> &ProviderRegistry {
@@ -161,6 +167,18 @@ mod tests {
         let cloned = state.clone();
 
         assert!(state.terminals().is_shared_with(cloned.terminals()));
+    }
+
+    #[test]
+    fn workspace_terminal_bindings_are_shared_across_state_clones() {
+        let state = AppState::new("test");
+        let cloned = state.clone();
+
+        assert!(
+            state
+                .workspace_terminal_bindings()
+                .is_shared_with(cloned.workspace_terminal_bindings())
+        );
     }
 
     #[test]

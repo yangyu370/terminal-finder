@@ -26,7 +26,15 @@ impl TerminalRegistry {
         rows: u16,
         events: mpsc::Sender<TerminalEvent>,
     ) -> anyhow::Result<Uuid> {
-        self.create_session_with_launch(TerminalLaunch::LocalShell { cwd }, cols, rows, events)
+        self.create_session_with_launch(
+            TerminalLaunch::LocalShell {
+                cwd,
+                integration: None,
+            },
+            cols,
+            rows,
+            events,
+        )
     }
 
     pub fn create_session_with_launch(
@@ -126,6 +134,7 @@ mod tests {
             .create_session_with_launch(
                 TerminalLaunch::LocalShell {
                     cwd: std::env::current_dir().expect("current directory is available"),
+                    integration: None,
                 },
                 80,
                 24,

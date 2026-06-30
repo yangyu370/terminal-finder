@@ -3,6 +3,9 @@
 //! 刻意独立于 `workspace::dto`（那套带 serde、服务于 server JSON）：业务 DTO 不该被叠加
 //! FFI 派生。这里用 `From` 把协议响应转成 Swift 友好的结构，字段命名由 UniFFI 自动转 camelCase。
 
+use crate::terminal::binding::{
+    WorkspaceTerminalBinding, WorkspaceTerminalKind, WorkspaceTerminalSyncCapability,
+};
 use crate::workspace::dto::{
     DirectoryEntry, EntryKind, ListDirectoryResponse, OpenDirectoryResponse, WorkspaceStateResponse,
 };
@@ -60,6 +63,52 @@ pub struct OpenDirectoryDto {
     pub listing: DirectoryListingDto,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum WorkspaceTerminalKindDto {
+    Local,
+    Connection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum WorkspaceTerminalSyncCapabilityDto {
+    BidirectionalLocal,
+    LaunchOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WorkspaceTerminalBindingDto {
+    pub session_id: String,
+    pub kind: WorkspaceTerminalKindDto,
+    pub launch_workspace_root: String,
+    pub launch_workspace_current_directory: String,
+    pub scheme: String,
+    pub connection_id: Option<String>,
+    pub latest_terminal_working_directory: Option<String>,
+    pub sync_capability: WorkspaceTerminalSyncCapabilityDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WorkspaceTerminalCreateDto {
+    pub binding: WorkspaceTerminalBindingDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TerminalWorkingDirectoryUpdateDto {
+    pub binding: WorkspaceTerminalBindingDto,
+    pub reported_directory: String,
+    pub openable: bool,
+    pub matches_current: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TerminalDirectoryChangeDto {
+    pub binding: WorkspaceTerminalBindingDto,
+    pub queued: bool,
+    pub target_directory: String,
+    pub reason: Option<String>,
+}
+
 impl From<WorkspaceStateResponse> for WorkspaceStateDto {
     fn from(value: WorkspaceStateResponse) -> Self {
         Self {
@@ -109,6 +158,43 @@ impl From<OpenDirectoryResponse> for OpenDirectoryDto {
         Self {
             state: value.state.into(),
             listing: value.listing.into(),
+        }
+    }
+}
+
+impl From<WorkspaceTerminalKind> for WorkspaceTerminalKindDto {
+    fn from(value: WorkspaceTerminalKind) -> Self {
+        match value {
+            WorkspaceTerminalKind::Local => WorkspaceTerminalKindDto::Local,
+            WorkspaceTerminalKind::Connection => WorkspaceTerminalKindDto::Connection,
+        }
+    }
+}
+
+impl From<WorkspaceTerminalSyncCapability> for WorkspaceTerminalSyncCapabilityDto {
+    fn from(value: WorkspaceTerminalSyncCapability) -> Self {
+        match value {
+            WorkspaceTerminalSyncCapability::BidirectionalLocal => {
+                WorkspaceTerminalSyncCapabilityDto::BidirectionalLocal
+            }
+            WorkspaceTerminalSyncCapability::LaunchOnly => {
+                WorkspaceTerminalSyncCapabilityDto::LaunchOnly
+            }
+        }
+    }
+}
+
+impl From<WorkspaceTerminalBinding> for WorkspaceTerminalBindingDto {
+    fn from(value: WorkspaceTerminalBinding) -> Self {
+        Self {
+            session_id: value.session_id.to_string(),
+            kind: value.kind.into(),
+            launch_workspace_root: value.launch_workspace_root,
+            launch_workspace_current_directory: value.launch_workspace_current_directory,
+            scheme: value.scheme,
+            connection_id: value.connection_id,
+            latest_terminal_working_directory: value.latest_terminal_working_directory,
+            sync_capability: value.sync_capability.into(),
         }
     }
 }

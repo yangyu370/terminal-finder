@@ -16,7 +16,9 @@ use crate::{
 
 pub use dto::{
     DirectoryEntryDto, DirectoryListingDto, EntryKindDto, OpenDirectoryDto, PingInfo,
-    WorkspaceStateDto,
+    TerminalDirectoryChangeDto, TerminalWorkingDirectoryUpdateDto, WorkspaceStateDto,
+    WorkspaceTerminalBindingDto, WorkspaceTerminalCreateDto, WorkspaceTerminalKindDto,
+    WorkspaceTerminalSyncCapabilityDto,
 };
 pub use error::CoreError;
 pub use terminal::TerminalEventListener;
@@ -284,6 +286,42 @@ impl CoreHandle {
         listener: Arc<dyn TerminalEventListener>,
     ) -> Result<String, CoreError> {
         terminal::create_connection_terminal(&self.state, connection_id, cols, rows, listener).await
+    }
+
+    /// Create a terminal bound to the current workspace context.
+    pub async fn create_workspace_terminal(
+        &self,
+        cols: u16,
+        rows: u16,
+        listener: Arc<dyn TerminalEventListener>,
+    ) -> Result<WorkspaceTerminalCreateDto, CoreError> {
+        terminal::create_workspace_terminal(&self.state, cols, rows, listener).await
+    }
+
+    /// Record and validate a terminal cwd reported by SwiftTerm's OSC 7 callback.
+    pub async fn update_terminal_working_directory(
+        &self,
+        session_id: String,
+        directory_url: String,
+    ) -> Result<TerminalWorkingDirectoryUpdateDto, CoreError> {
+        terminal::update_terminal_working_directory(&self.state, session_id, directory_url).await
+    }
+
+    /// Recompute terminal-vs-Finder cwd status from the latest recorded terminal cwd.
+    pub async fn compare_terminal_working_directory(
+        &self,
+        session_id: String,
+    ) -> Result<TerminalWorkingDirectoryUpdateDto, CoreError> {
+        terminal::compare_terminal_working_directory(&self.state, session_id).await
+    }
+
+    /// Queue a controlled directory change for a local workspace terminal.
+    pub async fn change_terminal_directory(
+        &self,
+        session_id: String,
+        target_directory: String,
+    ) -> Result<TerminalDirectoryChangeDto, CoreError> {
+        terminal::change_terminal_directory(&self.state, session_id, target_directory).await
     }
 
     /// Tear down the current workspace runtime instance.

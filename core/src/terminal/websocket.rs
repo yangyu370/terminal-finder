@@ -16,7 +16,11 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
-use super::session::TerminalEvent;
+use super::{
+    binding::{WorkspaceTerminalKind, WorkspaceTerminalLaunchSnapshot},
+    session::{TerminalEvent, TerminalLaunch},
+    shell_integration::ShellIntegration,
+};
 
 const LOG_TARGET: &str = "terminal";
 const TERMINAL_EVENT_BUFFER: usize = 256;
@@ -42,6 +46,12 @@ struct CreateData {
 }
 
 #[derive(Debug, Deserialize)]
+struct CreateWorkspaceData {
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Debug, Deserialize)]
 struct InputData {
     bytes: String,
 }
@@ -50,6 +60,18 @@ struct InputData {
 struct ResizeData {
     cols: u16,
     rows: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkingDirectoryData {
+    directory_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangeDirectoryData {
+    target_directory: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -166,6 +188,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, remote_addr: SocketAd
                     }
                     if is_exit {
                         state.terminals().remove(session_id);
+                        state.workspace_terminal_bindings().remove(session_id);
                         owned_sessions.remove(&session_id);
                     }
                 }
@@ -246,6 +269,546 @@ async fn handle_incoming(
                         return Err("send_failed");
                     }
                 }
+            }
+        }
+        "terminal.createWorkspace" => {
+            let data = match serde_json::from_value::<CreateWorkspaceData>(envelope.data) {
+                Ok(data) => data,
+                Err(error) => {
+                    if send_error(
+                        sender,
+                        None,
+                        envelope.id,
+                        "invalid_message",
+                        &error.to_string(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+            };
+            let workspace = state.workspace().state();
+            let (session_id, kind) = if workspace.scheme == "local" {
+                let integration = match ShellIntegration::create() {
+                    Ok(integration) => integration,
+                    Err(error) => {
+                        if send_error(
+                            sender,
+                            None,
+                            envelope.id,
+                            "create_failed",
+                            &error.to_string(),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return Err("send_failed");
+                        }
+                        return Ok(());
+                    }
+                };
+                let integration_for_binding = integration.clone();
+                let launch = TerminalLaunch::LocalShell {
+                    cwd: workspace.current_directory.clone(),
+                    integration: Some(integration),
+                };
+                match state.terminals().create_session_with_launch(
+                    launch,
+                    data.cols,
+                    data.rows,
+                    event_tx.clone(),
+                ) {
+                    Ok(session_id) => {
+                        state
+                            .workspace_terminal_bindings()
+                            .attach_shell_integration(session_id, integration_for_binding);
+                        (session_id, WorkspaceTerminalKind::Local)
+                    }
+                    Err(error) => {
+                        if send_error(
+                            sender,
+                            None,
+                            envelope.id,
+                            "create_failed",
+                            &error.to_string(),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return Err("send_failed");
+                        }
+                        return Ok(());
+                    }
+                }
+            } else if let Some(connection_id) = workspace.connection_id.clone() {
+                match crate::terminal::connection::create_connection_terminal(
+                    state,
+                    connection_id,
+                    data.cols,
+                    data.rows,
+                    event_tx.clone(),
+                )
+                .await
+                {
+                    Ok(session_id) => (session_id, WorkspaceTerminalKind::Connection),
+                    Err(error) => {
+                        if send_error(
+                            sender,
+                            None,
+                            envelope.id,
+                            "create_failed",
+                            &error.to_string(),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return Err("send_failed");
+                        }
+                        return Ok(());
+                    }
+                }
+            } else {
+                if send_error(
+                    sender,
+                    None,
+                    envelope.id,
+                    "unsupported_workspace_terminal",
+                    "workspace terminal creation for this workspace scheme is not implemented",
+                )
+                .await
+                .is_err()
+                {
+                    return Err("send_failed");
+                }
+                return Ok(());
+            };
+
+            let snapshot = WorkspaceTerminalLaunchSnapshot {
+                workspace_root: workspace.workspace_root.to_string_lossy().into_owned(),
+                current_directory: workspace.current_directory.to_string_lossy().into_owned(),
+                scheme: workspace.scheme,
+                connection_id: workspace.connection_id,
+            };
+            let binding = state
+                .workspace_terminal_bindings()
+                .create(session_id, kind, snapshot);
+            owned_sessions.insert(session_id);
+            if send_envelope(
+                sender,
+                "terminal.created",
+                Some(session_id),
+                envelope.id,
+                json!({
+                    "cols": data.cols,
+                    "rows": data.rows,
+                    "binding": workspace_terminal_binding_json(binding),
+                }),
+            )
+            .await
+            .is_err()
+            {
+                return Err("send_failed");
+            }
+        }
+        "terminal.updateWorkingDirectory" => {
+            let Some(session_id) = envelope.session_id else {
+                if send_error(
+                    sender,
+                    None,
+                    envelope.id,
+                    "invalid_message",
+                    "missing sessionId",
+                )
+                .await
+                .is_err()
+                {
+                    return Err("send_failed");
+                }
+                return Ok(());
+            };
+            let data = match serde_json::from_value::<WorkingDirectoryData>(envelope.data) {
+                Ok(data) => data,
+                Err(error) => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "invalid_message",
+                        &error.to_string(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+            };
+            let binding = match state.workspace_terminal_bindings().get(session_id) {
+                Some(binding) => binding,
+                None => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "unknown_session",
+                        "sessionId does not match a live workspace terminal session",
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+            };
+            let decoded = match decode_file_url(&data.directory_url) {
+                Ok(decoded) => decoded,
+                Err(CwdDecodeError::UnsupportedHost) => {
+                    if send_envelope(
+                        sender,
+                        "terminal.workingDirectoryUpdated",
+                        Some(session_id),
+                        envelope.id,
+                        json!({
+                            "binding": workspace_terminal_binding_json(binding),
+                            "reportedDirectory": data.directory_url,
+                            "openable": false,
+                            "matchesCurrent": false,
+                            "reason": "unsupported_host",
+                        }),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+                Err(CwdDecodeError::Invalid(message)) => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "invalid_message",
+                        &message,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+            };
+            let binding = state
+                .workspace_terminal_bindings()
+                .record_terminal_working_directory(session_id, decoded.clone())
+                .unwrap_or(binding);
+            match terminal_working_directory_update_json(state, binding, decoded).await {
+                Ok(data) => {
+                    if send_envelope(
+                        sender,
+                        "terminal.workingDirectoryUpdated",
+                        Some(session_id),
+                        envelope.id,
+                        data,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                }
+                Err(message) => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "background_task_failed",
+                        &message,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                }
+            }
+        }
+        "terminal.compareWorkingDirectory" => {
+            let Some(session_id) = envelope.session_id else {
+                if send_error(
+                    sender,
+                    None,
+                    envelope.id,
+                    "invalid_message",
+                    "missing sessionId",
+                )
+                .await
+                .is_err()
+                {
+                    return Err("send_failed");
+                }
+                return Ok(());
+            };
+            let binding = match state.workspace_terminal_bindings().get(session_id) {
+                Some(binding) => binding,
+                None => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "unknown_session",
+                        "sessionId does not match a live workspace terminal session",
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+            };
+            let Some(directory) = binding.latest_terminal_working_directory.clone() else {
+                if send_envelope(
+                    sender,
+                    "terminal.workingDirectoryUpdated",
+                    Some(session_id),
+                    envelope.id,
+                    json!({
+                        "binding": workspace_terminal_binding_json(binding),
+                        "reportedDirectory": "",
+                        "openable": false,
+                        "matchesCurrent": false,
+                        "reason": "cwd_unknown",
+                    }),
+                )
+                .await
+                .is_err()
+                {
+                    return Err("send_failed");
+                }
+                return Ok(());
+            };
+            match terminal_working_directory_update_json(state, binding, directory).await {
+                Ok(data) => {
+                    if send_envelope(
+                        sender,
+                        "terminal.workingDirectoryUpdated",
+                        Some(session_id),
+                        envelope.id,
+                        data,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                }
+                Err(message) => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "background_task_failed",
+                        &message,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                }
+            }
+        }
+        "terminal.changeDirectory" => {
+            let Some(session_id) = envelope.session_id else {
+                if send_error(
+                    sender,
+                    None,
+                    envelope.id,
+                    "invalid_message",
+                    "missing sessionId",
+                )
+                .await
+                .is_err()
+                {
+                    return Err("send_failed");
+                }
+                return Ok(());
+            };
+            let data = match serde_json::from_value::<ChangeDirectoryData>(envelope.data) {
+                Ok(data) => data,
+                Err(error) => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "invalid_message",
+                        &error.to_string(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+            };
+            if data.target_directory.chars().any(|ch| ch.is_control()) {
+                if send_error(
+                    sender,
+                    Some(session_id),
+                    envelope.id,
+                    "invalid_message",
+                    "terminal target directory contains unsafe control characters",
+                )
+                .await
+                .is_err()
+                {
+                    return Err("send_failed");
+                }
+                return Ok(());
+            }
+            let binding = match state.workspace_terminal_bindings().get(session_id) {
+                Some(binding) => binding,
+                None => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "unknown_session",
+                        "sessionId does not match a live workspace terminal session",
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+            };
+            if !matches!(binding.kind, WorkspaceTerminalKind::Local) {
+                if send_error(
+                    sender,
+                    Some(session_id),
+                    envelope.id,
+                    "unsupported_terminal",
+                    "connection-backed terminals do not support directory changes",
+                )
+                .await
+                .is_err()
+                {
+                    return Err("send_failed");
+                }
+                return Ok(());
+            }
+            let integration = match state
+                .workspace_terminal_bindings()
+                .shell_integration(session_id)
+            {
+                Some(integration) => integration,
+                None => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "terminal_control_unavailable",
+                        "terminal shell integration is not available for this session",
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+            };
+            let target_for_task = data.target_directory.clone();
+            let canonical_target = match tokio::task::spawn_blocking(move || {
+                let path = PathBuf::from(target_for_task);
+                let metadata = std::fs::metadata(&path).map_err(|_| "not_openable".to_string())?;
+                if !metadata.is_dir() {
+                    return Err("not_directory".to_string());
+                }
+                path.canonicalize().map_err(|_| "not_openable".to_string())
+            })
+            .await
+            {
+                Ok(Ok(path)) => path.to_string_lossy().into_owned(),
+                Ok(Err(reason)) => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        match reason.as_str() {
+                            "not_directory" => "not_directory",
+                            _ => "not_openable",
+                        },
+                        "terminal target directory is not openable",
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+                Err(error) => {
+                    if send_error(
+                        sender,
+                        Some(session_id),
+                        envelope.id,
+                        "background_task_failed",
+                        &format!("terminal directory change validation task failed: {error}"),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err("send_failed");
+                    }
+                    return Ok(());
+                }
+            };
+            if let Err(error) = integration.write_cd_request(&canonical_target) {
+                if send_error(
+                    sender,
+                    Some(session_id),
+                    envelope.id,
+                    "terminal_control_failed",
+                    &error.to_string(),
+                )
+                .await
+                .is_err()
+                {
+                    return Err("send_failed");
+                }
+                return Ok(());
+            }
+            let binding = state
+                .workspace_terminal_bindings()
+                .record_pending_target(session_id, canonical_target.clone())
+                .unwrap_or(binding);
+            if send_envelope(
+                sender,
+                "terminal.directoryChangeQueued",
+                Some(session_id),
+                envelope.id,
+                json!({
+                    "binding": workspace_terminal_binding_json(binding),
+                    "queued": true,
+                    "targetDirectory": canonical_target,
+                    "reason": null,
+                }),
+            )
+            .await
+            .is_err()
+            {
+                return Err("send_failed");
             }
         }
         "terminal.input" => {
@@ -400,6 +963,7 @@ async fn handle_incoming(
                 return Ok(());
             };
             if state.terminals().close(session_id) {
+                state.workspace_terminal_bindings().remove(session_id);
                 if send_envelope(
                     sender,
                     "terminal.closed",
@@ -443,6 +1007,159 @@ async fn handle_incoming(
     }
 
     Ok(())
+}
+
+fn workspace_terminal_binding_json(
+    binding: crate::terminal::binding::WorkspaceTerminalBinding,
+) -> Value {
+    json!({
+        "sessionId": binding.session_id,
+        "kind": match binding.kind {
+            WorkspaceTerminalKind::Local => "local",
+            WorkspaceTerminalKind::Connection => "connection",
+        },
+        "launchWorkspaceRoot": binding.launch_workspace_root,
+        "launchWorkspaceCurrentDirectory": binding.launch_workspace_current_directory,
+        "scheme": binding.scheme,
+        "connectionId": binding.connection_id,
+        "latestTerminalWorkingDirectory": binding.latest_terminal_working_directory,
+        "syncCapability": match binding.sync_capability {
+            crate::terminal::binding::WorkspaceTerminalSyncCapability::BidirectionalLocal => {
+                "bidirectionalLocal"
+            }
+            crate::terminal::binding::WorkspaceTerminalSyncCapability::LaunchOnly => "launchOnly",
+        },
+    })
+}
+
+async fn terminal_working_directory_update_json(
+    state: &AppState,
+    binding: crate::terminal::binding::WorkspaceTerminalBinding,
+    reported_directory: String,
+) -> Result<Value, String> {
+    if matches!(
+        binding.sync_capability,
+        crate::terminal::binding::WorkspaceTerminalSyncCapability::LaunchOnly
+    ) {
+        return Ok(json!({
+            "binding": workspace_terminal_binding_json(binding),
+            "reportedDirectory": reported_directory,
+            "openable": false,
+            "matchesCurrent": false,
+            "reason": "unsupported",
+        }));
+    }
+
+    let current_directory = state.workspace().state().current_directory;
+    let reported_for_task = reported_directory.clone();
+    let comparison = tokio::task::spawn_blocking(move || {
+        let reported = PathBuf::from(&reported_for_task);
+        let reported_metadata =
+            std::fs::metadata(&reported).map_err(|_| "not_openable".to_string())?;
+        if !reported_metadata.is_dir() {
+            return Err("not_directory".to_string());
+        }
+        let reported_canonical = reported
+            .canonicalize()
+            .map_err(|_| "not_openable".to_string())?;
+        let current_canonical = current_directory
+            .canonicalize()
+            .map_err(|_| "current_directory_unavailable".to_string())?;
+        Ok::<_, String>(reported_canonical == current_canonical)
+    })
+    .await
+    .map_err(|error| format!("terminal cwd comparison task failed: {error}"))?;
+
+    match comparison {
+        Ok(matches_current) => Ok(json!({
+            "binding": workspace_terminal_binding_json(binding),
+            "reportedDirectory": reported_directory,
+            "openable": true,
+            "matchesCurrent": matches_current,
+            "reason": null,
+        })),
+        Err(reason) => Ok(json!({
+            "binding": workspace_terminal_binding_json(binding),
+            "reportedDirectory": reported_directory,
+            "openable": false,
+            "matchesCurrent": false,
+            "reason": reason,
+        })),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CwdDecodeError {
+    UnsupportedHost,
+    Invalid(String),
+}
+
+fn decode_file_url(raw: &str) -> Result<String, CwdDecodeError> {
+    let rest = raw.strip_prefix("file://").ok_or_else(|| {
+        CwdDecodeError::Invalid("terminal cwd update must be a file:// URL".to_string())
+    })?;
+    let (host, path) = if rest.starts_with('/') {
+        ("", rest)
+    } else {
+        let Some((host, _path_without_host)) = rest.split_once('/') else {
+            return Err(CwdDecodeError::Invalid(
+                "terminal cwd file URL is missing a path".to_string(),
+            ));
+        };
+        (host, &rest[host.len()..])
+    };
+
+    if !host_is_local(host) {
+        return Err(CwdDecodeError::UnsupportedHost);
+    }
+
+    percent_decode(path)
+}
+
+fn host_is_local(host: &str) -> bool {
+    if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    std::env::var("HOST")
+        .ok()
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .map(|local| host.eq_ignore_ascii_case(&local))
+        .unwrap_or(false)
+}
+
+fn percent_decode(raw: &str) -> Result<String, CwdDecodeError> {
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err(CwdDecodeError::Invalid(
+                    "terminal cwd file URL contains an incomplete percent escape".to_string(),
+                ));
+            }
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).map_err(|_| {
+                CwdDecodeError::Invalid(
+                    "terminal cwd file URL contains invalid percent escape bytes".to_string(),
+                )
+            })?;
+            let value = u8::from_str_radix(hex, 16).map_err(|_| {
+                CwdDecodeError::Invalid(
+                    "terminal cwd file URL contains invalid percent escape".to_string(),
+                )
+            })?;
+            decoded.push(value);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+
+    String::from_utf8(decoded).map_err(|_| {
+        CwdDecodeError::Invalid("terminal cwd file URL is not valid UTF-8".to_string())
+    })
 }
 
 async fn send_terminal_event(
@@ -720,6 +1437,433 @@ mod tests {
         .expect("terminal.exit frame exists");
 
         assert_eq!(exit["sessionId"], session_id);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn terminal_route_creates_workspace_terminal_with_binding() {
+        if !PathBuf::from(DEFAULT_TEST_SHELL).exists() {
+            return;
+        }
+
+        let state = AppState::new("test-version");
+        let cwd = std::env::temp_dir()
+            .canonicalize()
+            .expect("temp directory canonicalizes");
+        state
+            .workspace()
+            .set_directory_state(cwd.clone(), cwd.clone(), "local".to_string(), None);
+        let app = routes::router(state);
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("binds test listener");
+        let addr = listener.local_addr().expect("listener has local addr");
+
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .expect("serves test app");
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{addr}/terminal"))
+            .await
+            .expect("connects to terminal websocket");
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.createWorkspace",
+                    "id": "req-workspace",
+                    "data": {
+                        "cols": 80,
+                        "rows": 24
+                    }
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.createWorkspace");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_terminal_message_of_type(&mut socket, "terminal.created"),
+        )
+        .await
+        .expect("receives terminal.created before timeout")
+        .expect("terminal.created frame exists");
+        assert_eq!(created["id"], "req-workspace");
+        let session_id = created["sessionId"]
+            .as_str()
+            .expect("created message includes sessionId")
+            .to_string();
+        assert_eq!(created["data"]["cols"], 80);
+        assert_eq!(created["data"]["rows"], 24);
+        assert_eq!(created["data"]["binding"]["sessionId"], session_id);
+        assert_eq!(created["data"]["binding"]["kind"], "local");
+        assert_eq!(
+            created["data"]["binding"]["launchWorkspaceCurrentDirectory"].as_str(),
+            Some(cwd.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            created["data"]["binding"]["syncCapability"],
+            "bidirectionalLocal"
+        );
+
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.close",
+                    "sessionId": session_id,
+                    "id": "req-close",
+                    "data": {}
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.close");
+        let closed = next_terminal_message_of_type(&mut socket, "terminal.closed")
+            .await
+            .expect("receives terminal.closed");
+        assert_eq!(closed["id"], "req-close");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn terminal_route_updates_workspace_terminal_working_directory() {
+        if !PathBuf::from(DEFAULT_TEST_SHELL).exists() {
+            return;
+        }
+
+        let state = AppState::new("test-version");
+        let cwd = std::env::temp_dir()
+            .canonicalize()
+            .expect("temp directory canonicalizes");
+        state
+            .workspace()
+            .set_directory_state(cwd.clone(), cwd.clone(), "local".to_string(), None);
+        let app = routes::router(state);
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("binds test listener");
+        let addr = listener.local_addr().expect("listener has local addr");
+
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .expect("serves test app");
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{addr}/terminal"))
+            .await
+            .expect("connects to terminal websocket");
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.createWorkspace",
+                    "id": "req-workspace",
+                    "data": {
+                        "cols": 80,
+                        "rows": 24
+                    }
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.createWorkspace");
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_terminal_message_of_type(&mut socket, "terminal.created"),
+        )
+        .await
+        .expect("receives terminal.created before timeout")
+        .expect("terminal.created frame exists");
+        let session_id = created["sessionId"]
+            .as_str()
+            .expect("created message includes sessionId")
+            .to_string();
+
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.updateWorkingDirectory",
+                    "sessionId": session_id,
+                    "id": "req-cwd",
+                    "data": {
+                        "directoryUrl": format!("file://localhost{}", cwd.display())
+                    }
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.updateWorkingDirectory");
+
+        let updated = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_terminal_message_of_type(&mut socket, "terminal.workingDirectoryUpdated"),
+        )
+        .await
+        .expect("receives terminal.workingDirectoryUpdated before timeout")
+        .expect("terminal.workingDirectoryUpdated frame exists");
+        assert_eq!(updated["id"], "req-cwd");
+        assert_eq!(updated["sessionId"], session_id);
+        assert_eq!(
+            updated["data"]["reportedDirectory"].as_str(),
+            Some(cwd.to_string_lossy().as_ref())
+        );
+        assert_eq!(updated["data"]["openable"], true);
+        assert_eq!(updated["data"]["matchesCurrent"], true);
+        assert_eq!(
+            updated["data"]["binding"]["latestTerminalWorkingDirectory"].as_str(),
+            Some(cwd.to_string_lossy().as_ref())
+        );
+
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.close",
+                    "sessionId": session_id,
+                    "id": "req-close",
+                    "data": {}
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.close");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn terminal_route_queues_workspace_terminal_directory_change() {
+        if !PathBuf::from(DEFAULT_TEST_SHELL).exists() {
+            return;
+        }
+
+        let state = AppState::new("test-version");
+        let cwd = std::env::temp_dir()
+            .canonicalize()
+            .expect("temp directory canonicalizes");
+        let target = cwd.clone();
+        state
+            .workspace()
+            .set_directory_state(cwd.clone(), cwd.clone(), "local".to_string(), None);
+        let app = routes::router(state.clone());
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("binds test listener");
+        let addr = listener.local_addr().expect("listener has local addr");
+
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .expect("serves test app");
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{addr}/terminal"))
+            .await
+            .expect("connects to terminal websocket");
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.createWorkspace",
+                    "id": "req-workspace",
+                    "data": {
+                        "cols": 80,
+                        "rows": 24
+                    }
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.createWorkspace");
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_terminal_message_of_type(&mut socket, "terminal.created"),
+        )
+        .await
+        .expect("receives terminal.created before timeout")
+        .expect("terminal.created frame exists");
+        let session_id = created["sessionId"]
+            .as_str()
+            .expect("created message includes sessionId")
+            .to_string();
+
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.changeDirectory",
+                    "sessionId": session_id,
+                    "id": "req-cd",
+                    "data": {
+                        "targetDirectory": target
+                    }
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.changeDirectory");
+
+        let changed = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_terminal_message_of_type(&mut socket, "terminal.directoryChangeQueued"),
+        )
+        .await
+        .expect("receives terminal.directoryChangeQueued before timeout")
+        .expect("terminal.directoryChangeQueued frame exists");
+        assert_eq!(changed["id"], "req-cd");
+        assert_eq!(changed["sessionId"], session_id);
+        assert_eq!(changed["data"]["queued"], true);
+        assert_eq!(
+            changed["data"]["targetDirectory"].as_str(),
+            Some(target.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            changed["data"]["binding"]["sessionId"].as_str(),
+            Some(session_id.as_str())
+        );
+        let parsed_session_id = Uuid::parse_str(&session_id).expect("session id is uuid");
+        assert_eq!(
+            state
+                .workspace_terminal_bindings()
+                .get(parsed_session_id)
+                .expect("binding remains visible")
+                .pending_target_directory
+                .as_deref(),
+            Some(target.to_string_lossy().as_ref())
+        );
+
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.close",
+                    "sessionId": session_id,
+                    "id": "req-close",
+                    "data": {}
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.close");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn terminal_route_compares_stored_working_directory_against_live_workspace() {
+        if !PathBuf::from(DEFAULT_TEST_SHELL).exists() {
+            return;
+        }
+
+        let state = AppState::new("test-version");
+        let cwd = std::env::temp_dir()
+            .canonicalize()
+            .expect("temp directory canonicalizes");
+        state
+            .workspace()
+            .set_directory_state(cwd.clone(), cwd.clone(), "local".to_string(), None);
+        let app = routes::router(state.clone());
+        let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("binds test listener");
+        let addr = listener.local_addr().expect("listener has local addr");
+
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .expect("serves test app");
+        });
+
+        let (mut socket, _) = connect_async(format!("ws://{addr}/terminal"))
+            .await
+            .expect("connects to terminal websocket");
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.createWorkspace",
+                    "id": "req-workspace",
+                    "data": {
+                        "cols": 80,
+                        "rows": 24
+                    }
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.createWorkspace");
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_terminal_message_of_type(&mut socket, "terminal.created"),
+        )
+        .await
+        .expect("receives terminal.created before timeout")
+        .expect("terminal.created frame exists");
+        let session_id = created["sessionId"]
+            .as_str()
+            .expect("created message includes sessionId")
+            .to_string();
+        let parsed_session_id = Uuid::parse_str(&session_id).expect("session id is uuid");
+        state
+            .workspace_terminal_bindings()
+            .record_terminal_working_directory(
+                parsed_session_id,
+                cwd.to_string_lossy().into_owned(),
+            )
+            .expect("records cwd");
+
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.compareWorkingDirectory",
+                    "sessionId": session_id,
+                    "id": "req-compare",
+                    "data": {}
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.compareWorkingDirectory");
+
+        let compared = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            next_terminal_message_of_type(&mut socket, "terminal.workingDirectoryUpdated"),
+        )
+        .await
+        .expect("receives terminal.workingDirectoryUpdated before timeout")
+        .expect("terminal.workingDirectoryUpdated frame exists");
+        assert_eq!(compared["id"], "req-compare");
+        assert_eq!(compared["sessionId"], session_id);
+        assert_eq!(compared["data"]["openable"], true);
+        assert_eq!(compared["data"]["matchesCurrent"], true);
+        assert_eq!(
+            compared["data"]["reportedDirectory"].as_str(),
+            Some(cwd.to_string_lossy().as_ref())
+        );
+
+        socket
+            .send(TungsteniteMessage::Text(
+                json!({
+                    "type": "terminal.close",
+                    "sessionId": session_id,
+                    "id": "req-close",
+                    "data": {}
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("sends terminal.close");
 
         server.abort();
     }

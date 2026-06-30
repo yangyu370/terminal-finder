@@ -374,6 +374,7 @@ dependencies = [
  "axum",
  "base64",
  "futures-util",
+ "libc",
  "opendal",
  "portable-pty",
  "serde",

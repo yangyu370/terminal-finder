@@ -11,6 +11,8 @@ use portable_pty::{CommandBuilder, ExitStatus, PtySize, native_pty_system};
 use tokio::sync::mpsc as tokio_mpsc;
 use uuid::Uuid;
 
+use crate::terminal::shell_integration::ShellIntegration;
+
 const LOG_TARGET: &str = "terminal";
 const DEFAULT_SHELL: &str = "/bin/zsh";
 const DEFAULT_TERM: &str = "xterm-256color";
@@ -23,6 +25,7 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub enum TerminalLaunch {
     LocalShell {
         cwd: PathBuf,
+        integration: Option<ShellIntegration>,
     },
     DockerExec {
         container: String,
@@ -109,6 +112,7 @@ impl TerminalSession {
             pixel_height: 0,
         })?;
 
+        let resources = session_resources(&launch);
         let command = build_command(&launch);
 
         let child = pair.slave.spawn_command(command)?;
@@ -120,7 +124,9 @@ impl TerminalSession {
         let (command_tx, command_rx) = mpsc::channel();
 
         spawn_reader_thread(session_id, reader, events.clone());
-        spawn_control_thread(session_id, master, writer, child, command_rx, events);
+        spawn_control_thread(
+            session_id, master, writer, child, command_rx, events, resources,
+        );
 
         Ok(SessionHandle {
             session_id,
@@ -131,10 +137,14 @@ impl TerminalSession {
 
 fn build_command(launch: &TerminalLaunch) -> CommandBuilder {
     let mut command = match launch {
-        TerminalLaunch::LocalShell { cwd } => {
+        TerminalLaunch::LocalShell { cwd, integration } => {
             let mut command = CommandBuilder::new(DEFAULT_SHELL);
             command.arg("-l");
+            command.arg("-i");
             command.cwd(cwd);
+            if let Some(integration) = integration {
+                configure_shell_integration(&mut command, integration);
+            }
             command
         }
         TerminalLaunch::DockerExec {
@@ -162,6 +172,23 @@ fn build_command(launch: &TerminalLaunch) -> CommandBuilder {
     };
     configure_terminal_environment(&mut command);
     command
+}
+
+fn session_resources(launch: &TerminalLaunch) -> Option<ShellIntegration> {
+    match launch {
+        TerminalLaunch::LocalShell { integration, .. } => integration.clone(),
+        TerminalLaunch::DockerExec { .. } => None,
+    }
+}
+
+fn configure_shell_integration(command: &mut CommandBuilder, integration: &ShellIntegration) {
+    command.env("ZDOTDIR", integration.dir());
+    command.env("TF_CD_REQUEST", integration.request_file());
+    command.env("TF_CD_WAKE_FIFO", integration.wake_fifo());
+    let user_zdotdir = env::var_os("ZDOTDIR")
+        .or_else(|| env::var_os("HOME"))
+        .unwrap_or_default();
+    command.env("TF_USER_ZDOTDIR", user_zdotdir);
 }
 
 fn configure_terminal_environment(command: &mut CommandBuilder) {
@@ -252,10 +279,12 @@ fn spawn_control_thread(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     commands: mpsc::Receiver<SessionCommand>,
     events: tokio_mpsc::Sender<TerminalEvent>,
+    resources: Option<ShellIntegration>,
 ) {
     thread::Builder::new()
         .name(format!("terminal-control-{session_id}"))
         .spawn(move || {
+            let _resources = resources;
             loop {
                 match commands.recv_timeout(EXIT_POLL_INTERVAL) {
                     Ok(SessionCommand::Input(bytes)) => {
@@ -356,6 +385,7 @@ fn send_exit(events: &tokio_mpsc::Sender<TerminalEvent>, session_id: Uuid, statu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::shell_integration::ShellIntegration;
 
     #[test]
     fn utf8_locale_detection_accepts_common_spellings() {
@@ -463,6 +493,7 @@ mod tests {
         // 验证方法是看 PATH 跟当前进程一致（continue inherits），而非被 DockerExec 注入。
         let command = build_command(&TerminalLaunch::LocalShell {
             cwd: env::current_dir().expect("current directory is available"),
+            integration: None,
         });
         let inherited = command
             .get_env("PATH")
@@ -480,6 +511,7 @@ mod tests {
     fn local_shell_launch_uses_default_shell() {
         let command = build_command(&TerminalLaunch::LocalShell {
             cwd: env::current_dir().expect("current directory is available"),
+            integration: None,
         });
         let argv: Vec<_> = command
             .get_argv()
@@ -488,6 +520,111 @@ mod tests {
             .collect();
 
         assert_eq!(argv.first().map(String::as_str), Some(DEFAULT_SHELL));
+    }
+
+    #[test]
+    fn local_shell_launch_with_integration_sets_zdotdir_and_request_env() {
+        let integration = ShellIntegration::create().expect("integration");
+        let command = build_command(&TerminalLaunch::LocalShell {
+            cwd: env::current_dir().expect("current directory is available"),
+            integration: Some(integration.clone()),
+        });
+
+        assert_eq!(
+            command.get_env("ZDOTDIR").expect("ZDOTDIR configured"),
+            integration.dir().as_os_str()
+        );
+        assert_eq!(
+            command
+                .get_env("TF_CD_REQUEST")
+                .expect("TF_CD_REQUEST configured"),
+            integration.request_file().as_os_str()
+        );
+        assert_eq!(
+            command
+                .get_env("TF_CD_WAKE_FIFO")
+                .expect("TF_CD_WAKE_FIFO configured"),
+            integration.wake_fifo().as_os_str()
+        );
+        assert!(command.get_env("TF_USER_ZDOTDIR").is_some());
+    }
+
+    #[tokio::test]
+    async fn local_shell_with_integration_emits_osc7_for_initial_cwd() {
+        if !PathBuf::from(DEFAULT_SHELL).exists() {
+            return;
+        }
+
+        let cwd = env::current_dir()
+            .expect("current directory is available")
+            .canonicalize()
+            .expect("current directory canonicalizes");
+        let integration = ShellIntegration::create().expect("integration");
+        let (events, mut event_rx) = tokio_mpsc::channel(32);
+        let session = TerminalSession::spawn(
+            TerminalLaunch::LocalShell {
+                cwd: cwd.clone(),
+                integration: Some(integration),
+            },
+            80,
+            24,
+            events,
+        )
+        .expect("terminal session spawns");
+
+        let mut output = Vec::new();
+        let saw_osc7 = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    TerminalEvent::Output { bytes, .. } => {
+                        output.extend(bytes);
+                        if output
+                            .windows(b"\x1b]7;file://".len())
+                            .any(|window| window == b"\x1b]7;file://")
+                        {
+                            return true;
+                        }
+                    }
+                    TerminalEvent::Exit { .. } => return false,
+                    TerminalEvent::Error { message, .. } => {
+                        panic!("terminal session emitted error: {message}")
+                    }
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+
+        if !saw_osc7 {
+            let _ = session.input(
+                b"print -r -- __TF_DEBUG_ZDOTDIR__=$ZDOTDIR; typeset -p precmd_functions 2>&1; whence _tf_precmd 2>&1; exit\n"
+                    .to_vec(),
+            );
+            let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                while let Some(event) = event_rx.recv().await {
+                    match event {
+                        TerminalEvent::Output { bytes, .. } => output.extend(bytes),
+                        TerminalEvent::Exit { .. } => return,
+                        TerminalEvent::Error { .. } => return,
+                    }
+                }
+            })
+            .await;
+        }
+
+        session.close();
+
+        assert!(
+            saw_osc7,
+            "terminal output did not include OSC 7; output={}",
+            String::from_utf8_lossy(&output)
+        );
+        assert!(
+            String::from_utf8_lossy(&output).contains(&cwd.to_string_lossy().replace(' ', "%20")),
+            "terminal output did not include cwd; output={}",
+            String::from_utf8_lossy(&output)
+        );
     }
 
     #[tokio::test]
@@ -500,6 +637,7 @@ mod tests {
         let session = TerminalSession::spawn(
             TerminalLaunch::LocalShell {
                 cwd: env::current_dir().expect("current directory is available"),
+                integration: None,
             },
             80,
             24,
