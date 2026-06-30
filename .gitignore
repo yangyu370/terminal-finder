@@ -17,6 +17,7 @@ DerivedData/
 
 # Local agent/project planning notes
 agent.md
+AGENTS.md
 DEVELOPMENT_PLAN.md
 clients/MacOS/agent.md
 core/agent.md
