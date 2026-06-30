@@ -352,7 +352,7 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
-// Initial value and increment amount for handles. 
+// Initial value and increment amount for handles.
 // These ensure that SWIFT handles always have the lowest bit set
 fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
 fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
@@ -560,20 +560,30 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
  * 被 Swift 持有的核心句柄。`#[derive(uniffi::Object)]` 让它以引用（Arc）形式跨边界传递。
  */
 public protocol CoreHandleProtocol: AnyObject, Sendable {
-    
+
+    /**
+     * Queue a controlled directory change for a local workspace terminal.
+     */
+    func changeTerminalDirectory(sessionId: String, targetDirectory: String) async throws  -> TerminalDirectoryChangeDto
+
     /**
      * 关闭会话并终止 PTY 进程，对应 `terminal.close`。
      * 进程的实际结束仍由 `listener` 的 `on_exit` 报告。
      */
-    func closeTerminal(sessionId: String) throws 
-    
+    func closeTerminal(sessionId: String) throws
+
+    /**
+     * Recompute terminal-vs-Finder cwd status from the latest recorded terminal cwd.
+     */
+    func compareTerminalWorkingDirectory(sessionId: String) async throws  -> TerminalWorkingDirectoryUpdateDto
+
     /**
      * Capability flags for the provider behind `connection_id`. Forces the
      * provider into the cache via `resolve_provider` so the caller sees the
      * real OpenDAL-backed caps (not the registry's pre-construction guess).
      */
     func connectionCapabilities(connectionId: String) throws  -> ProviderCapsDto
-    
+
     /**
      * Register an S3 connection. Credentials live in-memory only;
      * the client (Swift) owns Keychain persistence and re-passes
@@ -583,20 +593,20 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
      * boundary but MUST NEVER be logged — not at info, not at debug.
      */
     func connectionCreate(displayName: String, endpoint: String, region: String, bucket: String, basePrefix: String, pathStyle: Bool, accessKeyId: String, secretAccessKey: String)  -> String
-    
+
     /**
      * List all registered connections (no credentials returned).
      */
     func connectionList()  -> [ConnectionInfoDto]
-    
+
     /**
      * Remove a connection and its in-memory credentials. Also drops any
      * cached `S3Provider` and runtime mount for that connection so a future
      * call with the same `connection_id` cannot reuse stale resources.
      * Returns `Err(ConnectionNotFound)` if unknown.
      */
-    func connectionRemove(connectionId: String) async throws 
-    
+    func connectionRemove(connectionId: String) async throws
+
     /**
      * Re-register a connection using a caller-provided id. Intended for
      * app startup: the client side persists `connection_id` alongside the
@@ -608,101 +618,111 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
      * SECURITY: same credential handling rules as `connection_create` —
      * arguments are received by value across FFI but MUST NOT be logged.
      */
-    func connectionRestore(connectionId: String, displayName: String, endpoint: String, region: String, bucket: String, basePrefix: String, pathStyle: Bool, accessKeyId: String, secretAccessKey: String) throws 
-    
+    func connectionRestore(connectionId: String, displayName: String, endpoint: String, region: String, bucket: String, basePrefix: String, pathStyle: Bool, accessKeyId: String, secretAccessKey: String) throws
+
     /**
      * Open a terminal rooted at a mounted connection workspace.
      */
     func createConnectionTerminal(connectionId: String, cols: UInt16, rows: UInt16, listener: TerminalEventListener) async throws  -> String
-    
+
     /**
      * 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
      * 客户端应通过 `connection_capabilities().has_native_directories`
      * 判断是否需要在 UI 上提示"零字节占位"语义。
      */
-    func createRemoteDirectory(connectionId: String?, path: String) async throws 
-    
+    func createRemoteDirectory(connectionId: String?, path: String) async throws
+
     /**
      * 创建 PTY 会话，对应 `terminal.create`。返回 sessionId；
      * 输出 / 退出 / 错误经 `listener` 回调送达（替代 `/terminal` WebSocket 下行流）。
      */
     func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: TerminalEventListener) throws  -> String
-    
+
+    /**
+     * Create a terminal bound to the current workspace context.
+     */
+    func createWorkspaceTerminal(cols: UInt16, rows: UInt16, listener: TerminalEventListener) async throws  -> WorkspaceTerminalCreateDto
+
     /**
      * 删除 `path` 指向的对象/文件/目录。Local 区分文件 / 目录，目录走
      * `remove_dir_all`；S3 同样按 stat 探测 `<key>/` 是否为目录 marker，
      * 是就走 `remove_all(<key>/)` 递归删除 marker + 子对象，否则按单 key
      * 删。两边行为对齐：删一个非空目录会把里面所有内容一并清掉。
      */
-    func deleteEntry(connectionId: String?, path: String) async throws 
-    
+    func deleteEntry(connectionId: String?, path: String) async throws
+
     /**
      * 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
      * 50 MiB 上限由 `VfsProvider::read` 强制；超限返回 `provider_error`。
      * 二进制写盘走 `spawn_blocking`，避免阻塞 tokio runtime。
      */
-    func downloadFile(connectionId: String?, remotePath: String, localDestination: String) async throws 
-    
+    func downloadFile(connectionId: String?, remotePath: String, localDestination: String) async throws
+
     /**
      * 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
      * connection 路由规则。
      */
     func listDirectory(path: String, connectionId: String?) async throws  -> DirectoryListingDto
-    
+
     /**
      * 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
      * S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
      * 传入注册过的 S3 connection id 时落到对应 S3Provider。
      */
     func openDirectory(path: String, connectionId: String?) async throws  -> OpenDirectoryDto
-    
+
     /**
      * 连通性检查，对应 `core.ping`。同步、无 I/O。
      */
     func ping()  -> PingInfo
-    
+
     /**
      * 重命名/移动 `from` → `to`。S3 是 copy + delete（**非原子**），客户端
      * 应通过 `connection_capabilities().can_rename == false` 在 UI 上提示。
      * `from` 和 `to` 必须落在同一个 connection 上；本方法不做跨 provider 搬运。
      */
-    func renameEntry(connectionId: String?, from: String, to: String) async throws 
-    
+    func renameEntry(connectionId: String?, from: String, to: String) async throws
+
     /**
      * 调整 PTY 尺寸，对应 `terminal.resize`。
      */
-    func resizeTerminal(sessionId: String, cols: UInt16, rows: UInt16) throws 
-    
+    func resizeTerminal(sessionId: String, cols: UInt16, rows: UInt16) throws
+
     /**
      * Send a `transfer_progress` envelope through the shared broadcast
      * channel so Swift `EventClient` subscribers can drive progress bars.
      * Best-effort: a closed channel just drops the event (no subscribers).
      */
-    func sendProgressEvent(connectionId: String, path: String, bytesTransferred: UInt64, totalBytes: UInt64) 
-    
+    func sendProgressEvent(connectionId: String, path: String, bytesTransferred: UInt64, totalBytes: UInt64)
+
     /**
      * 写入终端输入，对应 `terminal.input`。高频路径：同步、快返回、无 base64。
      */
-    func sendTerminalInput(sessionId: String, data: Data) throws 
-    
+    func sendTerminalInput(sessionId: String, data: Data) throws
+
     /**
      * Tear down the current workspace runtime instance.
      */
-    func shutdownWorkspace() async throws 
-    
+    func shutdownWorkspace() async throws
+
+    /**
+     * Record and validate a terminal cwd reported by SwiftTerm's OSC 7 callback.
+     */
+    func updateTerminalWorkingDirectory(sessionId: String, directoryUrl: String) async throws  -> TerminalWorkingDirectoryUpdateDto
+
     /**
      * 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
      * 上传前后各发一次 `transfer_progress` 事件（0 / total），让 Swift
      * 端可以驱动进度条。50 MiB 上限来自 `VfsProvider::read` 的对称约束:
      * 这里复用同一个 inline 读取语义，避免临时落盘。
      */
-    func uploadFile(connectionId: String?, remotePath: String, localSource: String) async throws 
-    
+    func uploadFile(connectionId: String?, remotePath: String, localSource: String) async throws
+
     /**
      * 当前工作区状态，对应 `workspace.getState`。同步、只读内存状态。
      */
     func workspaceState()  -> WorkspaceStateDto
-    
+
 }
 /**
  * 被 Swift 持有的核心句柄。`#[derive(uniffi::Object)]` 让它以引用（Arc）形式跨边界传递。
@@ -767,9 +787,29 @@ public convenience init() {
         try! rustCall { uniffi_terminal_finder_core_fn_free_corehandle(handle, $0) }
     }
 
-    
 
-    
+
+
+    /**
+     * Queue a controlled directory change for a local workspace terminal.
+     */
+open func changeTerminalDirectory(sessionId: String, targetDirectory: String)async throws  -> TerminalDirectoryChangeDto  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_change_terminal_directory(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId),FfiConverterString.lower(targetDirectory)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTerminalDirectoryChangeDto_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+
     /**
      * 关闭会话并终止 PTY 进程，对应 `terminal.close`。
      * 进程的实际结束仍由 `listener` 的 `on_exit` 报告。
@@ -781,7 +821,27 @@ open func closeTerminal(sessionId: String)throws   {try rustCallWithError(FfiCon
     )
 }
 }
-    
+
+    /**
+     * Recompute terminal-vs-Finder cwd status from the latest recorded terminal cwd.
+     */
+open func compareTerminalWorkingDirectory(sessionId: String)async throws  -> TerminalWorkingDirectoryUpdateDto  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_compare_terminal_working_directory(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTerminalWorkingDirectoryUpdateDto_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+
     /**
      * Capability flags for the provider behind `connection_id`. Forces the
      * provider into the cache via `resolve_provider` so the caller sees the
@@ -795,7 +855,7 @@ open func connectionCapabilities(connectionId: String)throws  -> ProviderCapsDto
     )
 })
 }
-    
+
     /**
      * Register an S3 connection. Credentials live in-memory only;
      * the client (Swift) owns Keychain persistence and re-passes
@@ -819,7 +879,7 @@ open func connectionCreate(displayName: String, endpoint: String, region: String
     )
 })
 }
-    
+
     /**
      * List all registered connections (no credentials returned).
      */
@@ -830,7 +890,7 @@ open func connectionList() -> [ConnectionInfoDto]  {
     )
 })
 }
-    
+
     /**
      * Remove a connection and its in-memory credentials. Also drops any
      * cached `S3Provider` and runtime mount for that connection so a future
@@ -853,7 +913,7 @@ open func connectionRemove(connectionId: String)async throws   {
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
     /**
      * Re-register a connection using a caller-provided id. Intended for
      * app startup: the client side persists `connection_id` alongside the
@@ -880,7 +940,7 @@ open func connectionRestore(connectionId: String, displayName: String, endpoint:
     )
 }
 }
-    
+
     /**
      * Open a terminal rooted at a mounted connection workspace.
      */
@@ -900,7 +960,7 @@ open func createConnectionTerminal(connectionId: String, cols: UInt16, rows: UIn
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
     /**
      * 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
      * 客户端应通过 `connection_capabilities().has_native_directories`
@@ -922,7 +982,7 @@ open func createRemoteDirectory(connectionId: String?, path: String)async throws
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
     /**
      * 创建 PTY 会话，对应 `terminal.create`。返回 sessionId；
      * 输出 / 退出 / 错误经 `listener` 回调送达（替代 `/terminal` WebSocket 下行流）。
@@ -938,7 +998,27 @@ open func createTerminal(cwd: String?, cols: UInt16, rows: UInt16, listener: Ter
     )
 })
 }
-    
+
+    /**
+     * Create a terminal bound to the current workspace context.
+     */
+open func createWorkspaceTerminal(cols: UInt16, rows: UInt16, listener: TerminalEventListener)async throws  -> WorkspaceTerminalCreateDto  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_create_workspace_terminal(
+                    self.uniffiCloneHandle(),
+                    FfiConverterUInt16.lower(cols),FfiConverterUInt16.lower(rows),FfiConverterTypeTerminalEventListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeWorkspaceTerminalCreateDto_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+
     /**
      * 删除 `path` 指向的对象/文件/目录。Local 区分文件 / 目录，目录走
      * `remove_dir_all`；S3 同样按 stat 探测 `<key>/` 是否为目录 marker，
@@ -961,7 +1041,7 @@ open func deleteEntry(connectionId: String?, path: String)async throws   {
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
     /**
      * 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
      * 50 MiB 上限由 `VfsProvider::read` 强制；超限返回 `provider_error`。
@@ -983,7 +1063,7 @@ open func downloadFile(connectionId: String?, remotePath: String, localDestinati
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
     /**
      * 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
      * connection 路由规则。
@@ -1004,7 +1084,7 @@ open func listDirectory(path: String, connectionId: String?)async throws  -> Dir
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
     /**
      * 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
      * S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
@@ -1026,7 +1106,7 @@ open func openDirectory(path: String, connectionId: String?)async throws  -> Ope
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
     /**
      * 连通性检查，对应 `core.ping`。同步、无 I/O。
      */
@@ -1037,7 +1117,7 @@ open func ping() -> PingInfo  {
     )
 })
 }
-    
+
     /**
      * 重命名/移动 `from` → `to`。S3 是 copy + delete（**非原子**），客户端
      * 应通过 `connection_capabilities().can_rename == false` 在 UI 上提示。
@@ -1059,7 +1139,7 @@ open func renameEntry(connectionId: String?, from: String, to: String)async thro
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
     /**
      * 调整 PTY 尺寸，对应 `terminal.resize`。
      */
@@ -1072,7 +1152,7 @@ open func resizeTerminal(sessionId: String, cols: UInt16, rows: UInt16)throws   
     )
 }
 }
-    
+
     /**
      * Send a `transfer_progress` envelope through the shared broadcast
      * channel so Swift `EventClient` subscribers can drive progress bars.
@@ -1088,7 +1168,7 @@ open func sendProgressEvent(connectionId: String, path: String, bytesTransferred
     )
 }
 }
-    
+
     /**
      * 写入终端输入，对应 `terminal.input`。高频路径：同步、快返回、无 base64。
      */
@@ -1100,7 +1180,7 @@ open func sendTerminalInput(sessionId: String, data: Data)throws   {try rustCall
     )
 }
 }
-    
+
     /**
      * Tear down the current workspace runtime instance.
      */
@@ -1110,7 +1190,7 @@ open func shutdownWorkspace()async throws   {
             rustFutureFunc: {
                 uniffi_terminal_finder_core_fn_method_corehandle_shutdown_workspace(
                     self.uniffiCloneHandle()
-                    
+
                 )
             },
             pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
@@ -1120,7 +1200,27 @@ open func shutdownWorkspace()async throws   {
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
+    /**
+     * Record and validate a terminal cwd reported by SwiftTerm's OSC 7 callback.
+     */
+open func updateTerminalWorkingDirectory(sessionId: String, directoryUrl: String)async throws  -> TerminalWorkingDirectoryUpdateDto  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_terminal_finder_core_fn_method_corehandle_update_terminal_working_directory(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId),FfiConverterString.lower(directoryUrl)
+                )
+            },
+            pollFunc: ffi_terminal_finder_core_rust_future_poll_rust_buffer,
+            completeFunc: ffi_terminal_finder_core_rust_future_complete_rust_buffer,
+            freeFunc: ffi_terminal_finder_core_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTerminalWorkingDirectoryUpdateDto_lift,
+            errorHandler: FfiConverterTypeCoreError_lift
+        )
+}
+
     /**
      * 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
      * 上传前后各发一次 `transfer_progress` 事件（0 / total），让 Swift
@@ -1143,7 +1243,7 @@ open func uploadFile(connectionId: String?, remotePath: String, localSource: Str
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
-    
+
     /**
      * 当前工作区状态，对应 `workspace.getState`。同步、只读内存状态。
      */
@@ -1154,9 +1254,9 @@ open func workspaceState() -> WorkspaceStateDto  {
     )
 })
 }
-    
 
-    
+
+
 }
 
 
@@ -1212,23 +1312,23 @@ public func FfiConverterTypeCoreHandle_lower(_ value: CoreHandle) -> UInt64 {
  * （如主线程），不要在回调里长时间阻塞，否则会背压 PTY 输出。
  */
 public protocol TerminalEventListener: AnyObject, Sendable {
-    
+
     /**
      * 一段 PTY 原始输出字节（含转义序列，不保证 UTF-8 完整性）。
      */
-    func onOutput(data: Data) 
-    
+    func onOutput(data: Data)
+
     /**
      * PTY 进程结束。`code` 为退出码；被信号终止时 `signal` 置位。
      */
-    func onExit(code: Int32?, signal: Int32?) 
-    
+    func onExit(code: Int32?, signal: Int32?)
+
     /**
      * 会话内错误（`write_failed` / `resize_failed` / `read_failed` / `wait_failed`）。
      * 不一定终止会话。
      */
-    func onError(code: String, message: String) 
-    
+    func onError(code: String, message: String)
+
 }
 /**
  * 终端事件监听器，由 Swift 侧实现（`with_foreign`）。
@@ -1286,9 +1386,9 @@ open class TerminalEventListenerImpl: TerminalEventListener, @unchecked Sendable
         try! rustCall { uniffi_terminal_finder_core_fn_free_terminaleventlistener(handle, $0) }
     }
 
-    
 
-    
+
+
     /**
      * 一段 PTY 原始输出字节（含转义序列，不保证 UTF-8 完整性）。
      */
@@ -1299,7 +1399,7 @@ open func onOutput(data: Data)  {try! rustCall() {
     )
 }
 }
-    
+
     /**
      * PTY 进程结束。`code` 为退出码；被信号终止时 `signal` 置位。
      */
@@ -1311,7 +1411,7 @@ open func onExit(code: Int32?, signal: Int32?)  {try! rustCall() {
     )
 }
 }
-    
+
     /**
      * 会话内错误（`write_failed` / `resize_failed` / `read_failed` / `wait_failed`）。
      * 不一定终止会话。
@@ -1324,9 +1424,9 @@ open func onError(code: String, message: String)  {try! rustCall() {
     )
 }
 }
-    
 
-    
+
+
 }
 
 
@@ -1369,7 +1469,7 @@ fileprivate struct UniffiCallbackInterfaceTerminalEventListener {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -1395,7 +1495,7 @@ fileprivate struct UniffiCallbackInterfaceTerminalEventListener {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -1421,7 +1521,7 @@ fileprivate struct UniffiCallbackInterfaceTerminalEventListener {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -1522,9 +1622,9 @@ public struct ConnectionInfoDto: Equatable, Hashable {
         self.basePrefix = basePrefix
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1538,10 +1638,10 @@ public struct FfiConverterTypeConnectionInfoDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConnectionInfoDto {
         return
             try ConnectionInfoDto(
-                connectionId: FfiConverterString.read(from: &buf), 
-                displayName: FfiConverterString.read(from: &buf), 
-                endpoint: FfiConverterString.read(from: &buf), 
-                bucket: FfiConverterString.read(from: &buf), 
+                connectionId: FfiConverterString.read(from: &buf),
+                displayName: FfiConverterString.read(from: &buf),
+                endpoint: FfiConverterString.read(from: &buf),
+                bucket: FfiConverterString.read(from: &buf),
                 basePrefix: FfiConverterString.read(from: &buf)
         )
     }
@@ -1593,9 +1693,9 @@ public struct DirectoryEntryDto: Equatable, Hashable {
         self.modifiedAt = modifiedAt
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1609,11 +1709,11 @@ public struct FfiConverterTypeDirectoryEntryDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectoryEntryDto {
         return
             try DirectoryEntryDto(
-                name: FfiConverterString.read(from: &buf), 
-                path: FfiConverterString.read(from: &buf), 
-                kind: FfiConverterTypeEntryKindDto.read(from: &buf), 
-                isDirectory: FfiConverterBool.read(from: &buf), 
-                size: FfiConverterOptionUInt64.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf),
+                path: FfiConverterString.read(from: &buf),
+                kind: FfiConverterTypeEntryKindDto.read(from: &buf),
+                isDirectory: FfiConverterBool.read(from: &buf),
+                size: FfiConverterOptionUInt64.read(from: &buf),
                 modifiedAt: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -1658,9 +1758,9 @@ public struct DirectoryListingDto: Equatable, Hashable {
         self.entries = entries
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1674,7 +1774,7 @@ public struct FfiConverterTypeDirectoryListingDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectoryListingDto {
         return
             try DirectoryListingDto(
-                path: FfiConverterString.read(from: &buf), 
+                path: FfiConverterString.read(from: &buf),
                 entries: FfiConverterSequenceTypeDirectoryEntryDto.read(from: &buf)
         )
     }
@@ -1715,9 +1815,9 @@ public struct OpenDirectoryDto: Equatable, Hashable {
         self.listing = listing
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1731,7 +1831,7 @@ public struct FfiConverterTypeOpenDirectoryDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OpenDirectoryDto {
         return
             try OpenDirectoryDto(
-                state: FfiConverterTypeWorkspaceStateDto.read(from: &buf), 
+                state: FfiConverterTypeWorkspaceStateDto.read(from: &buf),
                 listing: FfiConverterTypeDirectoryListingDto.read(from: &buf)
         )
     }
@@ -1772,9 +1872,9 @@ public struct PingInfo: Equatable, Hashable {
         self.version = version
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1788,7 +1888,7 @@ public struct FfiConverterTypePingInfo: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PingInfo {
         return
             try PingInfo(
-                service: FfiConverterString.read(from: &buf), 
+                service: FfiConverterString.read(from: &buf),
                 version: FfiConverterString.read(from: &buf)
         )
     }
@@ -1835,9 +1935,9 @@ public struct ProviderCapsDto: Equatable, Hashable {
         self.hasNativeDirectories = hasNativeDirectories
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1851,9 +1951,9 @@ public struct FfiConverterTypeProviderCapsDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProviderCapsDto {
         return
             try ProviderCapsDto(
-                canRename: FfiConverterBool.read(from: &buf), 
-                canSymlink: FfiConverterBool.read(from: &buf), 
-                canWrite: FfiConverterBool.read(from: &buf), 
+                canRename: FfiConverterBool.read(from: &buf),
+                canSymlink: FfiConverterBool.read(from: &buf),
+                canWrite: FfiConverterBool.read(from: &buf),
                 hasNativeDirectories: FfiConverterBool.read(from: &buf)
         )
     }
@@ -1882,6 +1982,134 @@ public func FfiConverterTypeProviderCapsDto_lower(_ value: ProviderCapsDto) -> R
 }
 
 
+public struct TerminalDirectoryChangeDto: Equatable, Hashable {
+    public var binding: WorkspaceTerminalBindingDto
+    public var queued: Bool
+    public var targetDirectory: String
+    public var reason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(binding: WorkspaceTerminalBindingDto, queued: Bool, targetDirectory: String, reason: String?) {
+        self.binding = binding
+        self.queued = queued
+        self.targetDirectory = targetDirectory
+        self.reason = reason
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension TerminalDirectoryChangeDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTerminalDirectoryChangeDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TerminalDirectoryChangeDto {
+        return
+            try TerminalDirectoryChangeDto(
+                binding: FfiConverterTypeWorkspaceTerminalBindingDto.read(from: &buf),
+                queued: FfiConverterBool.read(from: &buf),
+                targetDirectory: FfiConverterString.read(from: &buf),
+                reason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TerminalDirectoryChangeDto, into buf: inout [UInt8]) {
+        FfiConverterTypeWorkspaceTerminalBindingDto.write(value.binding, into: &buf)
+        FfiConverterBool.write(value.queued, into: &buf)
+        FfiConverterString.write(value.targetDirectory, into: &buf)
+        FfiConverterOptionString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTerminalDirectoryChangeDto_lift(_ buf: RustBuffer) throws -> TerminalDirectoryChangeDto {
+    return try FfiConverterTypeTerminalDirectoryChangeDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTerminalDirectoryChangeDto_lower(_ value: TerminalDirectoryChangeDto) -> RustBuffer {
+    return FfiConverterTypeTerminalDirectoryChangeDto.lower(value)
+}
+
+
+public struct TerminalWorkingDirectoryUpdateDto: Equatable, Hashable {
+    public var binding: WorkspaceTerminalBindingDto
+    public var reportedDirectory: String
+    public var openable: Bool
+    public var matchesCurrent: Bool
+    public var reason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(binding: WorkspaceTerminalBindingDto, reportedDirectory: String, openable: Bool, matchesCurrent: Bool, reason: String?) {
+        self.binding = binding
+        self.reportedDirectory = reportedDirectory
+        self.openable = openable
+        self.matchesCurrent = matchesCurrent
+        self.reason = reason
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension TerminalWorkingDirectoryUpdateDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTerminalWorkingDirectoryUpdateDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TerminalWorkingDirectoryUpdateDto {
+        return
+            try TerminalWorkingDirectoryUpdateDto(
+                binding: FfiConverterTypeWorkspaceTerminalBindingDto.read(from: &buf),
+                reportedDirectory: FfiConverterString.read(from: &buf),
+                openable: FfiConverterBool.read(from: &buf),
+                matchesCurrent: FfiConverterBool.read(from: &buf),
+                reason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TerminalWorkingDirectoryUpdateDto, into buf: inout [UInt8]) {
+        FfiConverterTypeWorkspaceTerminalBindingDto.write(value.binding, into: &buf)
+        FfiConverterString.write(value.reportedDirectory, into: &buf)
+        FfiConverterBool.write(value.openable, into: &buf)
+        FfiConverterBool.write(value.matchesCurrent, into: &buf)
+        FfiConverterOptionString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTerminalWorkingDirectoryUpdateDto_lift(_ buf: RustBuffer) throws -> TerminalWorkingDirectoryUpdateDto {
+    return try FfiConverterTypeTerminalWorkingDirectoryUpdateDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTerminalWorkingDirectoryUpdateDto_lower(_ value: TerminalWorkingDirectoryUpdateDto) -> RustBuffer {
+    return FfiConverterTypeTerminalWorkingDirectoryUpdateDto.lower(value)
+}
+
+
 /**
  * 工作区状态，对应 `workspace.getState`。
  *
@@ -1903,9 +2131,9 @@ public struct WorkspaceStateDto: Equatable, Hashable {
         self.connectionId = connectionId
     }
 
-    
 
-    
+
+
 }
 
 #if compiler(>=6)
@@ -1919,9 +2147,9 @@ public struct FfiConverterTypeWorkspaceStateDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WorkspaceStateDto {
         return
             try WorkspaceStateDto(
-                workspaceRoot: FfiConverterString.read(from: &buf), 
-                currentDirectory: FfiConverterString.read(from: &buf), 
-                scheme: FfiConverterString.read(from: &buf), 
+                workspaceRoot: FfiConverterString.read(from: &buf),
+                currentDirectory: FfiConverterString.read(from: &buf),
+                scheme: FfiConverterString.read(from: &buf),
                 connectionId: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -1950,10 +2178,138 @@ public func FfiConverterTypeWorkspaceStateDto_lower(_ value: WorkspaceStateDto) 
 }
 
 
+public struct WorkspaceTerminalBindingDto: Equatable, Hashable {
+    public var sessionId: String
+    public var kind: WorkspaceTerminalKindDto
+    public var launchWorkspaceRoot: String
+    public var launchWorkspaceCurrentDirectory: String
+    public var scheme: String
+    public var connectionId: String?
+    public var latestTerminalWorkingDirectory: String?
+    public var syncCapability: WorkspaceTerminalSyncCapabilityDto
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sessionId: String, kind: WorkspaceTerminalKindDto, launchWorkspaceRoot: String, launchWorkspaceCurrentDirectory: String, scheme: String, connectionId: String?, latestTerminalWorkingDirectory: String?, syncCapability: WorkspaceTerminalSyncCapabilityDto) {
+        self.sessionId = sessionId
+        self.kind = kind
+        self.launchWorkspaceRoot = launchWorkspaceRoot
+        self.launchWorkspaceCurrentDirectory = launchWorkspaceCurrentDirectory
+        self.scheme = scheme
+        self.connectionId = connectionId
+        self.latestTerminalWorkingDirectory = latestTerminalWorkingDirectory
+        self.syncCapability = syncCapability
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension WorkspaceTerminalBindingDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWorkspaceTerminalBindingDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WorkspaceTerminalBindingDto {
+        return
+            try WorkspaceTerminalBindingDto(
+                sessionId: FfiConverterString.read(from: &buf),
+                kind: FfiConverterTypeWorkspaceTerminalKindDto.read(from: &buf),
+                launchWorkspaceRoot: FfiConverterString.read(from: &buf),
+                launchWorkspaceCurrentDirectory: FfiConverterString.read(from: &buf),
+                scheme: FfiConverterString.read(from: &buf),
+                connectionId: FfiConverterOptionString.read(from: &buf),
+                latestTerminalWorkingDirectory: FfiConverterOptionString.read(from: &buf),
+                syncCapability: FfiConverterTypeWorkspaceTerminalSyncCapabilityDto.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: WorkspaceTerminalBindingDto, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.sessionId, into: &buf)
+        FfiConverterTypeWorkspaceTerminalKindDto.write(value.kind, into: &buf)
+        FfiConverterString.write(value.launchWorkspaceRoot, into: &buf)
+        FfiConverterString.write(value.launchWorkspaceCurrentDirectory, into: &buf)
+        FfiConverterString.write(value.scheme, into: &buf)
+        FfiConverterOptionString.write(value.connectionId, into: &buf)
+        FfiConverterOptionString.write(value.latestTerminalWorkingDirectory, into: &buf)
+        FfiConverterTypeWorkspaceTerminalSyncCapabilityDto.write(value.syncCapability, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWorkspaceTerminalBindingDto_lift(_ buf: RustBuffer) throws -> WorkspaceTerminalBindingDto {
+    return try FfiConverterTypeWorkspaceTerminalBindingDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWorkspaceTerminalBindingDto_lower(_ value: WorkspaceTerminalBindingDto) -> RustBuffer {
+    return FfiConverterTypeWorkspaceTerminalBindingDto.lower(value)
+}
+
+
+public struct WorkspaceTerminalCreateDto: Equatable, Hashable {
+    public var binding: WorkspaceTerminalBindingDto
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(binding: WorkspaceTerminalBindingDto) {
+        self.binding = binding
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension WorkspaceTerminalCreateDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWorkspaceTerminalCreateDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WorkspaceTerminalCreateDto {
+        return
+            try WorkspaceTerminalCreateDto(
+                binding: FfiConverterTypeWorkspaceTerminalBindingDto.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: WorkspaceTerminalCreateDto, into buf: inout [UInt8]) {
+        FfiConverterTypeWorkspaceTerminalBindingDto.write(value.binding, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWorkspaceTerminalCreateDto_lift(_ buf: RustBuffer) throws -> WorkspaceTerminalCreateDto {
+    return try FfiConverterTypeWorkspaceTerminalCreateDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWorkspaceTerminalCreateDto_lower(_ value: WorkspaceTerminalCreateDto) -> RustBuffer {
+    return FfiConverterTypeWorkspaceTerminalCreateDto.lower(value)
+}
+
+
 public enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-    
-    
+
+
     /**
      * 一次 RPC 调用失败。`code` 是稳定的领域错误码（如 `not_directory`），
      * `message` 是面向人类的描述。
@@ -1961,15 +2317,15 @@ public enum CoreError: Swift.Error, Equatable, Hashable, Foundation.LocalizedErr
     case Rpc(code: String, message: String
     )
 
-    
 
-    
 
-    
+
+
+
     public var errorDescription: String? {
         String(reflecting: self)
     }
-    
+
 }
 
 #if compiler(>=6)
@@ -1986,11 +2342,11 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
+
+
         case 1: return .Rpc(
-            code: try FfiConverterString.read(from: &buf), 
+            code: try FfiConverterString.read(from: &buf),
             message: try FfiConverterString.read(from: &buf)
             )
 
@@ -2001,15 +2357,15 @@ public struct FfiConverterTypeCoreError: FfiConverterRustBuffer {
     public static func write(_ value: CoreError, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
+
+
+
         case let .Rpc(code,message):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(code, into: &buf)
             FfiConverterString.write(message, into: &buf)
-            
+
         }
     }
 }
@@ -2036,7 +2392,7 @@ public func FfiConverterTypeCoreError_lower(_ value: CoreError) -> RustBuffer {
  */
 
 public enum EntryKindDto: Equatable, Hashable {
-    
+
     case directory
     case file
     case symlink
@@ -2061,38 +2417,38 @@ public struct FfiConverterTypeEntryKindDto: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EntryKindDto {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .directory
-        
+
         case 2: return .file
-        
+
         case 3: return .symlink
-        
+
         case 4: return .other
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: EntryKindDto, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .directory:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .file:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .symlink:
             writeInt(&buf, Int32(3))
-        
-        
+
+
         case .other:
             writeInt(&buf, Int32(4))
-        
+
         }
     }
 }
@@ -2110,6 +2466,140 @@ public func FfiConverterTypeEntryKindDto_lift(_ buf: RustBuffer) throws -> Entry
 #endif
 public func FfiConverterTypeEntryKindDto_lower(_ value: EntryKindDto) -> RustBuffer {
     return FfiConverterTypeEntryKindDto.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum WorkspaceTerminalKindDto: Equatable, Hashable {
+
+    case local
+    case connection
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension WorkspaceTerminalKindDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWorkspaceTerminalKindDto: FfiConverterRustBuffer {
+    typealias SwiftType = WorkspaceTerminalKindDto
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WorkspaceTerminalKindDto {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .local
+
+        case 2: return .connection
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: WorkspaceTerminalKindDto, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .local:
+            writeInt(&buf, Int32(1))
+
+
+        case .connection:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWorkspaceTerminalKindDto_lift(_ buf: RustBuffer) throws -> WorkspaceTerminalKindDto {
+    return try FfiConverterTypeWorkspaceTerminalKindDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWorkspaceTerminalKindDto_lower(_ value: WorkspaceTerminalKindDto) -> RustBuffer {
+    return FfiConverterTypeWorkspaceTerminalKindDto.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum WorkspaceTerminalSyncCapabilityDto: Equatable, Hashable {
+
+    case bidirectionalLocal
+    case launchOnly
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension WorkspaceTerminalSyncCapabilityDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeWorkspaceTerminalSyncCapabilityDto: FfiConverterRustBuffer {
+    typealias SwiftType = WorkspaceTerminalSyncCapabilityDto
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WorkspaceTerminalSyncCapabilityDto {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .bidirectionalLocal
+
+        case 2: return .launchOnly
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: WorkspaceTerminalSyncCapabilityDto, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .bidirectionalLocal:
+            writeInt(&buf, Int32(1))
+
+
+        case .launchOnly:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWorkspaceTerminalSyncCapabilityDto_lift(_ buf: RustBuffer) throws -> WorkspaceTerminalSyncCapabilityDto {
+    return try FfiConverterTypeWorkspaceTerminalSyncCapabilityDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeWorkspaceTerminalSyncCapabilityDto_lower(_ value: WorkspaceTerminalSyncCapabilityDto) -> RustBuffer {
+    return FfiConverterTypeWorkspaceTerminalSyncCapabilityDto.lower(value)
 }
 
 
@@ -2298,7 +2788,13 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_change_terminal_directory() != 30830) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_close_terminal() != 54865) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_compare_terminal_working_directory() != 6165) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_capabilities() != 4471) {
@@ -2323,6 +2819,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_terminal() != 19440) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_create_workspace_terminal() != 57245) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_delete_entry() != 50742) {
@@ -2353,6 +2852,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_shutdown_workspace() != 50744) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_terminal_finder_core_checksum_method_corehandle_update_terminal_working_directory() != 41881) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_upload_file() != 9104) {

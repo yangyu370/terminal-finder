@@ -348,6 +348,105 @@ Error codes:
 - `mount_failed` — the bucket could not be exposed as a workspace path.
 - `mount_timeout` — the mount did not become ready in time.
 
+## Workspace-Bound Terminal (FFI)
+
+The macOS client uses these methods through in-process UniFFI. The optional
+`/terminal` WebSocket mirrors the same semantic surface for server-mode testing
+and future non-macOS clients.
+
+### create_workspace_terminal
+
+```text
+create_workspace_terminal(cols: u16, rows: u16, listener: TerminalEventListener) -> Result<WorkspaceTerminalCreateDto, CoreError>
+```
+
+Creates a terminal from the current backend-owned workspace context and returns
+its binding metadata:
+
+```json
+{
+  "binding": {
+    "sessionId": "a1b2c3...",
+    "kind": "local",
+    "launchWorkspaceRoot": "/Users/mac/project",
+    "launchWorkspaceCurrentDirectory": "/Users/mac/project",
+    "scheme": "local",
+    "connectionId": null,
+    "latestTerminalWorkingDirectory": null,
+    "syncCapability": "bidirectionalLocal"
+  }
+}
+```
+
+Local workspace terminals launch a zsh PTY in `currentDirectory`, with
+per-session shell integration injected by core. The integration emits OSC 7 cwd
+reports and owns the controlled `cd` request file. Connection-backed workspace
+terminals remain launch-bound and report `syncCapability: "launchOnly"`.
+
+### update_terminal_working_directory
+
+```text
+update_terminal_working_directory(session_id: String, directory_url: String) -> Result<TerminalWorkingDirectoryUpdateDto, CoreError>
+```
+
+Called when the terminal view reports an OSC 7 `file://host/path` cwd. Core
+percent-decodes the URL, rejects non-local hosts, records the decoded path as
+advisory terminal state, then canonicalizes the reported directory and the live
+workspace `currentDirectory` in a blocking filesystem task.
+
+```json
+{
+  "binding": { "...": "..." },
+  "reportedDirectory": "/Users/mac/project",
+  "openable": true,
+  "matchesCurrent": true,
+  "reason": null
+}
+```
+
+`openable: false` may carry reasons such as `unsupported_host`,
+`unsupported`, `not_openable`, `not_directory`, or
+`current_directory_unavailable`. Unknown sessions return `unknown_session`.
+
+### compare_terminal_working_directory
+
+```text
+compare_terminal_working_directory(session_id: String) -> Result<TerminalWorkingDirectoryUpdateDto, CoreError>
+```
+
+Recomputes the same canonical comparison using the latest cwd previously
+reported for the terminal and the current live workspace state. If no cwd has
+been reported yet, the result is `openable: false`, `matchesCurrent: false`,
+and `reason: "cwd_unknown"`.
+
+### change_terminal_directory
+
+```text
+change_terminal_directory(session_id: String, target_directory: String) -> Result<TerminalDirectoryChangeDto, CoreError>
+```
+
+Queues a controlled directory change for a local workspace terminal. Core
+rejects unknown sessions, connection-backed sessions, targets with control
+characters, and targets that are not openable local directories. On success,
+core atomically writes the canonical target directory to the session's private
+request file and returns:
+
+```json
+{
+  "binding": { "...": "..." },
+  "queued": true,
+  "targetDirectory": "/Users/mac/project/src",
+  "reason": null
+}
+```
+
+Success means the request was safely queued, not that the shell has already
+confirmed the new directory. The shell applies the request on the next prompt
+cycle and confirms via a later OSC 7 report. For idle prompts, core also wakes a
+per-session FIFO watched by zsh `zle -F`, so the request can apply without
+submitting or clearing the user's current input line. If the wake path is not
+available, the safe queued request-file semantics still hold.
+
 ## workspace.shutdown (FFI)
 
 ### Request (FFI only)
@@ -449,9 +548,11 @@ Sent on a fixed interval so the client can detect a silently dropped connection.
 
 A connection-level error not tied to a specific session.
 
-### Terminal Channel (planned)
+### Terminal Channel
 
-Phase 3 adds a dedicated terminal WebSocket/session channel separate from `/events`.
+The optional server mode exposes a dedicated terminal WebSocket/session channel
+separate from `/events`. The macOS client defaults to in-process FFI and does
+not depend on this socket.
 
 ```text
 GET ws://127.0.0.1:3587/terminal
@@ -470,6 +571,37 @@ PTY input and output are raw byte streams that are not guaranteed to be valid UT
 ```
 
 Opens a PTY session. `cwd` is the working directory, `cols`/`rows` the initial size, `shell` an optional explicit shell (null lets the backend choose the default). The backend replies with `terminal.created` carrying the assigned `sessionId`, echoing `id`.
+
+```json
+{ "type": "terminal.createWorkspace", "id": "req-ws-1", "data": { "cols": 80, "rows": 24 } }
+```
+
+Creates a workspace-bound terminal from the current backend workspace context.
+The backend replies with `terminal.created`; `data.binding` contains the same
+workspace terminal binding fields returned by `create_workspace_terminal`.
+
+```json
+{ "type": "terminal.updateWorkingDirectory", "sessionId": "a1b2c3", "id": "req-cwd-1", "data": { "directoryUrl": "file://localhost/Users/mac/project" } }
+```
+
+Records and validates a terminal cwd report. The backend replies with
+`terminal.workingDirectoryUpdated`.
+
+```json
+{ "type": "terminal.compareWorkingDirectory", "sessionId": "a1b2c3", "id": "req-cwd-2", "data": {} }
+```
+
+Recomputes the validated cwd comparison against the live workspace state using
+the latest reported terminal cwd. The backend replies with
+`terminal.workingDirectoryUpdated`.
+
+```json
+{ "type": "terminal.changeDirectory", "sessionId": "a1b2c3", "id": "req-cd-1", "data": { "targetDirectory": "/Users/mac/project/src" } }
+```
+
+Queues a controlled local terminal directory change via the workspace-bound
+terminal request file. The backend replies with
+`terminal.directoryChangeQueued`.
 
 ```json
 { "type": "terminal.input", "sessionId": "a1b2c3", "data": { "bytes": "bHMK" } }
@@ -495,7 +627,42 @@ Closes the session and terminates its PTY process. The backend replies with `ter
 { "type": "terminal.created", "sessionId": "a1b2c3", "id": "req-1", "data": { "cols": 80, "rows": 24 } }
 ```
 
-Acknowledges `terminal.create`. Echoes the request `id` and assigns the `sessionId` used by all later messages for this session.
+Acknowledges `terminal.create`. Echoes the request `id` and assigns the `sessionId` used by all later messages for this session. For `terminal.createWorkspace`, the same event additionally includes `data.binding`.
+
+```json
+{
+  "type": "terminal.workingDirectoryUpdated",
+  "sessionId": "a1b2c3",
+  "id": "req-cwd-1",
+  "data": {
+    "binding": { "sessionId": "a1b2c3", "kind": "local", "syncCapability": "bidirectionalLocal" },
+    "reportedDirectory": "/Users/mac/project",
+    "openable": true,
+    "matchesCurrent": true,
+    "reason": null
+  }
+}
+```
+
+Acknowledges `terminal.updateWorkingDirectory` or
+`terminal.compareWorkingDirectory`.
+
+```json
+{
+  "type": "terminal.directoryChangeQueued",
+  "sessionId": "a1b2c3",
+  "id": "req-cd-1",
+  "data": {
+    "binding": { "sessionId": "a1b2c3", "kind": "local", "syncCapability": "bidirectionalLocal" },
+    "queued": true,
+    "targetDirectory": "/Users/mac/project/src",
+    "reason": null
+  }
+}
+```
+
+Acknowledges that `terminal.changeDirectory` was accepted and queued. A later
+OSC 7 cwd report confirms whether the shell has actually moved.
 
 ```json
 { "type": "terminal.output", "sessionId": "a1b2c3", "data": { "bytes": "JCA=" } }
