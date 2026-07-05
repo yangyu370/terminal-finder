@@ -205,8 +205,11 @@ mod tests {
             .map(|descriptor| descriptor.id)
             .collect();
 
-        assert!(ids.contains(&"workspace.listDirectory".to_string()));
-        assert!(ids.contains(&"workspace.openDirectory".to_string()));
+        assert_eq!(
+            ids,
+            ["workspace.listDirectory", "workspace.openDirectory"],
+            "Phase 0 must seed only the two workspace commands"
+        );
     }
 
     #[tokio::test]
