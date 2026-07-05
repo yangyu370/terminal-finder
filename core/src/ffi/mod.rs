@@ -30,6 +30,7 @@ const SERVICE_NAME: &str = "terminal-finder-core";
 #[derive(uniffi::Object)]
 pub struct CoreHandle {
     state: AppState,
+    commands: crate::command::CommandRegistry,
 }
 
 #[uniffi::export]
@@ -39,6 +40,7 @@ impl CoreHandle {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             state: AppState::new(crate::CORE_VERSION),
+            commands: crate::command::CommandRegistry::new(),
         })
     }
 
@@ -53,6 +55,28 @@ impl CoreHandle {
     /// 当前工作区状态，对应 `workspace.getState`。同步、只读内存状态。
     pub fn workspace_state(&self) -> WorkspaceStateDto {
         workspace::get_state(&self.state).state.into()
+    }
+
+    /// List available backend commands as a JSON descriptor array.
+    pub fn command_list(&self) -> String {
+        serde_json::to_string(&self.commands.list()).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Describe one backend command as JSON.
+    pub fn command_describe(&self, id: String) -> Result<String, CoreError> {
+        use crate::error::ApiError;
+
+        let descriptor = self
+            .commands
+            .describe(&id)
+            .ok_or_else(|| ApiError::UnknownMethod(id.clone()))?;
+        serde_json::to_string(&descriptor).map_err(|err| {
+            ApiError::ProviderError {
+                operation: "command.describe",
+                message: err.to_string(),
+            }
+            .into()
+        })
     }
 
     /// 创建 PTY 会话，对应 `terminal.create`。返回 sessionId；
@@ -275,6 +299,33 @@ impl CoreHandle {
         };
         let response = workspace::list_directory(&self.state, params).await?;
         Ok(response.into())
+    }
+
+    /// Invoke a backend command with JSON params and return JSON result.
+    pub async fn command_invoke(
+        &self,
+        id: String,
+        params_json: String,
+    ) -> Result<String, CoreError> {
+        use crate::error::ApiError;
+
+        if self.commands.describe(&id).is_none() {
+            return Err(ApiError::UnknownMethod(id).into());
+        }
+
+        let params = serde_json::from_str(&params_json).map_err(|err| ApiError::InvalidParams {
+            method: id.clone(),
+            message: err.to_string(),
+        })?;
+        let result = self.commands.invoke(&self.state, &id, params).await?;
+
+        serde_json::to_string(&result).map_err(|err| {
+            ApiError::ProviderError {
+                operation: "command.invoke",
+                message: err.to_string(),
+            }
+            .into()
+        })
     }
 
     /// Open a terminal rooted at a mounted connection workspace.
@@ -579,6 +630,7 @@ mod tests {
     async fn shutdown_workspace_clears_mount_registry() {
         let handle = Arc::new(CoreHandle {
             state: AppState::new_with_workspace_runtime("test", Arc::new(TestRuntime::default())),
+            commands: crate::command::CommandRegistry::new(),
         });
         let id = ConnectionId("c1".into());
         handle
@@ -635,6 +687,147 @@ mod tests {
 
         let CoreError::Rpc { code, .. } = error;
         assert_eq!(code, "not_directory");
+    }
+
+    #[test]
+    fn command_list_contains_workspace_command_ids() {
+        let handle = CoreHandle::new();
+
+        let descriptors = handle.command_list();
+        let descriptors: serde_json::Value =
+            serde_json::from_str(&descriptors).expect("command list returns JSON");
+        let ids: Vec<&str> = descriptors
+            .as_array()
+            .expect("command list is an array")
+            .iter()
+            .filter_map(|descriptor| descriptor["id"].as_str())
+            .collect();
+
+        assert!(ids.contains(&"workspace.listDirectory"));
+        assert!(ids.contains(&"workspace.openDirectory"));
+    }
+
+    #[test]
+    fn command_describe_returns_descriptor_json() {
+        let handle = CoreHandle::new();
+
+        let descriptor = handle
+            .command_describe("workspace.listDirectory".into())
+            .expect("known command describes");
+        let descriptor: serde_json::Value =
+            serde_json::from_str(&descriptor).expect("descriptor returns JSON");
+
+        assert_eq!(descriptor["id"], "workspace.listDirectory");
+        assert_eq!(descriptor["category"], "workspace");
+        assert_eq!(descriptor["destructive"], false);
+        assert_eq!(descriptor["context_requirements"], serde_json::json!([]));
+        assert_eq!(
+            descriptor["params_schema"]["required"],
+            serde_json::json!(["path"])
+        );
+        assert_eq!(
+            descriptor["result_schema"]["required"],
+            serde_json::json!(["path", "entries"])
+        );
+    }
+
+    #[test]
+    fn command_describe_unknown_id_returns_unknown_method() {
+        let handle = CoreHandle::new();
+
+        let error = handle
+            .command_describe("no.such".into())
+            .expect_err("unknown command id must fail");
+
+        let CoreError::Rpc { code, .. } = error;
+        assert_eq!(code, "unknown_method");
+    }
+
+    #[tokio::test]
+    async fn command_invoke_list_directory_returns_entries_for_a_known_directory() {
+        let handle = CoreHandle::new();
+        let dir = std::env::temp_dir().join("tf_core_ffi_command_invoke_list_directory_test");
+        std::fs::create_dir_all(&dir).expect("temp dir creates");
+        std::fs::write(dir.join("entry.txt"), b"x").expect("temp file writes");
+
+        let result = handle
+            .command_invoke(
+                "workspace.listDirectory".into(),
+                serde_json::json!({ "path": dir }).to_string(),
+            )
+            .await
+            .expect("known directory lists through command invoke");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let result: serde_json::Value =
+            serde_json::from_str(&result).expect("command invoke returns JSON");
+        let names: Vec<&str> = result["entries"]
+            .as_array()
+            .expect("entries is an array")
+            .iter()
+            .filter_map(|entry| entry["name"].as_str())
+            .collect();
+
+        assert!(names.contains(&"entry.txt"));
+    }
+
+    #[tokio::test]
+    async fn command_invoke_open_directory_file_path_propagates_domain_error() {
+        let handle = CoreHandle::new();
+        let file = std::env::temp_dir().join("tf_core_ffi_command_invoke_open_directory_file_test");
+        std::fs::write(&file, b"not a directory").expect("temp file writes");
+
+        let error = handle
+            .command_invoke(
+                "workspace.openDirectory".into(),
+                serde_json::json!({ "path": file }).to_string(),
+            )
+            .await
+            .expect_err("opening a file through command invoke must fail");
+
+        let _ = std::fs::remove_file(&file);
+
+        let CoreError::Rpc { code, .. } = error;
+        assert_eq!(code, "not_directory");
+    }
+
+    #[tokio::test]
+    async fn command_invoke_unknown_id_returns_unknown_method() {
+        let handle = CoreHandle::new();
+
+        let error = handle
+            .command_invoke("no.such".into(), "{}".into())
+            .await
+            .expect_err("unknown command id must fail");
+
+        let CoreError::Rpc { code, .. } = error;
+        assert_eq!(code, "unknown_method");
+    }
+
+    #[tokio::test]
+    async fn command_invoke_unknown_id_takes_precedence_over_invalid_json() {
+        let handle = CoreHandle::new();
+
+        let error = handle
+            .command_invoke("no.such".into(), "{".into())
+            .await
+            .expect_err("unknown command id must fail before params parsing");
+
+        let CoreError::Rpc { code, .. } = error;
+        assert_eq!(code, "unknown_method");
+    }
+
+    #[tokio::test]
+    async fn command_invoke_invalid_json_returns_invalid_params() {
+        let handle = CoreHandle::new();
+
+        let error = handle
+            .command_invoke("workspace.listDirectory".into(), "{".into())
+            .await
+            .expect_err("invalid params JSON must fail");
+
+        let CoreError::Rpc { code, .. } = error;
+        assert_eq!(code, "invalid_params");
     }
 }
 
@@ -1015,6 +1208,7 @@ mod connection_ffi_tests {
         let runtime = Arc::new(RecordingRuntime::default());
         let h = Arc::new(CoreHandle {
             state: AppState::new_with_workspace_runtime("test", runtime.clone()),
+            commands: crate::command::CommandRegistry::new(),
         });
         let id_string = h.connection_create(
             "test".into(),
@@ -1046,6 +1240,7 @@ mod connection_ffi_tests {
         let runtime = Arc::new(RecordingRuntime::failing_unmount());
         let h = Arc::new(CoreHandle {
             state: AppState::new_with_workspace_runtime("test", runtime.clone()),
+            commands: crate::command::CommandRegistry::new(),
         });
         let id_string = h.connection_create(
             "test".into(),

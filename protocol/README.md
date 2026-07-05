@@ -1,6 +1,9 @@
 # Terminal Finder Protocol
 
-Early development uses local HTTP JSON.
+The macOS client defaults to in-process UniFFI and holds a `CoreHandle` directly.
+The local HTTP/WebSocket server is optional server-mode infrastructure for
+debugging and future non-macOS clients; its RPC methods mirror the same backend
+semantics where exposed.
 
 ## Endpoint
 
@@ -26,7 +29,9 @@ GET /health
 }
 ```
 
-`/health` is the client startup gate. The macOS client checks this endpoint before showing the main workspace UI. If the backend is not already healthy, the client starts the backend process and polls `/health` until it succeeds.
+`/health` is only a server-mode readiness check. The default macOS client uses
+in-process UniFFI (`CoreHandle::ping`) and does not start or poll a backend
+process.
 
 ## core.ping
 
@@ -171,6 +176,55 @@ For a registered S3 `connection_id` (`scheme: "s3"`): there is no canonical-path
 ```
 
 Entries are non-recursive. Directories are returned before files, then sorted by name. For S3 routing, entries reflect the bucket-relative paths under the connection's `base_prefix`.
+
+## Command surface (FFI)
+
+The command surface exposes a small runtime registry over UniFFI. It is additive
+to the existing direct FFI methods; the current macOS client still links core
+in-process and does not depend on HTTP or a local port.
+
+### Methods
+
+```text
+command_list() -> String
+command_describe(id: String) -> Result<String, CoreError>
+command_invoke(id: String, params_json: String) -> Result<String, CoreError>
+```
+
+`command_list` returns a JSON array of command descriptors. `command_describe`
+returns one descriptor JSON object. `command_invoke` parses `params_json` as
+JSON, invokes the matching backend command against the same `AppState` held by
+the `CoreHandle`, and returns the command result serialized as JSON.
+
+Descriptor objects have exactly these fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Stable command id, such as `workspace.listDirectory`. |
+| `title` | string | Human-readable command name. |
+| `category` | string | Broad command group. |
+| `summary` | string | Short description for command pickers or docs. |
+| `params_schema` | JSON object | JSON Schema-style description of accepted params. |
+| `result_schema` | JSON object | JSON Schema-style description of the result. |
+| `destructive` | boolean | Whether the command can mutate or delete user data. |
+| `context_requirements` | string array | Required runtime context flags; empty when none. |
+
+Phase 0 commands:
+
+| Command id | Params | Result | State effect |
+|---|---|---|---|
+| `workspace.listDirectory` | `{ "path": string, "connection_id"?: string \| null }` | Existing `workspace.listDirectory` result | Stateless; does not change workspace state. |
+| `workspace.openDirectory` | `{ "path": string, "connection_id"?: string \| null }` | Existing `workspace.openDirectory` result | Updates backend workspace state only after validation and listing succeed. |
+
+Command responses reuse the existing camelCase workspace structures:
+`workspaceRoot`, `currentDirectory`, `connectionId`, `isDirectory`, and
+`modifiedAt` keep the same shape as the direct workspace APIs.
+
+Error code convention:
+
+- `unknown_method` — `command_describe` or `command_invoke` received an unknown command id.
+- `invalid_params` — `command_invoke` received invalid JSON or params rejected by the command.
+- Domain errors from the invoked command propagate unchanged, such as `not_directory`, `filesystem_read_failed`, `connection_not_found`, `authentication_failed`, `network_error`, and `provider_error`.
 
 ## connection.create
 
