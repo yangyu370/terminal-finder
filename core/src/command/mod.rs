@@ -6,6 +6,8 @@ use serde_json::Value;
 
 use crate::{error::ApiError, state::AppState};
 
+pub mod workspace_cmds;
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CommandDescriptor {
     pub id: String,
@@ -30,6 +32,15 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
+    pub fn new() -> Self {
+        use workspace_cmds::{ListDirectoryCommand, OpenDirectoryCommand};
+
+        Self::from_handlers(vec![
+            Arc::new(OpenDirectoryCommand),
+            Arc::new(ListDirectoryCommand),
+        ])
+    }
+
     pub fn from_handlers(handlers: Vec<Arc<dyn CommandHandler>>) -> Self {
         let handlers = handlers
             .into_iter()
@@ -65,6 +76,12 @@ impl CommandRegistry {
             .ok_or_else(|| ApiError::UnknownMethod(id.into()))?;
 
         handler.invoke(state, params).await
+    }
+}
+
+impl Default for CommandRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
