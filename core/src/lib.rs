@@ -3,6 +3,7 @@
 //! 业务逻辑（workspace / terminal / state）以库形式提供：既能被 Swift 经 FFI 调用，
 //! 也能被可选的 `server` feature（axum HTTP/WebSocket 适配层）复用。
 
+pub mod command;
 pub mod connection;
 pub mod error;
 pub mod ffi;
