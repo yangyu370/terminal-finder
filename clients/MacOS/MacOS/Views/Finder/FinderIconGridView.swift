@@ -11,11 +11,18 @@ import SwiftUI
 struct FinderIconGridView: NSViewRepresentable {
     let entries: [DirectoryEntry]
     let selectedPath: String?
+    let connectionId: String?
     let onSelect: (String?) -> Void
     let onOpen: (DirectoryEntry) -> Void
+    let onMove: (FinderDragItem, String) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSelect: onSelect, onOpen: onOpen)
+        Coordinator(
+            connectionId: connectionId,
+            onSelect: onSelect,
+            onOpen: onOpen,
+            onMove: onMove
+        )
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -35,6 +42,8 @@ struct FinderIconGridView: NSViewRepresentable {
         collectionView.dataSource = context.coordinator
         collectionView.isSelectable = true
         collectionView.allowsMultipleSelection = false
+        collectionView.registerForDraggedTypes([.terminalFinderEntry])
+        collectionView.setDraggingSourceOperationMask(.move, forLocal: true)
         collectionView.register(
             FinderIconGridItem.self,
             forItemWithIdentifier: FinderIconGridItem.reuseIdentifier
@@ -65,6 +74,8 @@ struct FinderIconGridView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.onSelect = onSelect
         context.coordinator.onOpen = onOpen
+        context.coordinator.onMove = onMove
+        context.coordinator.connectionId = connectionId
 
         guard let collectionView = scrollView.documentView as? NSCollectionView else {
             return
@@ -100,19 +111,25 @@ struct FinderIconGridView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegate {
         var entries: [DirectoryEntry] = []
+        var connectionId: String?
         var onSelect: (String?) -> Void
         var onOpen: (DirectoryEntry) -> Void
+        var onMove: (FinderDragItem, String) -> Void
         var isApplyingSelection = false
         private(set) var currentSignature: [String] = []
 
         weak var collectionView: NSCollectionView?
 
         init(
+            connectionId: String?,
             onSelect: @escaping (String?) -> Void,
-            onOpen: @escaping (DirectoryEntry) -> Void
+            onOpen: @escaping (DirectoryEntry) -> Void,
+            onMove: @escaping (FinderDragItem, String) -> Void
         ) {
+            self.connectionId = connectionId
             self.onSelect = onSelect
             self.onOpen = onOpen
+            self.onMove = onMove
         }
 
         func signature(for entries: [DirectoryEntry]) -> [String] {
@@ -205,6 +222,88 @@ struct FinderIconGridView: NSViewRepresentable {
             }
 
             onOpen(entries[indexPath.item])
+        }
+
+        func collectionView(
+            _ collectionView: NSCollectionView,
+            pasteboardWriterForItemAt indexPath: IndexPath
+        ) -> NSPasteboardWriting? {
+            guard entries.indices.contains(indexPath.item) else {
+                return nil
+            }
+
+            let entry = entries[indexPath.item]
+            let dragItem = FinderDragItem(
+                connectionId: connectionId,
+                path: entry.path,
+                name: entry.name,
+                isDirectory: entry.isDirectory
+            )
+            return try? dragItem.makePasteboardItem()
+        }
+
+        func collectionView(
+            _ collectionView: NSCollectionView,
+            validateDrop draggingInfo: any NSDraggingInfo,
+            proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
+            dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>
+        ) -> NSDragOperation {
+            proposedDropOperation.pointee = .on
+
+            guard let payload = dragItem(from: draggingInfo),
+                  let indexPath = proposedDropIndexPath.pointee as IndexPath?,
+                  entries.indices.contains(indexPath.item)
+            else {
+                return []
+            }
+
+            let entry = entries[indexPath.item]
+            guard entry.isDirectory,
+                  FinderMoveDropGuard.canMove(
+                      payload,
+                      intoDirectory: entry.path,
+                      targetConnectionId: connectionId
+                  )
+            else {
+                return []
+            }
+
+            return .move
+        }
+
+        func collectionView(
+            _ collectionView: NSCollectionView,
+            acceptDrop draggingInfo: any NSDraggingInfo,
+            indexPath: IndexPath,
+            dropOperation: NSCollectionView.DropOperation
+        ) -> Bool {
+            guard dropOperation == .on,
+                  let payload = dragItem(from: draggingInfo),
+                  entries.indices.contains(indexPath.item)
+            else {
+                return false
+            }
+
+            let entry = entries[indexPath.item]
+            guard entry.isDirectory,
+                  FinderMoveDropGuard.canMove(
+                      payload,
+                      intoDirectory: entry.path,
+                      targetConnectionId: connectionId
+                  )
+            else {
+                return false
+            }
+
+            onMove(payload, entry.path)
+            return true
+        }
+
+        private func dragItem(from info: any NSDraggingInfo) -> FinderDragItem? {
+            info.draggingPasteboard
+                .pasteboardItems?
+                .compactMap(FinderDragItem.init(pasteboardItem:))
+                .first
         }
     }
 }

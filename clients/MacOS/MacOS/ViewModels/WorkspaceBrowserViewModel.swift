@@ -9,6 +9,12 @@ import Combine
 import Darwin
 import Foundation
 
+enum MoveConflictResolution {
+    case replace
+    case keepBoth
+    case cancel
+}
+
 @MainActor
 final class WorkspaceBrowserViewModel: ObservableObject {
     @Published private(set) var path: String
@@ -31,6 +37,7 @@ final class WorkspaceBrowserViewModel: ObservableObject {
     private var shouldReloadInitialState = false
 
     let sidebarLocations: [WorkspaceSidebarLocation]
+    var moveConflictResolver: (@MainActor (FinderDragItem, DirectoryEntry) async -> MoveConflictResolution)?
 
     init(
         backendClient: (any BackendClientProtocol)? = nil,
@@ -380,6 +387,112 @@ final class WorkspaceBrowserViewModel: ObservableObject {
         }
     }
 
+    func moveEntry(
+        _ item: FinderDragItem,
+        intoDirectory directory: DirectoryEntry,
+        conflict: MoveConflictResolution?
+    ) async {
+        await moveEntry(item, intoDirectory: directory.path, conflict: conflict)
+    }
+
+    func moveEntry(
+        _ item: FinderDragItem,
+        intoDirectory targetDirectory: String,
+        conflict: MoveConflictResolution?
+    ) async {
+        guard item.connectionId == workspaceState?.connectionId else {
+            workspaceAlertPresenter.showWarning(
+                message: "无法移动项目",
+                informativeText: "只能在同一个工作区或连接内移动项目。",
+                recoverySuggestion: "请在来源位置所属的工作区内重试。"
+            )
+            return
+        }
+
+        if item.isDirectory,
+           isDirectoryMoveIntoSelfOrDescendant(source: item.path, targetDirectory: targetDirectory) {
+            workspaceAlertPresenter.showWarning(
+                message: "无法移动文件夹",
+                informativeText: "文件夹不能移动到自身或其子文件夹内。",
+                recoverySuggestion: "请选择其他目标文件夹。"
+            )
+            return
+        }
+
+        guard normalizedDirectoryPath(parentDirectory(of: item.path)) != normalizedDirectoryPath(targetDirectory) else {
+            return
+        }
+
+        do {
+            let targetListing = try await backendClient.listDirectory(
+                path: targetDirectory,
+                connectionId: item.connectionId
+            )
+            let existingEntry = targetListing.entries.first { $0.name == item.name }
+            let destinationPath: String
+
+            if let existingEntry {
+                let resolution: MoveConflictResolution
+                if let conflict {
+                    resolution = conflict
+                } else if let moveConflictResolver {
+                    resolution = await moveConflictResolver(item, existingEntry)
+                } else {
+                    resolution = .cancel
+                }
+
+                switch resolution {
+                case .replace:
+                    try await performMoveDelete(
+                        connectionId: item.connectionId,
+                        path: existingEntry.path
+                    )
+                    destinationPath = joinedPath(parent: targetDirectory, child: item.name)
+                case .keepBoth:
+                    let existingNames = Set(targetListing.entries.map(\.name))
+                    let availableName = availableDuplicateName(for: item.name, existingNames: existingNames)
+                    destinationPath = joinedPath(parent: targetDirectory, child: availableName)
+                case .cancel:
+                    return
+                }
+            } else {
+                destinationPath = joinedPath(parent: targetDirectory, child: item.name)
+            }
+
+            try await performMoveRename(
+                connectionId: item.connectionId,
+                from: item.path,
+                to: destinationPath
+            )
+            refresh()
+        } catch {
+            reportWriteOpFailure(operation: "移动", target: item.name, error: error)
+        }
+    }
+
+    private func performMoveDelete(connectionId: String?, path: String) async throws {
+        let activityId = "delete|\(path)"
+        let title = (path as NSString).lastPathComponent
+        transferActivityVM?.start(id: activityId, title: "删除 \(title)", kind: .delete)
+        defer { transferActivityVM?.finish(id: activityId) }
+        try await backendClient.deleteEntry(
+            connectionId: connectionId,
+            path: path
+        )
+    }
+
+    private func performMoveRename(connectionId: String?, from: String, to: String) async throws {
+        let activityId = "rename|\(from)"
+        let title = (from as NSString).lastPathComponent
+        transferActivityVM?.start(id: activityId, title: "移动 \(title)", kind: .rename)
+        defer { transferActivityVM?.finish(id: activityId) }
+        try await backendClient.renameEntry(
+            connectionId: connectionId,
+            from: from,
+            to: to
+        )
+    }
+
     /// Download `entry` to a caller-chosen local URL (Save Panel flow).
     /// Distinct from `openRemoteFile` which downloads to a sandboxed cache
     /// and then asks NSWorkspace to open it.
@@ -411,6 +524,93 @@ final class WorkspaceBrowserViewModel: ObservableObject {
             detailText: detail,
             recoverySuggestion: "检查路径、权限或网络连接后重试。"
         )
+    }
+
+    private func joinedPath(parent: String, child: String) -> String {
+        guard !parent.isEmpty else {
+            return child
+        }
+
+        guard !parent.hasPrefix("/") else {
+            return (parent as NSString).appendingPathComponent(child)
+        }
+
+        if parent.hasSuffix("/") {
+            return "\(parent)\(child)"
+        }
+
+        return "\(parent)/\(child)"
+    }
+
+    private func parentDirectory(of itemPath: String) -> String {
+        guard !itemPath.isEmpty else {
+            return ""
+        }
+
+        if itemPath.hasPrefix("/") {
+            let parent = (itemPath as NSString).deletingLastPathComponent
+            return parent == "." ? "" : parent
+        }
+
+        guard let slashIndex = itemPath.lastIndex(of: "/") else {
+            return ""
+        }
+
+        if slashIndex == itemPath.startIndex {
+            return ""
+        }
+
+        return String(itemPath[..<slashIndex])
+    }
+
+    private func isDirectoryMoveIntoSelfOrDescendant(
+        source: String,
+        targetDirectory: String
+    ) -> Bool {
+        let normalizedSource = normalizedDirectoryPath(source)
+        let normalizedTarget = normalizedDirectoryPath(targetDirectory)
+
+        guard !normalizedSource.isEmpty else {
+            return normalizedTarget.isEmpty
+        }
+
+        return normalizedTarget == normalizedSource
+            || normalizedTarget.hasPrefix("\(normalizedSource)/")
+    }
+
+    private func normalizedDirectoryPath(_ value: String) -> String {
+        var path = value
+        while path.count > 1, path.hasSuffix("/") {
+            path.removeLast()
+        }
+
+        return path
+    }
+
+    private func availableDuplicateName(for name: String, existingNames: Set<String>) -> String {
+        let parts = duplicateNameParts(for: name)
+        var index = 2
+        while true {
+            let candidate = "\(parts.base) \(index)\(parts.extensionSuffix)"
+            if !existingNames.contains(candidate) {
+                return candidate
+            }
+            index += 1
+        }
+    }
+
+    private func duplicateNameParts(for name: String) -> (base: String, extensionSuffix: String) {
+        guard !name.hasPrefix(".") else {
+            return (name, "")
+        }
+
+        let nsName = name as NSString
+        let pathExtension = nsName.pathExtension
+        guard !pathExtension.isEmpty else {
+            return (name, "")
+        }
+
+        return (nsName.deletingPathExtension, ".\(pathExtension)")
     }
 
     /// Open the root of the given S3 connection. `""` is the bucket root in

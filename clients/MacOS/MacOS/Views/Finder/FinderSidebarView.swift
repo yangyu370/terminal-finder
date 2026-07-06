@@ -14,6 +14,7 @@ import SwiftUI
 struct FinderSidebarView: View {
     @ObservedObject var workspaceVM: WorkspaceBrowserViewModel
     @ObservedObject var connectionVM: ConnectionViewModel
+    let onMove: (FinderDragItem, String) -> Void
 
     private var items: [FinderSidebarItem] {
         FinderSidebarItem.makeItems(from: workspaceVM.sidebarLocations)
@@ -57,6 +58,9 @@ struct FinderSidebarView: View {
                 viewModel: connectionVM,
                 onOpenConnection: { connectionId in
                     workspaceVM.openConnection(connectionId)
+                },
+                onMove: { item, targetDirectory in
+                    onMove(item, targetDirectory)
                 }
             )
         }
@@ -95,6 +99,22 @@ struct FinderSidebarView: View {
             .foregroundStyle(.secondary)
             .opacity(item.isEnabled ? 1 : 0.82)
             .accessibilityLabel(item.title)
+            .dropDestination(for: FinderDragItem.self) { dragItems, _ in
+                guard item.isEnabled,
+                      let location = item.location,
+                      let dragItem = dragItems.first,
+                      FinderMoveDropGuard.canMove(
+                          dragItem,
+                          intoDirectory: location.path,
+                          targetConnectionId: nil
+                      )
+                else {
+                    return false
+                }
+
+                onMove(dragItem, location.path)
+                return true
+            }
         }
     }
 

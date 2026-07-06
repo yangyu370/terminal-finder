@@ -63,4 +63,35 @@ enum FinderWriteOpDialogs {
 
         return alert.runModal() == .alertFirstButtonReturn
     }
+
+    static func moveConflictResolution(
+        window: NSWindow,
+        item: FinderDragItem,
+        existingEntry: DirectoryEntry
+    ) -> MoveConflictResolution {
+        let alert = NSAlert()
+        alert.alertStyle = existingEntry.isDirectory ? .warning : .informational
+        alert.messageText = "“\(existingEntry.name)”已存在"
+        if existingEntry.isDirectory {
+            alert.informativeText = "目标位置已有同名文件夹。选择替换会先删除现有的“\(existingEntry.name)”及其中所有内容，再移动“\(item.name)”，且无法恢复。"
+        } else {
+            alert.informativeText = "目标位置已有同名项目。请选择替换现有项目、将“\(item.name)”保留为副本名称，或取消移动。"
+        }
+
+        let replaceButton = alert.addButton(withTitle: "替换")
+        if existingEntry.isDirectory {
+            replaceButton.hasDestructiveAction = true
+        }
+        alert.addButton(withTitle: "保留两者")
+        alert.addButton(withTitle: "取消")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return .replace
+        case .alertSecondButtonReturn:
+            return .keepBoth
+        default:
+            return .cancel
+        }
+    }
 }

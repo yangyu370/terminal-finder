@@ -6,6 +6,7 @@ import SwiftUI
 struct ConnectionSidebarSection: View {
     @ObservedObject var viewModel: ConnectionViewModel
     let onOpenConnection: (String) -> Void
+    let onMove: (FinderDragItem, String) -> Void
 
     @State private var isAddingConnection = false
     @State private var hasLoaded = false
@@ -22,6 +23,20 @@ struct ConnectionSidebarSection: View {
                         }
                     }
                 )
+                .dropDestination(for: FinderDragItem.self) { dragItems, _ in
+                    guard let dragItem = dragItems.first,
+                          FinderMoveDropGuard.canMove(
+                              dragItem,
+                              intoDirectory: "",
+                              targetConnectionId: item.id
+                          )
+                    else {
+                        return false
+                    }
+
+                    onMove(dragItem, "")
+                    return true
+                }
             }
         } header: {
             HStack {

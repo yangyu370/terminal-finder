@@ -12,14 +12,18 @@ struct FinderListView: NSViewRepresentable {
     let entries: [DirectoryEntry]
     let selectedPath: String?
     let isLoading: Bool
+    let connectionId: String?
     let onSelect: (String?) -> Void
     let onOpen: (DirectoryEntry) -> Void
+    let onMove: (FinderDragItem, String) -> Void
     let loadChildren: (String) async throws -> [DirectoryEntry]
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
+            connectionId: connectionId,
             onSelect: onSelect,
             onOpen: onOpen,
+            onMove: onMove,
             loadChildren: loadChildren
         )
     }
@@ -30,6 +34,8 @@ struct FinderListView: NSViewRepresentable {
         outlineView.dataSource = context.coordinator
         outlineView.target = context.coordinator
         outlineView.doubleAction = #selector(Coordinator.handleDoubleClick(_:))
+        outlineView.registerForDraggedTypes([.terminalFinderEntry])
+        outlineView.setDraggingSourceOperationMask(.move, forLocal: true)
         outlineView.allowsMultipleSelection = false
         outlineView.allowsEmptySelection = true
         outlineView.autoresizesOutlineColumn = false
@@ -117,8 +123,10 @@ struct FinderListView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.onSelect = onSelect
         context.coordinator.onOpen = onOpen
+        context.coordinator.onMove = onMove
         context.coordinator.loadChildren = loadChildren
         context.coordinator.isLoading = isLoading
+        context.coordinator.connectionId = connectionId
 
         guard let outlineView = scrollView.documentView as? NSOutlineView else {
             return
@@ -181,7 +189,9 @@ struct FinderListView: NSViewRepresentable {
     final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
         var onSelect: (String?) -> Void
         var onOpen: (DirectoryEntry) -> Void
+        var onMove: (FinderDragItem, String) -> Void
         var loadChildren: (String) async throws -> [DirectoryEntry]
+        var connectionId: String?
         var isApplyingSelection = false
         var isLoading = false
 
@@ -194,12 +204,16 @@ struct FinderListView: NSViewRepresentable {
         private var sortAscending = false
 
         init(
+            connectionId: String?,
             onSelect: @escaping (String?) -> Void,
             onOpen: @escaping (DirectoryEntry) -> Void,
+            onMove: @escaping (FinderDragItem, String) -> Void,
             loadChildren: @escaping (String) async throws -> [DirectoryEntry]
         ) {
+            self.connectionId = connectionId
             self.onSelect = onSelect
             self.onOpen = onOpen
+            self.onMove = onMove
             self.loadChildren = loadChildren
         }
 
@@ -407,6 +421,68 @@ struct FinderListView: NSViewRepresentable {
             false
         }
 
+        func outlineView(
+            _ outlineView: NSOutlineView,
+            pasteboardWriterForItem item: Any
+        ) -> NSPasteboardWriting? {
+            guard let node = item as? FinderOutlineNode else {
+                return nil
+            }
+
+            let dragItem = FinderDragItem(
+                connectionId: connectionId,
+                path: node.entry.path,
+                name: node.entry.name,
+                isDirectory: node.entry.isDirectory
+            )
+            return try? dragItem.makePasteboardItem()
+        }
+
+        func outlineView(
+            _ outlineView: NSOutlineView,
+            validateDrop info: any NSDraggingInfo,
+            proposedItem item: Any?,
+            proposedChildIndex index: Int
+        ) -> NSDragOperation {
+            guard let payload = dragItem(from: info),
+                  let node = item as? FinderOutlineNode,
+                  node.isDirectory,
+                  !node.isLoading,
+                  FinderMoveDropGuard.canMove(
+                      payload,
+                      intoDirectory: node.entry.path,
+                      targetConnectionId: connectionId
+                  )
+            else {
+                return []
+            }
+
+            outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
+            return .move
+        }
+
+        func outlineView(
+            _ outlineView: NSOutlineView,
+            acceptDrop info: any NSDraggingInfo,
+            item: Any?,
+            childIndex index: Int
+        ) -> Bool {
+            guard let payload = dragItem(from: info),
+                  let node = item as? FinderOutlineNode,
+                  node.isDirectory,
+                  FinderMoveDropGuard.canMove(
+                      payload,
+                      intoDirectory: node.entry.path,
+                      targetConnectionId: connectionId
+                  )
+            else {
+                return false
+            }
+
+            onMove(payload, node.entry.path)
+            return true
+        }
+
         @objc func handleDoubleClick(_ sender: NSOutlineView) {
             let row = sender.clickedRow >= 0 ? sender.clickedRow : sender.selectedRow
             guard row >= 0,
@@ -416,6 +492,13 @@ struct FinderListView: NSViewRepresentable {
             }
 
             onOpen(node.entry)
+        }
+
+        private func dragItem(from info: any NSDraggingInfo) -> FinderDragItem? {
+            info.draggingPasteboard
+                .pasteboardItems?
+                .compactMap(FinderDragItem.init(pasteboardItem:))
+                .first
         }
 
         private func makeNameCell(entry: DirectoryEntry) -> NSTableCellView {

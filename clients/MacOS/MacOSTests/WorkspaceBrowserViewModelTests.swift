@@ -378,12 +378,14 @@ final class WorkspaceBrowserViewModelTests: XCTestCase {
     private func makeViewModel(
         backend: MockBackendClient,
         opener: MockWorkspaceItemOpener? = nil,
-        alerts: MockWorkspaceAlertPresenter? = nil
+        alerts: MockWorkspaceAlertPresenter? = nil,
+        transferActivityVM: TransferActivityViewModel? = nil
     ) -> WorkspaceBrowserViewModel {
         WorkspaceBrowserViewModel(
             backendClient: backend,
             workspaceItemOpener: opener ?? MockWorkspaceItemOpener(),
             workspaceAlertPresenter: alerts ?? MockWorkspaceAlertPresenter(),
+            transferActivityVM: transferActivityVM,
             initialPath: "/initial"
         )
     }
@@ -435,6 +437,374 @@ final class WorkspaceBrowserViewModelTests: XCTestCase {
                 )
             ]
         )
+    }
+
+    func testMoveEntryWithoutConflictRenamesIntoTargetDirectory() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.listings["/workspace/target"] = listing(path: "/workspace/target")
+        let viewModel = makeViewModel(backend: backend)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        await viewModel.moveEntry(
+            FinderDragItem(
+                connectionId: nil,
+                path: "/workspace/source.txt",
+                name: "source.txt",
+                isDirectory: false
+            ),
+            intoDirectory: entry(name: "target", path: "/workspace/target", isDirectory: true),
+            conflict: .replace
+        )
+
+        XCTAssertEqual(
+            backend.renameCalls,
+            [
+                MockBackendClient.RenameCall(
+                    connectionId: nil,
+                    from: "/workspace/source.txt",
+                    to: "/workspace/target/source.txt"
+                )
+            ]
+        )
+        XCTAssertTrue(backend.deleteCalls.isEmpty)
+        XCTAssertTrue(
+            backend.listDirectoryPaths.contains("/workspace/target"),
+            "Move should list the target directory before writing so it can detect conflicts."
+        )
+    }
+
+    func testMoveEntryRejectsCrossConnectionMove() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(
+            currentDirectory: "target/",
+            workspaceRoot: "target/",
+            scheme: "s3",
+            connectionId: "conn-target"
+        )
+        backend.listings["target/"] = listing(path: "target/")
+        let alerts = MockWorkspaceAlertPresenter()
+        let viewModel = makeViewModel(backend: backend, alerts: alerts)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        await viewModel.moveEntry(
+            FinderDragItem(
+                connectionId: "conn-source",
+                path: "source/report.txt",
+                name: "report.txt",
+                isDirectory: false
+            ),
+            intoDirectory: entry(name: "target", path: "target/", isDirectory: true),
+            conflict: .replace
+        )
+
+        XCTAssertTrue(backend.renameCalls.isEmpty)
+        XCTAssertTrue(backend.deleteCalls.isEmpty)
+        XCTAssertEqual(alerts.warnings.count, 1)
+    }
+
+    func testMoveEntryRejectsDirectoryMovedIntoItselfOrChild() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        let alerts = MockWorkspaceAlertPresenter()
+        let viewModel = makeViewModel(backend: backend, alerts: alerts)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        let folder = FinderDragItem(
+            connectionId: nil,
+            path: "/workspace/folder",
+            name: "folder",
+            isDirectory: true
+        )
+        await viewModel.moveEntry(
+            folder,
+            intoDirectory: entry(name: "folder", path: "/workspace/folder", isDirectory: true),
+            conflict: .replace
+        )
+        await viewModel.moveEntry(
+            folder,
+            intoDirectory: entry(name: "child", path: "/workspace/folder/child", isDirectory: true),
+            conflict: .replace
+        )
+
+        XCTAssertTrue(backend.renameCalls.isEmpty)
+        XCTAssertTrue(backend.deleteCalls.isEmpty)
+        XCTAssertEqual(alerts.warnings.count, 2)
+    }
+
+    func testMoveEntryIntoSameParentIsNoOp() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        let viewModel = makeViewModel(backend: backend)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        await viewModel.moveEntry(
+            FinderDragItem(
+                connectionId: nil,
+                path: "/workspace/file.txt",
+                name: "file.txt",
+                isDirectory: false
+            ),
+            intoDirectory: entry(name: "workspace", path: "/workspace", isDirectory: true),
+            conflict: .replace
+        )
+
+        XCTAssertTrue(backend.renameCalls.isEmpty)
+        XCTAssertTrue(backend.deleteCalls.isEmpty)
+        XCTAssertEqual(backend.listDirectoryPaths, ["/workspace"])
+    }
+
+    func testMoveEntryReplaceConflictDeletesTargetThenRenamesSource() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.listings["/workspace/target"] = listing(
+            path: "/workspace/target",
+            entries: [entry(name: "report.txt", path: "/workspace/target/report.txt")]
+        )
+        let viewModel = makeViewModel(backend: backend)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        await viewModel.moveEntry(
+            FinderDragItem(
+                connectionId: nil,
+                path: "/workspace/source/report.txt",
+                name: "report.txt",
+                isDirectory: false
+            ),
+            intoDirectory: entry(name: "target", path: "/workspace/target", isDirectory: true),
+            conflict: .replace
+        )
+
+        XCTAssertEqual(
+            backend.operationOrder,
+            [
+                .delete(connectionId: nil, path: "/workspace/target/report.txt"),
+                .rename(
+                    connectionId: nil,
+                    from: "/workspace/source/report.txt",
+                    to: "/workspace/target/report.txt"
+                )
+            ]
+        )
+    }
+
+    func testMoveEntryReplaceConflictPublishesDeleteAndRenameActivities() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.listings["/workspace/target"] = listing(
+            path: "/workspace/target",
+            entries: [entry(name: "report.txt", path: "/workspace/target/report.txt")]
+        )
+        let transferActivityVM = TransferActivityViewModel()
+        var activitySnapshots: [[TransferActivity]] = []
+        let cancellable = transferActivityVM.$activeTransfers
+            .dropFirst()
+            .sink { activitySnapshots.append($0) }
+        let viewModel = makeViewModel(
+            backend: backend,
+            transferActivityVM: transferActivityVM
+        )
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        await viewModel.moveEntry(
+            FinderDragItem(
+                connectionId: nil,
+                path: "/workspace/source/report.txt",
+                name: "report.txt",
+                isDirectory: false
+            ),
+            intoDirectory: entry(name: "target", path: "/workspace/target", isDirectory: true),
+            conflict: .replace
+        )
+        withExtendedLifetime(cancellable) {}
+
+        XCTAssertEqual(
+            activitySnapshots.filter { !$0.isEmpty },
+            [
+                [
+                    TransferActivity(
+                        id: "delete|/workspace/target/report.txt",
+                        title: "删除 report.txt",
+                        kind: .delete
+                    )
+                ],
+                [
+                    TransferActivity(
+                        id: "rename|/workspace/source/report.txt",
+                        title: "移动 report.txt",
+                        kind: .rename
+                    )
+                ]
+            ]
+        )
+    }
+
+    func testMoveEntryKeepBothChoosesAvailableName() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.listings["/workspace/target"] = listing(
+            path: "/workspace/target",
+            entries: [
+                entry(name: "report.txt", path: "/workspace/target/report.txt"),
+                entry(name: "report 2.txt", path: "/workspace/target/report 2.txt")
+            ]
+        )
+        let viewModel = makeViewModel(backend: backend)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        await viewModel.moveEntry(
+            FinderDragItem(
+                connectionId: nil,
+                path: "/workspace/source/report.txt",
+                name: "report.txt",
+                isDirectory: false
+            ),
+            intoDirectory: entry(name: "target", path: "/workspace/target", isDirectory: true),
+            conflict: .keepBoth
+        )
+
+        XCTAssertEqual(
+            backend.renameCalls,
+            [
+                MockBackendClient.RenameCall(
+                    connectionId: nil,
+                    from: "/workspace/source/report.txt",
+                    to: "/workspace/target/report 3.txt"
+                )
+            ]
+        )
+        XCTAssertTrue(backend.deleteCalls.isEmpty)
+    }
+
+    func testMoveEntryCancelConflictDoesNotWrite() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.listings["/workspace/target"] = listing(
+            path: "/workspace/target",
+            entries: [entry(name: "report.txt", path: "/workspace/target/report.txt")]
+        )
+        let viewModel = makeViewModel(backend: backend)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        await viewModel.moveEntry(
+            FinderDragItem(
+                connectionId: nil,
+                path: "/workspace/source/report.txt",
+                name: "report.txt",
+                isDirectory: false
+            ),
+            intoDirectory: entry(name: "target", path: "/workspace/target", isDirectory: true),
+            conflict: .cancel
+        )
+
+        XCTAssertTrue(backend.renameCalls.isEmpty)
+        XCTAssertTrue(backend.deleteCalls.isEmpty)
+        XCTAssertTrue(backend.listDirectoryPaths.contains("/workspace/target"))
+    }
+
+    func testMoveEntryNilConflictUsesResolverWhenConflictExists() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.listings["/workspace/target"] = listing(
+            path: "/workspace/target",
+            entries: [entry(name: "report.txt", path: "/workspace/target/report.txt")]
+        )
+        let viewModel = makeViewModel(backend: backend)
+        var resolvedItem: FinderDragItem?
+        var resolvedExistingEntry: DirectoryEntry?
+        viewModel.moveConflictResolver = { item, existingEntry in
+            resolvedItem = item
+            resolvedExistingEntry = existingEntry
+            return .keepBoth
+        }
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        let item = FinderDragItem(
+            connectionId: nil,
+            path: "/workspace/source/report.txt",
+            name: "report.txt",
+            isDirectory: false
+        )
+        await viewModel.moveEntry(
+            item,
+            intoDirectory: entry(name: "target", path: "/workspace/target", isDirectory: true),
+            conflict: nil
+        )
+
+        XCTAssertEqual(resolvedItem, item)
+        XCTAssertEqual(resolvedExistingEntry?.path, "/workspace/target/report.txt")
+        XCTAssertEqual(
+            backend.renameCalls,
+            [
+                MockBackendClient.RenameCall(
+                    connectionId: nil,
+                    from: "/workspace/source/report.txt",
+                    to: "/workspace/target/report 2.txt"
+                )
+            ]
+        )
+        XCTAssertTrue(backend.deleteCalls.isEmpty)
+    }
+
+    func testMoveEntryRenameFailureReportsWriteOperationAlert() async throws {
+        let backend = MockBackendClient()
+        backend.state = WorkspaceState(currentDirectory: "/workspace", workspaceRoot: "/workspace")
+        backend.listings["/workspace"] = listing(path: "/workspace")
+        backend.listings["/workspace/target"] = listing(path: "/workspace/target")
+        backend.renameErrors["/workspace/target/report.txt"] = MockBackendClientError.writeFailed(
+            "rename denied"
+        )
+        let alerts = MockWorkspaceAlertPresenter()
+        let viewModel = makeViewModel(backend: backend, alerts: alerts)
+
+        viewModel.loadInitialState()
+        try await waitUntilLoaded(viewModel)
+
+        await viewModel.moveEntry(
+            FinderDragItem(
+                connectionId: nil,
+                path: "/workspace/source/report.txt",
+                name: "report.txt",
+                isDirectory: false
+            ),
+            intoDirectory: entry(name: "target", path: "/workspace/target", isDirectory: true),
+            conflict: .replace
+        )
+
+        XCTAssertEqual(backend.renameCalls.count, 1)
+        XCTAssertEqual(alerts.warnings.count, 1)
+        XCTAssertEqual(alerts.warnings.first?.message, "移动失败")
+        XCTAssertEqual(
+            alerts.warnings.first?.informativeText,
+            "无法移动 report.txt。"
+        )
+        XCTAssertEqual(alerts.warnings.first?.detailText, "rename denied")
     }
 
     func test_openS3File_downloadsThenOpensLocally() async throws {
@@ -525,12 +895,19 @@ private final class MockBackendClient: BackendClientProtocol {
     var listings: [String: DirectoryListing] = [:]
     var openResults: [String: OpenDirectoryResult] = [:]
     var openErrors: [String: any Error] = [:]
+    var renameErrors: [String: any Error] = [:]
     var openDirectoryDelayNanoseconds: UInt64 = 0
 
     private(set) var listDirectoryPaths: [String] = []
     private(set) var listDirectoryConnectionIds: [String?] = []
     private(set) var openDirectoryPaths: [String] = []
     private(set) var openDirectoryConnectionIds: [String?] = []
+    private(set) var operationOrder: [Operation] = []
+
+    enum Operation: Equatable {
+        case delete(connectionId: String?, path: String)
+        case rename(connectionId: String?, from: String, to: String)
+    }
 
     struct DownloadCall: Equatable {
         let connectionId: String?
@@ -620,7 +997,9 @@ private final class MockBackendClient: BackendClientProtocol {
     private(set) var deleteCalls: [DeleteCall] = []
 
     func deleteEntry(connectionId: String?, path: String) async throws {
-        deleteCalls.append(DeleteCall(connectionId: connectionId, path: path))
+        let call = DeleteCall(connectionId: connectionId, path: path)
+        deleteCalls.append(call)
+        operationOrder.append(.delete(connectionId: connectionId, path: path))
     }
 
     struct MkdirCall: Equatable {
@@ -641,7 +1020,13 @@ private final class MockBackendClient: BackendClientProtocol {
     private(set) var renameCalls: [RenameCall] = []
 
     func renameEntry(connectionId: String?, from: String, to: String) async throws {
-        renameCalls.append(RenameCall(connectionId: connectionId, from: from, to: to))
+        let call = RenameCall(connectionId: connectionId, from: from, to: to)
+        renameCalls.append(call)
+        operationOrder.append(.rename(connectionId: connectionId, from: from, to: to))
+
+        if let error = renameErrors[to] {
+            throw error
+        }
     }
 
     var capabilitiesStub: ProviderCapsDto = ProviderCapsDto(
@@ -677,6 +1062,7 @@ private final class MockWorkspaceAlertPresenter: WorkspaceAlertPresenting {
 private enum MockBackendClientError: LocalizedError {
     case missingListing(String)
     case missingOpenResult(String)
+    case writeFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -684,6 +1070,8 @@ private enum MockBackendClientError: LocalizedError {
             return "Missing mock listing for \(path)."
         case .missingOpenResult(let path):
             return "Missing mock open result for \(path)."
+        case .writeFailed(let message):
+            return message
         }
     }
 }

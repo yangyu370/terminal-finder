@@ -22,6 +22,7 @@ struct FinderContentView: View {
     @ObservedObject var transferActivityVM: TransferActivityViewModel
 
     let onCloseTerminal: () -> Void
+    let onMove: (FinderDragItem, String) -> Void
 
     var body: some View {
         GeometryReader { geometry in
@@ -116,11 +117,15 @@ struct FinderContentView: View {
             FinderIconGridView(
                 entries: workspaceVM.entries,
                 selectedPath: workspaceVM.selectedEntryPath,
+                connectionId: workspaceVM.currentConnectionId,
                 onSelect: { path in
                     workspaceVM.selectEntry(path: path)
                 },
                 onOpen: { entry in
                     workspaceVM.open(entry)
+                },
+                onMove: { item, targetDirectory in
+                    onMove(item, targetDirectory)
                 }
             )
 
@@ -129,11 +134,15 @@ struct FinderContentView: View {
                 entries: workspaceVM.entries,
                 selectedPath: workspaceVM.selectedEntryPath,
                 isLoading: workspaceVM.isLoading,
+                connectionId: workspaceVM.currentConnectionId,
                 onSelect: { path in
                     workspaceVM.selectEntry(path: path)
                 },
                 onOpen: { entry in
                     workspaceVM.open(entry)
+                },
+                onMove: { item, targetDirectory in
+                    onMove(item, targetDirectory)
                 },
                 loadChildren: { path in
                     try await workspaceVM.loadChildren(path: path)

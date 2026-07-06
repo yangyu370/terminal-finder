@@ -85,6 +85,18 @@ final class FinderWindowController: NSWindowController {
 
         super.init(window: window)
 
+        workspaceVM.moveConflictResolver = { [weak self] item, existingEntry in
+            guard let window = self?.window else {
+                return .cancel
+            }
+
+            return FinderWriteOpDialogs.moveConflictResolution(
+                window: window,
+                item: item,
+                existingEntry: existingEntry
+            )
+        }
+
         window.setContentSize(Self.initialContentSize)
         window.center()
         window.setFrameAutosaveName("FinderMainWindow")
@@ -300,6 +312,12 @@ final class FinderWindowController: NSWindowController {
         }
     }
 
+    func handleMoveDrop(_ item: FinderDragItem, intoDirectory targetDirectory: String) {
+        Task { @MainActor [weak self] in
+            await self?.workspaceVM.moveEntry(item, intoDirectory: targetDirectory, conflict: nil)
+        }
+    }
+
     // MARK: - Helpers
 
     private func joinPath(_ parent: String, _ child: String) -> String {
@@ -455,7 +473,10 @@ final class FinderWindowController: NSWindowController {
         let sidebarHost = NSHostingController(
             rootView: FinderSidebarView(
                 workspaceVM: workspaceVM,
-                connectionVM: cloudConnectionVM
+                connectionVM: cloudConnectionVM,
+                onMove: { [weak self] item, targetDirectory in
+                    self?.handleMoveDrop(item, intoDirectory: targetDirectory)
+                }
             )
         )
         sidebarHost.sizingOptions = []
@@ -470,6 +491,9 @@ final class FinderWindowController: NSWindowController {
                 transferActivityVM: transferActivityVM,
                 onCloseTerminal: { [weak self] in
                     self?.closeTerminalSession()
+                },
+                onMove: { [weak self] item, targetDirectory in
+                    self?.handleMoveDrop(item, intoDirectory: targetDirectory)
                 }
             )
         )
