@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::{error::ApiError, state::AppState};
 
+pub mod connection_cmds;
 pub mod fs_cmds;
 pub mod workspace_cmds;
 
@@ -34,6 +35,7 @@ pub struct CommandRegistry {
 
 impl CommandRegistry {
     pub fn new() -> Self {
+        use connection_cmds::{ListConnectionsCommand, RemoveConnectionCommand};
         use fs_cmds::{
             CreateDirectoryCommand, DeleteEntryCommand, DownloadFileCommand, RenameEntryCommand,
             UploadFileCommand,
@@ -48,6 +50,8 @@ impl CommandRegistry {
             Arc::new(UploadFileCommand),
             Arc::new(DownloadFileCommand),
             Arc::new(CreateDirectoryCommand),
+            Arc::new(ListConnectionsCommand),
+            Arc::new(RemoveConnectionCommand),
         ])
     }
 
