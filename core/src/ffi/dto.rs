@@ -6,9 +6,7 @@
 use crate::terminal::binding::{
     WorkspaceTerminalBinding, WorkspaceTerminalKind, WorkspaceTerminalSyncCapability,
 };
-use crate::workspace::dto::{
-    DirectoryEntry, EntryKind, ListDirectoryResponse, OpenDirectoryResponse, WorkspaceStateResponse,
-};
+use crate::workspace::dto::WorkspaceStateResponse;
 
 /// 连通性信息，对应 `core.ping`。
 #[derive(Debug, uniffi::Record)]
@@ -27,40 +25,6 @@ pub struct WorkspaceStateDto {
     pub current_directory: String,
     pub scheme: String,
     pub connection_id: Option<String>,
-}
-
-/// 目录条目类型。
-#[derive(Debug, uniffi::Enum)]
-pub enum EntryKindDto {
-    Directory,
-    File,
-    Symlink,
-    Other,
-}
-
-/// 单个目录条目。
-#[derive(Debug, uniffi::Record)]
-pub struct DirectoryEntryDto {
-    pub name: String,
-    pub path: String,
-    pub kind: EntryKindDto,
-    pub is_directory: bool,
-    pub size: Option<u64>,
-    pub modified_at: Option<String>,
-}
-
-/// 目录清单，对应 `workspace.listDirectory`。
-#[derive(Debug, uniffi::Record)]
-pub struct DirectoryListingDto {
-    pub path: String,
-    pub entries: Vec<DirectoryEntryDto>,
-}
-
-/// 打开目录的结果，对应 `workspace.openDirectory`。
-#[derive(Debug, uniffi::Record)]
-pub struct OpenDirectoryDto {
-    pub state: WorkspaceStateDto,
-    pub listing: DirectoryListingDto,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -120,48 +84,6 @@ impl From<WorkspaceStateResponse> for WorkspaceStateDto {
     }
 }
 
-impl From<EntryKind> for EntryKindDto {
-    fn from(value: EntryKind) -> Self {
-        match value {
-            EntryKind::Directory => EntryKindDto::Directory,
-            EntryKind::File => EntryKindDto::File,
-            EntryKind::Symlink => EntryKindDto::Symlink,
-            EntryKind::Other => EntryKindDto::Other,
-        }
-    }
-}
-
-impl From<DirectoryEntry> for DirectoryEntryDto {
-    fn from(value: DirectoryEntry) -> Self {
-        Self {
-            name: value.name,
-            path: value.path,
-            kind: value.kind.into(),
-            is_directory: value.is_directory,
-            size: value.size,
-            modified_at: value.modified_at,
-        }
-    }
-}
-
-impl From<ListDirectoryResponse> for DirectoryListingDto {
-    fn from(value: ListDirectoryResponse) -> Self {
-        Self {
-            path: value.path,
-            entries: value.entries.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<OpenDirectoryResponse> for OpenDirectoryDto {
-    fn from(value: OpenDirectoryResponse) -> Self {
-        Self {
-            state: value.state.into(),
-            listing: value.listing.into(),
-        }
-    }
-}
-
 impl From<WorkspaceTerminalKind> for WorkspaceTerminalKindDto {
     fn from(value: WorkspaceTerminalKind) -> Self {
         match value {
@@ -197,16 +119,6 @@ impl From<WorkspaceTerminalBinding> for WorkspaceTerminalBindingDto {
             sync_capability: value.sync_capability.into(),
         }
     }
-}
-
-/// Connection summary DTO (does NOT carry credentials — see `phase1.md` §6.3).
-#[derive(Debug, uniffi::Record)]
-pub struct ConnectionInfoDto {
-    pub connection_id: String,
-    pub display_name: String,
-    pub endpoint: String,
-    pub bucket: String,
-    pub base_prefix: String,
 }
 
 /// Provider capability flags exposed to the client UI so it can gate or

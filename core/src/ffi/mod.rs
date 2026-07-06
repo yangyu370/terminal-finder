@@ -7,16 +7,12 @@ pub mod dto;
 pub mod error;
 pub mod terminal;
 
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
-use crate::{
-    state::AppState,
-    workspace::{self, dto::ListDirectoryParams, dto::OpenDirectoryParams},
-};
+use crate::{state::AppState, workspace};
 
 pub use dto::{
-    DirectoryEntryDto, DirectoryListingDto, EntryKindDto, OpenDirectoryDto, PingInfo,
-    TerminalDirectoryChangeDto, TerminalWorkingDirectoryUpdateDto, WorkspaceStateDto,
+    PingInfo, TerminalDirectoryChangeDto, TerminalWorkingDirectoryUpdateDto, WorkspaceStateDto,
     WorkspaceTerminalBindingDto, WorkspaceTerminalCreateDto, WorkspaceTerminalKindDto,
     WorkspaceTerminalSyncCapabilityDto,
 };
@@ -195,27 +191,6 @@ impl CoreHandle {
         Ok(())
     }
 
-    /// List all registered connections (no credentials returned).
-    pub fn connection_list(&self) -> Vec<crate::ffi::dto::ConnectionInfoDto> {
-        use crate::connection::ConnectionConfig;
-
-        self.state
-            .connections()
-            .list()
-            .into_iter()
-            .map(|entry| {
-                let ConnectionConfig::S3(cfg) = &entry.config;
-                crate::ffi::dto::ConnectionInfoDto {
-                    connection_id: entry.id.0.clone(),
-                    display_name: cfg.display_name.clone(),
-                    endpoint: cfg.endpoint.clone(),
-                    bucket: cfg.bucket.clone(),
-                    base_prefix: cfg.base_prefix.clone(),
-                }
-            })
-            .collect()
-    }
-
     /// Capability flags for the provider behind `connection_id`. Forces the
     /// provider into the cache via `resolve_provider` so the caller sees the
     /// real OpenDAL-backed caps (not the registry's pre-construction guess).
@@ -240,49 +215,6 @@ impl CoreHandle {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl CoreHandle {
-    /// Remove a connection and its in-memory credentials. Also drops any
-    /// cached `S3Provider` and runtime mount for that connection so a future
-    /// call with the same `connection_id` cannot reuse stale resources.
-    /// Returns `Err(ConnectionNotFound)` if unknown.
-    pub async fn connection_remove(
-        &self,
-        connection_id: String,
-    ) -> Result<(), crate::ffi::error::CoreError> {
-        crate::workspace::service::remove_connection(&self.state, &connection_id).await?;
-        Ok(())
-    }
-
-    /// 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
-    /// S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
-    /// 传入注册过的 S3 connection id 时落到对应 S3Provider。
-    pub async fn open_directory(
-        &self,
-        path: String,
-        connection_id: Option<String>,
-    ) -> Result<OpenDirectoryDto, CoreError> {
-        let params = OpenDirectoryParams {
-            path: PathBuf::from(path),
-            connection_id,
-        };
-        let response = workspace::open_directory(&self.state, params).await?;
-        Ok(response.into())
-    }
-
-    /// 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
-    /// connection 路由规则。
-    pub async fn list_directory(
-        &self,
-        path: String,
-        connection_id: Option<String>,
-    ) -> Result<DirectoryListingDto, CoreError> {
-        let params = ListDirectoryParams {
-            path: PathBuf::from(path),
-            connection_id,
-        };
-        let response = workspace::list_directory(&self.state, params).await?;
-        Ok(response.into())
-    }
-
     /// Invoke a backend command with JSON params and return JSON result.
     pub async fn command_invoke(
         &self,
@@ -361,90 +293,6 @@ impl CoreHandle {
     pub async fn shutdown_workspace(&self) -> Result<(), CoreError> {
         self.state.workspace_runtime().teardown().await?;
         self.state.mounts().clear();
-        Ok(())
-    }
-
-    /// 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
-    /// 上传前后各发一次 `transfer_progress` 事件（0 / total），让 Swift
-    /// 端可以驱动进度条。50 MiB 上限来自 `VfsProvider::read` 的对称约束:
-    /// 这里复用同一个 inline 读取语义，避免临时落盘。
-    pub async fn upload_file(
-        &self,
-        connection_id: Option<String>,
-        remote_path: String,
-        local_source: String,
-    ) -> Result<(), CoreError> {
-        crate::workspace::service::upload_file(
-            &self.state,
-            connection_id.as_deref(),
-            &remote_path,
-            &local_source,
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// 删除 `path` 指向的对象/文件/目录。Local 区分文件 / 目录，目录走
-    /// `remove_dir_all`；S3 同样按 stat 探测 `<key>/` 是否为目录 marker，
-    /// 是就走 `remove_all(<key>/)` 递归删除 marker + 子对象，否则按单 key
-    /// 删。两边行为对齐：删一个非空目录会把里面所有内容一并清掉。
-    pub async fn delete_entry(
-        &self,
-        connection_id: Option<String>,
-        path: String,
-    ) -> Result<(), CoreError> {
-        crate::workspace::service::delete_entry(&self.state, connection_id.as_deref(), &path)
-            .await?;
-        Ok(())
-    }
-
-    /// 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
-    /// 客户端应通过 `connection_capabilities().has_native_directories`
-    /// 判断是否需要在 UI 上提示"零字节占位"语义。
-    pub async fn create_remote_directory(
-        &self,
-        connection_id: Option<String>,
-        path: String,
-    ) -> Result<(), CoreError> {
-        crate::workspace::service::create_remote_directory(
-            &self.state,
-            connection_id.as_deref(),
-            &path,
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// 重命名/移动 `from` → `to`。S3 是 copy + delete（**非原子**），客户端
-    /// 应通过 `connection_capabilities().can_rename == false` 在 UI 上提示。
-    /// `from` 和 `to` 必须落在同一个 connection 上；本方法不做跨 provider 搬运。
-    pub async fn rename_entry(
-        &self,
-        connection_id: Option<String>,
-        from: String,
-        to: String,
-    ) -> Result<(), CoreError> {
-        crate::workspace::service::rename_entry(&self.state, connection_id.as_deref(), &from, &to)
-            .await?;
-        Ok(())
-    }
-
-    /// 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
-    /// 50 MiB 上限由 `VfsProvider::read` 强制；超限返回 `provider_error`。
-    /// 二进制写盘走 `spawn_blocking`，避免阻塞 tokio runtime。
-    pub async fn download_file(
-        &self,
-        connection_id: Option<String>,
-        remote_path: String,
-        local_destination: String,
-    ) -> Result<(), CoreError> {
-        crate::workspace::service::download_file(
-            &self.state,
-            connection_id.as_deref(),
-            &remote_path,
-            &local_destination,
-        )
-        .await?;
         Ok(())
     }
 }
@@ -551,47 +399,6 @@ mod tests {
             .expect("shutdown succeeds");
 
         assert!(!handle.state.mounts().is_mounted(&id));
-    }
-
-    #[tokio::test]
-    async fn list_directory_returns_entries_for_a_known_directory() {
-        let handle = CoreHandle::new();
-        let dir = std::env::temp_dir().join("tf_core_ffi_list_directory_test");
-        std::fs::create_dir_all(&dir).expect("temp dir creates");
-        std::fs::write(dir.join("entry.txt"), b"x").expect("temp file writes");
-
-        let listing = handle
-            .list_directory(dir.to_string_lossy().into_owned(), None)
-            .await
-            .expect("known directory lists");
-
-        let _ = std::fs::remove_dir_all(&dir);
-
-        assert!(!listing.path.is_empty());
-        let entry = listing
-            .entries
-            .iter()
-            .find(|entry| entry.name == "entry.txt")
-            .expect("created file appears in listing");
-        assert!(matches!(entry.kind, EntryKindDto::File));
-        assert!(!entry.is_directory);
-    }
-
-    #[tokio::test]
-    async fn open_directory_rejects_a_file() {
-        let handle = CoreHandle::new();
-        let file = std::env::temp_dir().join("tf_core_ffi_open_directory_test");
-        std::fs::write(&file, b"not a directory").expect("temp file writes");
-
-        let error = handle
-            .open_directory(file.to_string_lossy().into_owned(), None)
-            .await
-            .expect_err("opening a file must fail");
-
-        let _ = std::fs::remove_file(&file);
-
-        let CoreError::Rpc { code, .. } = error;
-        assert_eq!(code, "not_directory");
     }
 
     #[test]
@@ -846,35 +653,6 @@ mod connection_ffi_tests {
         assert_eq!(cfg.base_prefix, "");
     }
 
-    #[tokio::test]
-    async fn connection_remove_makes_get_fail() {
-        let h = handle();
-        let id = h.connection_create(
-            "test".into(),
-            "http://localhost:9000".into(),
-            "us-east-1".into(),
-            "test-bucket".into(),
-            String::new(),
-            true,
-            "minioadmin".into(),
-            "minioadmin".into(),
-        );
-        h.connection_remove(id.clone())
-            .await
-            .expect("remove succeeds");
-        assert_eq!(h.connection_list().len(), 0);
-        assert!(
-            h.connection_remove(id).await.is_err(),
-            "removing missing id is an error"
-        );
-    }
-
-    #[test]
-    fn connection_list_returns_empty_initially() {
-        let h = handle();
-        assert!(h.connection_list().is_empty());
-    }
-
     #[test]
     fn connection_restore_uses_caller_supplied_id() {
         // The whole point of restore: the id round-trips between client-side
@@ -894,9 +672,9 @@ mod connection_ffi_tests {
             "minioadmin".into(),
         )
         .expect("restore succeeds");
-        let listed = h.connection_list();
+        let listed = h.state.connections().list();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].connection_id, preset);
+        assert_eq!(listed[0].id.0, preset);
     }
 
     #[test]
