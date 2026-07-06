@@ -21,9 +21,11 @@ nonisolated enum CoreFFI {
 /// 保持 ViewModel 现有错误处理路径（如 `rpcCode`）不变。
 nonisolated struct FFIBackendClient: BackendClientProtocol {
     private let core: CoreHandle
+    private let commands: FFICommandClient
 
     init(core: CoreHandle = CoreFFI.handle) {
         self.core = core
+        self.commands = FFICommandClient(core: core)
     }
 
     /// 进程内没有「连接」可探活：库可调用即健康，等价于 ping。
@@ -40,25 +42,17 @@ nonisolated struct FFIBackendClient: BackendClientProtocol {
     }
 
     func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryResult {
-        do {
-            let result = try await core.openDirectory(path: path, connectionId: connectionId)
-            return OpenDirectoryResult(
-                state: WorkspaceState(from: result.state),
-                listing: DirectoryListing(from: result.listing)
-            )
-        } catch {
-            throw Self.mapError(error)
-        }
+        try await commands.invoke(
+            "workspace.openDirectory",
+            OpenDirectoryParams(path: path, connectionId: connectionId)
+        )
     }
 
     func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListing {
-        do {
-            return DirectoryListing(
-                from: try await core.listDirectory(path: path, connectionId: connectionId)
-            )
-        } catch {
-            throw Self.mapError(error)
-        }
+        try await commands.invoke(
+            "workspace.listDirectory",
+            ListDirectoryParams(path: path, connectionId: connectionId)
+        )
     }
 
     func downloadFile(

@@ -1,0 +1,198 @@
+import Foundation
+import Darwin
+import XCTest
+@testable import MacOS
+
+final class FFIBackendClientCommandTests: XCTestCase {
+    func testOpenDirectoryRoutesThroughCommandInvoke() async throws {
+        let core = RoutingProbeCoreHandle()
+        let client = FFIBackendClient(core: core)
+
+        let result = try await client.openDirectory(path: "/requested/open", connectionId: "conn-1")
+
+        XCTAssertEqual(result.state.currentDirectory, "/command/opened")
+        XCTAssertEqual(result.listing?.path, "/command/opened")
+        XCTAssertTrue(result.listing?.entries.contains { $0.name == "entry.txt" } ?? false)
+        XCTAssertEqual(core.directOpenDirectoryCalls, 0)
+        XCTAssertEqual(core.directListDirectoryCalls, 0)
+        XCTAssertEqual(core.commandInvocations.map(\.id), ["workspace.openDirectory"])
+
+        let invocation = try XCTUnwrap(core.commandInvocations.first)
+        let params = try decodeJSONObject(invocation.paramsJson)
+        XCTAssertEqual(params["path"] as? String, "/requested/open")
+        XCTAssertEqual(params["connection_id"] as? String, "conn-1")
+    }
+
+    func testListDirectoryRoutesThroughCommandInvoke() async throws {
+        let core = RoutingProbeCoreHandle()
+        let client = FFIBackendClient(core: core)
+
+        let listing = try await client.listDirectory(path: "/requested/list", connectionId: nil)
+
+        XCTAssertEqual(listing.path, "/command/listed")
+        XCTAssertTrue(listing.entries.contains { $0.name == "entry.txt" })
+        XCTAssertEqual(core.directOpenDirectoryCalls, 0)
+        XCTAssertEqual(core.directListDirectoryCalls, 0)
+        XCTAssertEqual(core.commandInvocations.map(\.id), ["workspace.listDirectory"])
+
+        let invocation = try XCTUnwrap(core.commandInvocations.first)
+        let params = try decodeJSONObject(invocation.paramsJson)
+        XCTAssertEqual(params["path"] as? String, "/requested/list")
+        XCTAssertNil(params["connection_id"])
+    }
+
+    func testOpenDirectoryWithRealCoreReturnsListingAndUpdatedState() async throws {
+        let directory = try makeTemporaryDirectory()
+        let file = directory.appendingPathComponent("entry.txt", isDirectory: false)
+        try "hello".write(to: file, atomically: true, encoding: .utf8)
+        let client = FFIBackendClient(core: CoreHandle())
+
+        let result = try await client.openDirectory(path: directory.path, connectionId: nil)
+
+        let canonicalPath = try canonicalPath(directory.path)
+        XCTAssertEqual(result.state.currentDirectory, canonicalPath)
+        XCTAssertEqual(result.listing?.path, canonicalPath)
+        XCTAssertTrue(
+            result.listing?.entries.contains { $0.name == "entry.txt" } ?? false,
+            "Expected listing to contain entry.txt, got \(result.listing?.entries.map(\.name) ?? [])"
+        )
+    }
+
+    func testListDirectoryWithRealCoreReturnsListing() async throws {
+        let directory = try makeTemporaryDirectory()
+        let file = directory.appendingPathComponent("entry.txt", isDirectory: false)
+        try "hello".write(to: file, atomically: true, encoding: .utf8)
+        let client = FFIBackendClient(core: CoreHandle())
+
+        let listing = try await client.listDirectory(path: directory.path, connectionId: nil)
+
+        XCTAssertEqual(listing.path, directory.path)
+        XCTAssertTrue(
+            listing.entries.contains { $0.name == "entry.txt" },
+            "Expected listing to contain entry.txt, got \(listing.entries.map(\.name))"
+        )
+    }
+
+    func testOpenDirectoryWithFilePathMapsNotDirectoryRpcError() async throws {
+        let directory = try makeTemporaryDirectory()
+        let file = directory.appendingPathComponent("entry.txt", isDirectory: false)
+        try "hello".write(to: file, atomically: true, encoding: .utf8)
+        let client = FFIBackendClient(core: CoreHandle())
+
+        await assertRpcError(
+            try await client.openDirectory(path: file.path, connectionId: nil),
+            code: "not_directory"
+        )
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FFIBackendClientCommandTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        return directory
+    }
+
+    private func assertRpcError<T>(
+        _ expression: @autoclosure () async throws -> T,
+        code: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            _ = try await expression()
+            XCTFail("Expected BackendClientError.rpcError(\(code)).", file: file, line: line)
+        } catch BackendClientError.rpcError(let actualCode, let message) {
+            XCTAssertEqual(actualCode, code, file: file, line: line)
+            XCTAssertFalse(message.isEmpty, file: file, line: line)
+        } catch {
+            XCTFail("Expected BackendClientError.rpcError(\(code)), got \(error).", file: file, line: line)
+        }
+    }
+}
+
+private final class RoutingProbeCoreHandle: CoreHandle, @unchecked Sendable {
+    struct CommandInvocation {
+        let id: String
+        let paramsJson: String
+    }
+
+    private(set) var commandInvocations: [CommandInvocation] = []
+    private(set) var directOpenDirectoryCalls = 0
+    private(set) var directListDirectoryCalls = 0
+
+    init() {
+        super.init(noHandle: CoreHandle.NoHandle())
+    }
+
+    required init(unsafeFromHandle handle: UInt64) {
+        super.init(unsafeFromHandle: handle)
+    }
+
+    override func commandInvoke(id: String, paramsJson: String) async throws -> String {
+        commandInvocations.append(CommandInvocation(id: id, paramsJson: paramsJson))
+
+        switch id {
+        case "workspace.openDirectory":
+            return try jsonString([
+                "state": [
+                    "workspaceRoot": "/command/root",
+                    "currentDirectory": "/command/opened",
+                    "scheme": "local",
+                    "connectionId": NSNull()
+                ],
+                "listing": directoryListing(path: "/command/opened")
+            ])
+        case "workspace.listDirectory":
+            return try jsonString(directoryListing(path: "/command/listed"))
+        default:
+            throw CoreError.Rpc(code: "unknown_method", message: "Unknown command id: \(id)")
+        }
+    }
+
+    override func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryDto {
+        directOpenDirectoryCalls += 1
+        throw CoreError.Rpc(code: "direct_open_directory_called", message: "Expected commandInvoke route.")
+    }
+
+    override func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListingDto {
+        directListDirectoryCalls += 1
+        throw CoreError.Rpc(code: "direct_list_directory_called", message: "Expected commandInvoke route.")
+    }
+
+    private func directoryListing(path: String) -> [String: Any] {
+        [
+            "path": path,
+            "entries": [
+                [
+                    "name": "entry.txt",
+                    "path": "\(path)/entry.txt",
+                    "kind": "file",
+                    "isDirectory": false,
+                    "size": 5,
+                    "modifiedAt": NSNull()
+                ]
+            ]
+        ]
+    }
+
+    private func jsonString(_ object: Any) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+private func decodeJSONObject(_ json: String) throws -> [String: Any] {
+    let data = Data(json.utf8)
+    return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+private func canonicalPath(_ path: String) throws -> String {
+    guard let result = realpath(path, nil) else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .ENOENT)
+    }
+    defer { free(result) }
+    return String(cString: result)
+}
