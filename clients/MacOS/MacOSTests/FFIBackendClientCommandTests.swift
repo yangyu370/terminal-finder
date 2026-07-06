@@ -99,6 +99,61 @@ final class FFIBackendClientCommandTests: XCTestCase {
         )
     }
 
+    func testDeleteEntryWithRealCoreRemovesFile() async throws {
+        let directory = try makeTemporaryDirectory()
+        let file = directory.appendingPathComponent("victim.txt", isDirectory: false)
+        try "bye".write(to: file, atomically: true, encoding: .utf8)
+        let client = FFIBackendClient(core: CoreHandle())
+
+        try await client.deleteEntry(connectionId: nil, path: file.path)
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: file.path),
+            "fs.delete via command_invoke must remove the file"
+        )
+    }
+
+    func testCreateRemoteDirectoryWithRealCoreCreatesDirectory() async throws {
+        let directory = try makeTemporaryDirectory()
+        let newDir = directory.appendingPathComponent("made", isDirectory: true)
+        let client = FFIBackendClient(core: CoreHandle())
+
+        try await client.createRemoteDirectory(connectionId: nil, path: newDir.path)
+
+        var isDir: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newDir.path, isDirectory: &isDir))
+        XCTAssertTrue(isDir.boolValue, "fs.mkdir must create a directory")
+    }
+
+    func testRenameEntryWithRealCoreMovesFile() async throws {
+        let directory = try makeTemporaryDirectory()
+        let from = directory.appendingPathComponent("from.txt", isDirectory: false)
+        let to = directory.appendingPathComponent("to.txt", isDirectory: false)
+        try "hi".write(to: from, atomically: true, encoding: .utf8)
+        let client = FFIBackendClient(core: CoreHandle())
+
+        try await client.renameEntry(connectionId: nil, from: from.path, to: to.path)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: from.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: to.path))
+    }
+
+    func testUploadFileWithMissingSourceMapsRpcError() async throws {
+        let directory = try makeTemporaryDirectory()
+        let missing = directory.appendingPathComponent("nope.txt", isDirectory: false)
+        let dest = directory.appendingPathComponent("dest.txt", isDirectory: false)
+        let client = FFIBackendClient(core: CoreHandle())
+
+        await assertRpcError(
+            try await client.uploadFile(
+                connectionId: nil,
+                remotePath: dest.path,
+                localSource: missing.path
+            ),
+            code: "filesystem_read_failed"
+        )
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("FFIBackendClientCommandTests-\(UUID().uuidString)", isDirectory: true)

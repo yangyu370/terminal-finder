@@ -160,6 +160,57 @@ struct ListDirectoryParams: Encodable {
     }
 }
 
+/// `fs.delete` / `fs.mkdir` 入参。`connectionId` 为 nil 时，Swift 合成的
+/// Encodable 对 Optional 走 `encodeIfPresent`，`connection_id` 键会被省略。
+struct FsPathParams: Encodable {
+    let connectionId: String?
+    let path: String
+
+    enum CodingKeys: String, CodingKey {
+        case connectionId = "connection_id"
+        case path
+    }
+}
+
+/// `fs.rename` 入参。`from` / `to` 必须落在同一 connection。
+struct FsRenameParams: Encodable {
+    let connectionId: String?
+    let from: String
+    let to: String
+
+    enum CodingKeys: String, CodingKey {
+        case connectionId = "connection_id"
+        case from
+        case to
+    }
+}
+
+/// `fs.upload` 入参。
+struct FsUploadParams: Encodable {
+    let connectionId: String?
+    let remotePath: String
+    let localSource: String
+
+    enum CodingKeys: String, CodingKey {
+        case connectionId = "connection_id"
+        case remotePath = "remote_path"
+        case localSource = "local_source"
+    }
+}
+
+/// `fs.download` 入参。
+struct FsDownloadParams: Encodable {
+    let connectionId: String?
+    let remotePath: String
+    let localDestination: String
+
+    enum CodingKeys: String, CodingKey {
+        case connectionId = "connection_id"
+        case remotePath = "remote_path"
+        case localDestination = "local_destination"
+    }
+}
+
 struct DirectoryListing: Decodable {
     let path: String
     let entries: [DirectoryEntry]

@@ -60,15 +60,14 @@ nonisolated struct FFIBackendClient: BackendClientProtocol {
         remotePath: String,
         localDestination: String
     ) async throws {
-        do {
-            try await core.downloadFile(
+        try await commands.invokeVoid(
+            "fs.download",
+            FsDownloadParams(
                 connectionId: connectionId,
                 remotePath: remotePath,
                 localDestination: localDestination
             )
-        } catch {
-            throw Self.mapError(error)
-        }
+        )
     }
 
     func uploadFile(
@@ -76,39 +75,29 @@ nonisolated struct FFIBackendClient: BackendClientProtocol {
         remotePath: String,
         localSource: String
     ) async throws {
-        do {
-            try await core.uploadFile(
+        try await commands.invokeVoid(
+            "fs.upload",
+            FsUploadParams(
                 connectionId: connectionId,
                 remotePath: remotePath,
                 localSource: localSource
             )
-        } catch {
-            throw Self.mapError(error)
-        }
+        )
     }
 
     func deleteEntry(connectionId: String?, path: String) async throws {
-        do {
-            try await core.deleteEntry(connectionId: connectionId, path: path)
-        } catch {
-            throw Self.mapError(error)
-        }
+        try await commands.invokeVoid("fs.delete", FsPathParams(connectionId: connectionId, path: path))
     }
 
     func createRemoteDirectory(connectionId: String?, path: String) async throws {
-        do {
-            try await core.createRemoteDirectory(connectionId: connectionId, path: path)
-        } catch {
-            throw Self.mapError(error)
-        }
+        try await commands.invokeVoid("fs.mkdir", FsPathParams(connectionId: connectionId, path: path))
     }
 
     func renameEntry(connectionId: String?, from: String, to: String) async throws {
-        do {
-            try await core.renameEntry(connectionId: connectionId, from: from, to: to)
-        } catch {
-            throw Self.mapError(error)
-        }
+        try await commands.invokeVoid(
+            "fs.rename",
+            FsRenameParams(connectionId: connectionId, from: from, to: to)
+        )
     }
 
     func connectionCapabilities(connectionId: String) throws -> ProviderCapsDto {
@@ -140,36 +129,6 @@ private extension WorkspaceState {
             scheme: dto.scheme,
             connectionId: dto.connectionId
         )
-    }
-}
-
-private extension DirectoryListing {
-    init(from dto: DirectoryListingDto) {
-        self.init(path: dto.path, entries: dto.entries.map(DirectoryEntry.init(from:)))
-    }
-}
-
-private extension DirectoryEntry {
-    init(from dto: DirectoryEntryDto) {
-        self.init(
-            name: dto.name,
-            path: dto.path,
-            kind: EntryKind(from: dto.kind),
-            isDirectory: dto.isDirectory,
-            size: dto.size,
-            modifiedAt: dto.modifiedAt
-        )
-    }
-}
-
-private extension EntryKind {
-    init(from dto: EntryKindDto) {
-        switch dto {
-        case .directory: self = .directory
-        case .file: self = .file
-        case .symlink: self = .symlink
-        case .other: self = .other
-        }
     }
 }
 

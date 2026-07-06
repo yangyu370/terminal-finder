@@ -704,13 +704,6 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func resizeTerminal(sessionId: String, cols: UInt16, rows: UInt16) throws 
     
     /**
-     * Send a `transfer_progress` envelope through the shared broadcast
-     * channel so Swift `EventClient` subscribers can drive progress bars.
-     * Best-effort: a closed channel just drops the event (no subscribers).
-     */
-    func sendProgressEvent(connectionId: String, path: String, bytesTransferred: UInt64, totalBytes: UInt64) 
-    
-    /**
      * 写入终端输入，对应 `terminal.input`。高频路径：同步、快返回、无 base64。
      */
     func sendTerminalInput(sessionId: String, data: Data) throws 
@@ -1207,22 +1200,6 @@ open func resizeTerminal(sessionId: String, cols: UInt16, rows: UInt16)throws   
         FfiConverterString.lower(sessionId),
         FfiConverterUInt16.lower(cols),
         FfiConverterUInt16.lower(rows),$0
-    )
-}
-}
-    
-    /**
-     * Send a `transfer_progress` envelope through the shared broadcast
-     * channel so Swift `EventClient` subscribers can drive progress bars.
-     * Best-effort: a closed channel just drops the event (no subscribers).
-     */
-open func sendProgressEvent(connectionId: String, path: String, bytesTransferred: UInt64, totalBytes: UInt64)  {try! rustCall() {
-    uniffi_terminal_finder_core_fn_method_corehandle_send_progress_event(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(connectionId),
-        FfiConverterString.lower(path),
-        FfiConverterUInt64.lower(bytesTransferred),
-        FfiConverterUInt64.lower(totalBytes),$0
     )
 }
 }
@@ -2910,9 +2887,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_resize_terminal() != 21001) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_send_progress_event() != 42909) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_send_terminal_input() != 1735) {
