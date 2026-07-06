@@ -836,13 +836,14 @@ mod connection_ffi_tests {
             "minioadmin".into(),
             "minioadmin".into(),
         );
-        let listed = h.connection_list();
+        let listed = h.state.connections().list();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].connection_id, id);
-        assert_eq!(listed[0].display_name, "test");
-        assert_eq!(listed[0].endpoint, "http://localhost:9000");
-        assert_eq!(listed[0].bucket, "test-bucket");
-        assert_eq!(listed[0].base_prefix, "");
+        assert_eq!(listed[0].id.0, id);
+        let crate::connection::ConnectionConfig::S3(cfg) = &listed[0].config;
+        assert_eq!(cfg.display_name, "test");
+        assert_eq!(cfg.endpoint, "http://localhost:9000");
+        assert_eq!(cfg.bucket, "test-bucket");
+        assert_eq!(cfg.base_prefix, "");
     }
 
     #[tokio::test]
@@ -946,14 +947,14 @@ mod connection_ffi_tests {
         std::fs::write(&src, b"payload").expect("write source");
 
         let handle = CoreHandle::new();
-        handle
-            .download_file(
-                None,
-                src.to_string_lossy().into_owned(),
-                dst.to_string_lossy().into_owned(),
-            )
-            .await
-            .expect("download succeeds");
+        crate::workspace::service::download_file(
+            &handle.state,
+            None,
+            &src.to_string_lossy(),
+            &dst.to_string_lossy(),
+        )
+        .await
+        .expect("download succeeds");
 
         let written = std::fs::read(&dst).expect("read dst");
         let _ = std::fs::remove_file(&src);
@@ -975,19 +976,18 @@ mod connection_ffi_tests {
         std::fs::write(&src, b"payload").expect("write src");
 
         let handle = CoreHandle::new();
-        handle
-            .upload_file(
-                None,
-                dst.to_string_lossy().into_owned(),
-                src.to_string_lossy().into_owned(),
-            )
-            .await
-            .expect("upload succeeds");
+        crate::workspace::service::upload_file(
+            &handle.state,
+            None,
+            &dst.to_string_lossy(),
+            &src.to_string_lossy(),
+        )
+        .await
+        .expect("upload succeeds");
         let written = std::fs::read(&dst).expect("dst exists");
         assert_eq!(written, b"payload");
 
-        handle
-            .delete_entry(None, dst.to_string_lossy().into_owned())
+        crate::workspace::service::delete_entry(&handle.state, None, &dst.to_string_lossy())
             .await
             .expect("delete succeeds");
         assert!(!dst.exists());
@@ -1008,19 +1008,22 @@ mod connection_ffi_tests {
         let to = base.join("to.txt");
 
         let handle = CoreHandle::new();
-        handle
-            .create_remote_directory(None, base.to_string_lossy().into_owned())
-            .await
-            .expect("mkdir");
+        crate::workspace::service::create_remote_directory(
+            &handle.state,
+            None,
+            &base.to_string_lossy(),
+        )
+        .await
+        .expect("mkdir");
         std::fs::write(&from, b"x").expect("seed from");
-        handle
-            .rename_entry(
-                None,
-                from.to_string_lossy().into_owned(),
-                to.to_string_lossy().into_owned(),
-            )
-            .await
-            .expect("rename");
+        crate::workspace::service::rename_entry(
+            &handle.state,
+            None,
+            &from.to_string_lossy(),
+            &to.to_string_lossy(),
+        )
+        .await
+        .expect("rename");
 
         assert!(!from.exists());
         assert!(to.exists());
@@ -1054,20 +1057,18 @@ mod connection_ffi_tests {
     #[tokio::test]
     async fn download_file_with_unknown_connection_returns_error() {
         let handle = CoreHandle::new();
-        let err = handle
-            .download_file(
-                Some("ghost".into()),
-                "ignored".into(),
-                std::env::temp_dir()
-                    .join("tf-never-written")
-                    .to_string_lossy()
-                    .into_owned(),
-            )
-            .await
-            .expect_err("ghost connection id must error");
+        let err = crate::workspace::service::download_file(
+            &handle.state,
+            Some("ghost"),
+            "ignored",
+            &std::env::temp_dir()
+                .join("tf-never-written")
+                .to_string_lossy(),
+        )
+        .await
+        .expect_err("ghost connection id must error");
 
-        let CoreError::Rpc { code, .. } = err;
-        assert_eq!(code, "connection_not_found");
+        assert_eq!(err.code(), "connection_not_found");
     }
 
     #[tokio::test]
@@ -1098,7 +1099,7 @@ mod connection_ffi_tests {
         h.state.providers().register_connection(&id, dummy);
         assert!(h.state.providers().get_by_connection(&id).is_some());
 
-        h.connection_remove(id_string)
+        crate::workspace::service::remove_connection(&h.state, &id_string)
             .await
             .expect("remove succeeds");
 
@@ -1132,7 +1133,7 @@ mod connection_ffi_tests {
         h.state.mounts().mark_ready(&id);
         assert!(h.state.mounts().is_mounted(&id));
 
-        h.connection_remove(id_string)
+        crate::workspace::service::remove_connection(&h.state, &id_string)
             .await
             .expect("remove succeeds");
 
@@ -1163,23 +1164,25 @@ mod connection_ffi_tests {
             .get_or_reserve(&id, |_taken| "test://mount".into());
         h.state.mounts().mark_ready(&id);
 
-        let error = h
-            .connection_remove(id_string.clone())
+        let error = crate::workspace::service::remove_connection(&h.state, &id_string)
             .await
             .expect_err("failed unmount must fail removal");
 
-        let CoreError::Rpc { code, .. } = error;
-        assert_eq!(code, "mount_failed");
+        assert_eq!(error.code(), "mount_failed");
         assert!(
             h.state.mounts().is_mounted(&id),
             "failed cleanup must leave reservation tracked"
         );
         assert_eq!(
-            h.connection_list().len(),
+            h.state.connections().list().len(),
             1,
             "failed cleanup must leave connection registered so removal can be retried"
         );
         assert_eq!(runtime.unmount_calls(), 1);
-        assert!(h.connection_remove(id_string).await.is_err());
+        assert!(
+            crate::workspace::service::remove_connection(&h.state, &id_string)
+                .await
+                .is_err()
+        );
     }
 }
