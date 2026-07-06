@@ -41,6 +41,20 @@ final class FFIBackendClientCommandTests: XCTestCase {
         XCTAssertNil(params["connection_id"])
     }
 
+    func testGetStateStaysOnDirectWorkspaceState() async throws {
+        let core = RoutingProbeCoreHandle()
+        let client = FFIBackendClient(core: core)
+
+        let state = try await client.getState()
+
+        XCTAssertEqual(state.workspaceRoot, "/direct/root")
+        XCTAssertEqual(state.currentDirectory, "/direct/current")
+        XCTAssertEqual(state.scheme, "local")
+        XCTAssertNil(state.connectionId)
+        XCTAssertEqual(core.directWorkspaceStateCalls, 1)
+        XCTAssertTrue(core.commandInvocations.isEmpty)
+    }
+
     func testOpenDirectoryWithRealCoreReturnsListingAndUpdatedState() async throws {
         let directory = try makeTemporaryDirectory()
         let file = directory.appendingPathComponent("entry.txt", isDirectory: false)
@@ -120,6 +134,7 @@ private final class RoutingProbeCoreHandle: CoreHandle, @unchecked Sendable {
     }
 
     private(set) var commandInvocations: [CommandInvocation] = []
+    private(set) var directWorkspaceStateCalls = 0
     private(set) var directOpenDirectoryCalls = 0
     private(set) var directListDirectoryCalls = 0
 
@@ -150,6 +165,16 @@ private final class RoutingProbeCoreHandle: CoreHandle, @unchecked Sendable {
         default:
             throw CoreError.Rpc(code: "unknown_method", message: "Unknown command id: \(id)")
         }
+    }
+
+    override func workspaceState() -> WorkspaceStateDto {
+        directWorkspaceStateCalls += 1
+        return WorkspaceStateDto(
+            workspaceRoot: "/direct/root",
+            currentDirectory: "/direct/current",
+            scheme: "local",
+            connectionId: nil
+        )
     }
 
     override func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryDto {
