@@ -3,11 +3,14 @@ import XCTest
 @testable import MacOS
 
 final class FinderKeyboardShortcutsTests: XCTestCase {
-    func testCommandJAndCommandKToggleTerminalPanel() {
+    func testCommandJToggleTerminalPanel() {
         XCTAssertTrue(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "j", modifierFlags: [.command]))
         XCTAssertTrue(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "J", modifierFlags: [.command]))
-        XCTAssertTrue(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "k", modifierFlags: [.command]))
-        XCTAssertTrue(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "K", modifierFlags: [.command]))
+    }
+
+    func testCommandKDoesNotToggleTerminalPanel() {
+        XCTAssertFalse(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "k", modifierFlags: [.command]))
+        XCTAssertFalse(FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "K", modifierFlags: [.command]))
     }
 
     func testIgnoresIrrelevantModifierBitsSuchAsCapsLock() {
@@ -15,12 +18,12 @@ final class FinderKeyboardShortcutsTests: XCTestCase {
         XCTAssertTrue(
             FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "j", modifierFlags: [.command, .capsLock])
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             FinderKeyboardShortcuts.isToggleTerminalPanel(characters: "k", modifierFlags: [.command, .function])
         )
     }
 
-    func testFallsBackToPhysicalJAndKKeyCodesWhenCharactersAreUnavailable() {
+    func testFallsBackToPhysicalJKeyCodeWhenCharactersAreUnavailable() {
         XCTAssertTrue(
             FinderKeyboardShortcuts.isToggleTerminalPanel(
                 characters: nil,
@@ -28,7 +31,7 @@ final class FinderKeyboardShortcutsTests: XCTestCase {
                 keyCode: 38
             )
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             FinderKeyboardShortcuts.isToggleTerminalPanel(
                 characters: "\n",
                 modifierFlags: [.command],

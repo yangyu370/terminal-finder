@@ -94,14 +94,6 @@ enum FinderMainMenuBuilder {
         terminal.target = controller
         menu.addItem(terminal)
 
-        let terminalAlternate = NSMenuItem(
-            title: "切换终端面板",
-            action: #selector(FinderWindowController.toggleTerminalPanelAction(_:)),
-            keyEquivalent: "k"
-        )
-        terminalAlternate.target = controller
-        menu.addItem(terminalAlternate)
-
         menu.addItem(.separator())
 
         for mode in ClientShellMode.allCases {

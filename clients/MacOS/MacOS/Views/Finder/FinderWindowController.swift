@@ -581,7 +581,7 @@ final class FinderWindowController: NSWindowController {
     }
 
     /// 窗口级 local key monitor：在按键下发到响应链 / 菜单之前判定
-    /// Command+J / Command+K 切换终端面板。这样即便 SwiftTerm 终端处于
+    /// Command+J 切换终端面板。这样即便 SwiftTerm 终端处于
     /// first responder（会先于主菜单消费 key equivalent），快捷键依然可靠。
     /// 详见 `FinderKeyboardShortcuts`。
     private func installTerminalShortcutMonitor() {

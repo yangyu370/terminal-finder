@@ -13,12 +13,11 @@ import AppKit
 /// 窗口视图层的 `performKeyEquivalent:` **之后**才被尝试。当 SwiftTerm 终端是
 /// first responder 时，Command+J 可能被其先吞掉，导致菜单永远收不到事件、
 /// 面板「有概率」切不出来。`FinderWindowController` 用窗口级 local key monitor
-/// 在事件下发到响应链之前按此规则判定，从而让 Command+J / Command+K 始终生效。
+/// 在事件下发到响应链之前按此规则判定，从而让 Command+J 始终生效。
 enum FinderKeyboardShortcuts {
     private static let jKeyCode: UInt16 = 38
-    private static let kKeyCode: UInt16 = 40
 
-    /// 切换终端面板：Command+J 或 Command+K，且不带其它修饰键。
+    /// 切换终端面板：Command+J，且不带其它修饰键。
     /// - Parameters:
     ///   - characters: 建议传入 `NSEvent.charactersIgnoringModifiers`。
     ///   - modifierFlags: 事件的修饰键集合（会自动忽略设备无关的杂项位）。
@@ -33,14 +32,14 @@ enum FinderKeyboardShortcuts {
         }
 
         if let key = characters?.lowercased(),
-           key == "j" || key == "k" {
+           key == "j" {
             return true
         }
 
         guard let keyCode else {
             return false
         }
-        return keyCode == jKeyCode || keyCode == kKeyCode
+        return keyCode == jKeyCode
     }
 
     static func isToggleTerminalPanel(_ event: NSEvent) -> Bool {
