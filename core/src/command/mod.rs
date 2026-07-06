@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::{error::ApiError, state::AppState};
 
+pub mod fs_cmds;
 pub mod workspace_cmds;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -33,11 +34,20 @@ pub struct CommandRegistry {
 
 impl CommandRegistry {
     pub fn new() -> Self {
+        use fs_cmds::{
+            CreateDirectoryCommand, DeleteEntryCommand, DownloadFileCommand, RenameEntryCommand,
+            UploadFileCommand,
+        };
         use workspace_cmds::{ListDirectoryCommand, OpenDirectoryCommand};
 
         Self::from_handlers(vec![
             Arc::new(OpenDirectoryCommand),
             Arc::new(ListDirectoryCommand),
+            Arc::new(DeleteEntryCommand),
+            Arc::new(RenameEntryCommand),
+            Arc::new(UploadFileCommand),
+            Arc::new(DownloadFileCommand),
+            Arc::new(CreateDirectoryCommand),
         ])
     }
 

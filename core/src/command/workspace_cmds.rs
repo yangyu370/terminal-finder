@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn new_registry_contains_phase_zero_workspace_commands() {
+    fn new_registry_contains_workspace_commands() {
         let registry = CommandRegistry::new();
 
         let ids: Vec<String> = registry
@@ -205,11 +205,12 @@ mod tests {
             .map(|descriptor| descriptor.id)
             .collect();
 
-        assert_eq!(
-            ids,
-            ["workspace.listDirectory", "workspace.openDirectory"],
-            "Phase 0 must seed only the two workspace commands"
-        );
+        for id in ["workspace.listDirectory", "workspace.openDirectory"] {
+            assert!(
+                ids.contains(&id.to_string()),
+                "registry must seed {id}, got {ids:?}"
+            );
+        }
     }
 
     #[tokio::test]
