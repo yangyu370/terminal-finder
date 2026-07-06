@@ -211,6 +211,25 @@ struct FsDownloadParams: Encodable {
     }
 }
 
+/// `connection.remove` 入参。
+struct ConnectionRemoveParams: Encodable {
+    let connectionId: String
+
+    enum CodingKeys: String, CodingKey {
+        case connectionId = "connection_id"
+    }
+}
+
+/// `connection.list` 结果元素。字段与 core 命令返回的 camelCase 对齐，
+/// 映射到 `CoreConnectionSummary`。
+struct ConnectionSummaryDTO: Decodable {
+    let connectionId: String
+    let displayName: String
+    let endpoint: String
+    let bucket: String
+    let basePrefix: String
+}
+
 struct DirectoryListing: Decodable {
     let path: String
     let entries: [DirectoryEntry]

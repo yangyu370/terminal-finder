@@ -157,9 +157,11 @@ nonisolated struct FFICapabilitiesClient: CoreCapabilitiesClientProtocol {
 /// `CoreError.Rpc` 翻译成 `BackendClientError.rpcError`，与其它客户端保持一致。
 nonisolated struct FFIConnectionClient: CoreConnectionClientProtocol {
     private let core: CoreHandle
+    private let commands: FFICommandClient
 
     init(core: CoreHandle = CoreFFI.handle) {
         self.core = core
+        self.commands = FFICommandClient(core: core)
     }
 
     func create(
@@ -213,7 +215,11 @@ nonisolated struct FFIConnectionClient: CoreConnectionClientProtocol {
     }
 
     func list() async throws -> [CoreConnectionSummary] {
-        core.connectionList().map { dto in
+        let items: [ConnectionSummaryDTO] = try await commands.invoke(
+            "connection.list",
+            EmptyParams()
+        )
+        return items.map { dto in
             CoreConnectionSummary(
                 connectionId: dto.connectionId,
                 displayName: dto.displayName,
@@ -225,11 +231,10 @@ nonisolated struct FFIConnectionClient: CoreConnectionClientProtocol {
     }
 
     func remove(connectionId: String) async throws {
-        do {
-            try await core.connectionRemove(connectionId: connectionId)
-        } catch {
-            throw FFIBackendClient.mapError(error)
-        }
+        try await commands.invokeVoid(
+            "connection.remove",
+            ConnectionRemoveParams(connectionId: connectionId)
+        )
     }
 }
 
