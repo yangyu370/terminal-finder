@@ -13,8 +13,6 @@ final class FFIBackendClientCommandTests: XCTestCase {
         XCTAssertEqual(result.state.currentDirectory, "/command/opened")
         XCTAssertEqual(result.listing?.path, "/command/opened")
         XCTAssertTrue(result.listing?.entries.contains { $0.name == "entry.txt" } ?? false)
-        XCTAssertEqual(core.directOpenDirectoryCalls, 0)
-        XCTAssertEqual(core.directListDirectoryCalls, 0)
         XCTAssertEqual(core.commandInvocations.map(\.id), ["workspace.openDirectory"])
 
         let invocation = try XCTUnwrap(core.commandInvocations.first)
@@ -31,8 +29,6 @@ final class FFIBackendClientCommandTests: XCTestCase {
 
         XCTAssertEqual(listing.path, "/command/listed")
         XCTAssertTrue(listing.entries.contains { $0.name == "entry.txt" })
-        XCTAssertEqual(core.directOpenDirectoryCalls, 0)
-        XCTAssertEqual(core.directListDirectoryCalls, 0)
         XCTAssertEqual(core.commandInvocations.map(\.id), ["workspace.listDirectory"])
 
         let invocation = try XCTUnwrap(core.commandInvocations.first)
@@ -190,8 +186,6 @@ private final class RoutingProbeCoreHandle: CoreHandle, @unchecked Sendable {
 
     private(set) var commandInvocations: [CommandInvocation] = []
     private(set) var directWorkspaceStateCalls = 0
-    private(set) var directOpenDirectoryCalls = 0
-    private(set) var directListDirectoryCalls = 0
 
     init() {
         super.init(noHandle: CoreHandle.NoHandle())
@@ -230,16 +224,6 @@ private final class RoutingProbeCoreHandle: CoreHandle, @unchecked Sendable {
             scheme: "local",
             connectionId: nil
         )
-    }
-
-    override func openDirectory(path: String, connectionId: String?) async throws -> OpenDirectoryDto {
-        directOpenDirectoryCalls += 1
-        throw CoreError.Rpc(code: "direct_open_directory_called", message: "Expected commandInvoke route.")
-    }
-
-    override func listDirectory(path: String, connectionId: String?) async throws -> DirectoryListingDto {
-        directListDirectoryCalls += 1
-        throw CoreError.Rpc(code: "direct_list_directory_called", message: "Expected commandInvoke route.")
     }
 
     private func directoryListing(path: String) -> [String: Any] {

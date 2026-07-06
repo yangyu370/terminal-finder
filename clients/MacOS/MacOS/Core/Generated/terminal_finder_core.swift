@@ -457,22 +457,6 @@ fileprivate struct FfiConverterInt32: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
-    typealias FfiType = UInt64
-    typealias SwiftType = UInt64
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt64 {
-        return try lift(readInt(&buf))
-    }
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -610,19 +594,6 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func connectionCreate(displayName: String, endpoint: String, region: String, bucket: String, basePrefix: String, pathStyle: Bool, accessKeyId: String, secretAccessKey: String)  -> String
     
     /**
-     * List all registered connections (no credentials returned).
-     */
-    func connectionList()  -> [ConnectionInfoDto]
-    
-    /**
-     * Remove a connection and its in-memory credentials. Also drops any
-     * cached `S3Provider` and runtime mount for that connection so a future
-     * call with the same `connection_id` cannot reuse stale resources.
-     * Returns `Err(ConnectionNotFound)` if unknown.
-     */
-    func connectionRemove(connectionId: String) async throws 
-    
-    /**
      * Re-register a connection using a caller-provided id. Intended for
      * app startup: the client side persists `connection_id` alongside the
      * non-sensitive config, then calls this on launch so the in-memory
@@ -641,13 +612,6 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func createConnectionTerminal(connectionId: String, cols: UInt16, rows: UInt16, listener: TerminalEventListener) async throws  -> String
     
     /**
-     * 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
-     * 客户端应通过 `connection_capabilities().has_native_directories`
-     * 判断是否需要在 UI 上提示"零字节占位"语义。
-     */
-    func createRemoteDirectory(connectionId: String?, path: String) async throws 
-    
-    /**
      * 创建 PTY 会话，对应 `terminal.create`。返回 sessionId；
      * 输出 / 退出 / 错误经 `listener` 回调送达（替代 `/terminal` WebSocket 下行流）。
      */
@@ -659,44 +623,9 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
     func createWorkspaceTerminal(cols: UInt16, rows: UInt16, listener: TerminalEventListener) async throws  -> WorkspaceTerminalCreateDto
     
     /**
-     * 删除 `path` 指向的对象/文件/目录。Local 区分文件 / 目录，目录走
-     * `remove_dir_all`；S3 同样按 stat 探测 `<key>/` 是否为目录 marker，
-     * 是就走 `remove_all(<key>/)` 递归删除 marker + 子对象，否则按单 key
-     * 删。两边行为对齐：删一个非空目录会把里面所有内容一并清掉。
-     */
-    func deleteEntry(connectionId: String?, path: String) async throws 
-    
-    /**
-     * 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
-     * 50 MiB 上限由 `VfsProvider::read` 强制；超限返回 `provider_error`。
-     * 二进制写盘走 `spawn_blocking`，避免阻塞 tokio runtime。
-     */
-    func downloadFile(connectionId: String?, remotePath: String, localDestination: String) async throws 
-    
-    /**
-     * 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
-     * connection 路由规则。
-     */
-    func listDirectory(path: String, connectionId: String?) async throws  -> DirectoryListingDto
-    
-    /**
-     * 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
-     * S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
-     * 传入注册过的 S3 connection id 时落到对应 S3Provider。
-     */
-    func openDirectory(path: String, connectionId: String?) async throws  -> OpenDirectoryDto
-    
-    /**
      * 连通性检查，对应 `core.ping`。同步、无 I/O。
      */
     func ping()  -> PingInfo
-    
-    /**
-     * 重命名/移动 `from` → `to`。S3 是 copy + delete（**非原子**），客户端
-     * 应通过 `connection_capabilities().can_rename == false` 在 UI 上提示。
-     * `from` 和 `to` 必须落在同一个 connection 上；本方法不做跨 provider 搬运。
-     */
-    func renameEntry(connectionId: String?, from: String, to: String) async throws 
     
     /**
      * 调整 PTY 尺寸，对应 `terminal.resize`。
@@ -717,14 +646,6 @@ public protocol CoreHandleProtocol: AnyObject, Sendable {
      * Record and validate a terminal cwd reported by SwiftTerm's OSC 7 callback.
      */
     func updateTerminalWorkingDirectory(sessionId: String, directoryUrl: String) async throws  -> TerminalWorkingDirectoryUpdateDto
-    
-    /**
-     * 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
-     * 上传前后各发一次 `transfer_progress` 事件（0 / total），让 Swift
-     * 端可以驱动进度条。50 MiB 上限来自 `VfsProvider::read` 的对称约束:
-     * 这里复用同一个 inline 读取语义，避免临时落盘。
-     */
-    func uploadFile(connectionId: String?, remotePath: String, localSource: String) async throws 
     
     /**
      * 当前工作区状态，对应 `workspace.getState`。同步、只读内存状态。
@@ -932,40 +853,6 @@ open func connectionCreate(displayName: String, endpoint: String, region: String
 }
     
     /**
-     * List all registered connections (no credentials returned).
-     */
-open func connectionList() -> [ConnectionInfoDto]  {
-    return try!  FfiConverterSequenceTypeConnectionInfoDto.lift(try! rustCall() {
-    uniffi_terminal_finder_core_fn_method_corehandle_connection_list(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-    
-    /**
-     * Remove a connection and its in-memory credentials. Also drops any
-     * cached `S3Provider` and runtime mount for that connection so a future
-     * call with the same `connection_id` cannot reuse stale resources.
-     * Returns `Err(ConnectionNotFound)` if unknown.
-     */
-open func connectionRemove(connectionId: String)async throws   {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_terminal_finder_core_fn_method_corehandle_connection_remove(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(connectionId)
-                )
-            },
-            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
-            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
-            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
-            liftFunc: { $0 },
-            errorHandler: FfiConverterTypeCoreError_lift
-        )
-}
-    
-    /**
      * Re-register a connection using a caller-provided id. Intended for
      * app startup: the client side persists `connection_id` alongside the
      * non-sensitive config, then calls this on launch so the in-memory
@@ -1013,28 +900,6 @@ open func createConnectionTerminal(connectionId: String, cols: UInt16, rows: UIn
 }
     
     /**
-     * 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
-     * 客户端应通过 `connection_capabilities().has_native_directories`
-     * 判断是否需要在 UI 上提示"零字节占位"语义。
-     */
-open func createRemoteDirectory(connectionId: String?, path: String)async throws   {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_terminal_finder_core_fn_method_corehandle_create_remote_directory(
-                    self.uniffiCloneHandle(),
-                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(path)
-                )
-            },
-            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
-            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
-            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
-            liftFunc: { $0 },
-            errorHandler: FfiConverterTypeCoreError_lift
-        )
-}
-    
-    /**
      * 创建 PTY 会话，对应 `terminal.create`。返回 sessionId；
      * 输出 / 退出 / 错误经 `listener` 回调送达（替代 `/terminal` WebSocket 下行流）。
      */
@@ -1071,94 +936,6 @@ open func createWorkspaceTerminal(cols: UInt16, rows: UInt16, listener: Terminal
 }
     
     /**
-     * 删除 `path` 指向的对象/文件/目录。Local 区分文件 / 目录，目录走
-     * `remove_dir_all`；S3 同样按 stat 探测 `<key>/` 是否为目录 marker，
-     * 是就走 `remove_all(<key>/)` 递归删除 marker + 子对象，否则按单 key
-     * 删。两边行为对齐：删一个非空目录会把里面所有内容一并清掉。
-     */
-open func deleteEntry(connectionId: String?, path: String)async throws   {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_terminal_finder_core_fn_method_corehandle_delete_entry(
-                    self.uniffiCloneHandle(),
-                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(path)
-                )
-            },
-            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
-            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
-            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
-            liftFunc: { $0 },
-            errorHandler: FfiConverterTypeCoreError_lift
-        )
-}
-    
-    /**
-     * 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
-     * 50 MiB 上限由 `VfsProvider::read` 强制；超限返回 `provider_error`。
-     * 二进制写盘走 `spawn_blocking`，避免阻塞 tokio runtime。
-     */
-open func downloadFile(connectionId: String?, remotePath: String, localDestination: String)async throws   {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_terminal_finder_core_fn_method_corehandle_download_file(
-                    self.uniffiCloneHandle(),
-                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(remotePath),FfiConverterString.lower(localDestination)
-                )
-            },
-            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
-            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
-            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
-            liftFunc: { $0 },
-            errorHandler: FfiConverterTypeCoreError_lift
-        )
-}
-    
-    /**
-     * 列目录，对应 `workspace.listDirectory`。语义与 `open_directory` 相同的
-     * connection 路由规则。
-     */
-open func listDirectory(path: String, connectionId: String?)async throws  -> DirectoryListingDto  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_terminal_finder_core_fn_method_corehandle_list_directory(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(path),FfiConverterOptionString.lower(connectionId)
-                )
-            },
-            pollFunc: ffi_terminal_finder_core_rust_future_poll_rust_buffer,
-            completeFunc: ffi_terminal_finder_core_rust_future_complete_rust_buffer,
-            freeFunc: ffi_terminal_finder_core_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeDirectoryListingDto_lift,
-            errorHandler: FfiConverterTypeCoreError_lift
-        )
-}
-    
-    /**
-     * 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
-     * S3 由 OpenDAL 原生 async 直发。`connection_id == None` 命中本地 workspace；
-     * 传入注册过的 S3 connection id 时落到对应 S3Provider。
-     */
-open func openDirectory(path: String, connectionId: String?)async throws  -> OpenDirectoryDto  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_terminal_finder_core_fn_method_corehandle_open_directory(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(path),FfiConverterOptionString.lower(connectionId)
-                )
-            },
-            pollFunc: ffi_terminal_finder_core_rust_future_poll_rust_buffer,
-            completeFunc: ffi_terminal_finder_core_rust_future_complete_rust_buffer,
-            freeFunc: ffi_terminal_finder_core_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeOpenDirectoryDto_lift,
-            errorHandler: FfiConverterTypeCoreError_lift
-        )
-}
-    
-    /**
      * 连通性检查，对应 `core.ping`。同步、无 I/O。
      */
 open func ping() -> PingInfo  {
@@ -1167,28 +944,6 @@ open func ping() -> PingInfo  {
             self.uniffiCloneHandle(),$0
     )
 })
-}
-    
-    /**
-     * 重命名/移动 `from` → `to`。S3 是 copy + delete（**非原子**），客户端
-     * 应通过 `connection_capabilities().can_rename == false` 在 UI 上提示。
-     * `from` 和 `to` 必须落在同一个 connection 上；本方法不做跨 provider 搬运。
-     */
-open func renameEntry(connectionId: String?, from: String, to: String)async throws   {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_terminal_finder_core_fn_method_corehandle_rename_entry(
-                    self.uniffiCloneHandle(),
-                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(from),FfiConverterString.lower(to)
-                )
-            },
-            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
-            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
-            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
-            liftFunc: { $0 },
-            errorHandler: FfiConverterTypeCoreError_lift
-        )
 }
     
     /**
@@ -1252,29 +1007,6 @@ open func updateTerminalWorkingDirectory(sessionId: String, directoryUrl: String
             completeFunc: ffi_terminal_finder_core_rust_future_complete_rust_buffer,
             freeFunc: ffi_terminal_finder_core_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeTerminalWorkingDirectoryUpdateDto_lift,
-            errorHandler: FfiConverterTypeCoreError_lift
-        )
-}
-    
-    /**
-     * 读取 `local_source` 并写到 `remote_path`（local 或 S3）。
-     * 上传前后各发一次 `transfer_progress` 事件（0 / total），让 Swift
-     * 端可以驱动进度条。50 MiB 上限来自 `VfsProvider::read` 的对称约束:
-     * 这里复用同一个 inline 读取语义，避免临时落盘。
-     */
-open func uploadFile(connectionId: String?, remotePath: String, localSource: String)async throws   {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_terminal_finder_core_fn_method_corehandle_upload_file(
-                    self.uniffiCloneHandle(),
-                    FfiConverterOptionString.lower(connectionId),FfiConverterString.lower(remotePath),FfiConverterString.lower(localSource)
-                )
-            },
-            pollFunc: ffi_terminal_finder_core_rust_future_poll_void,
-            completeFunc: ffi_terminal_finder_core_rust_future_complete_void,
-            freeFunc: ffi_terminal_finder_core_rust_future_free_void,
-            liftFunc: { $0 },
             errorHandler: FfiConverterTypeCoreError_lift
         )
 }
@@ -1635,262 +1367,6 @@ public func FfiConverterTypeTerminalEventListener_lower(_ value: TerminalEventLi
 }
 
 
-
-
-/**
- * Connection summary DTO (does NOT carry credentials — see `phase1.md` §6.3).
- */
-public struct ConnectionInfoDto: Equatable, Hashable {
-    public var connectionId: String
-    public var displayName: String
-    public var endpoint: String
-    public var bucket: String
-    public var basePrefix: String
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(connectionId: String, displayName: String, endpoint: String, bucket: String, basePrefix: String) {
-        self.connectionId = connectionId
-        self.displayName = displayName
-        self.endpoint = endpoint
-        self.bucket = bucket
-        self.basePrefix = basePrefix
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension ConnectionInfoDto: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeConnectionInfoDto: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConnectionInfoDto {
-        return
-            try ConnectionInfoDto(
-                connectionId: FfiConverterString.read(from: &buf), 
-                displayName: FfiConverterString.read(from: &buf), 
-                endpoint: FfiConverterString.read(from: &buf), 
-                bucket: FfiConverterString.read(from: &buf), 
-                basePrefix: FfiConverterString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: ConnectionInfoDto, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.connectionId, into: &buf)
-        FfiConverterString.write(value.displayName, into: &buf)
-        FfiConverterString.write(value.endpoint, into: &buf)
-        FfiConverterString.write(value.bucket, into: &buf)
-        FfiConverterString.write(value.basePrefix, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeConnectionInfoDto_lift(_ buf: RustBuffer) throws -> ConnectionInfoDto {
-    return try FfiConverterTypeConnectionInfoDto.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeConnectionInfoDto_lower(_ value: ConnectionInfoDto) -> RustBuffer {
-    return FfiConverterTypeConnectionInfoDto.lower(value)
-}
-
-
-/**
- * 单个目录条目。
- */
-public struct DirectoryEntryDto: Equatable, Hashable {
-    public var name: String
-    public var path: String
-    public var kind: EntryKindDto
-    public var isDirectory: Bool
-    public var size: UInt64?
-    public var modifiedAt: String?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(name: String, path: String, kind: EntryKindDto, isDirectory: Bool, size: UInt64?, modifiedAt: String?) {
-        self.name = name
-        self.path = path
-        self.kind = kind
-        self.isDirectory = isDirectory
-        self.size = size
-        self.modifiedAt = modifiedAt
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension DirectoryEntryDto: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeDirectoryEntryDto: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectoryEntryDto {
-        return
-            try DirectoryEntryDto(
-                name: FfiConverterString.read(from: &buf), 
-                path: FfiConverterString.read(from: &buf), 
-                kind: FfiConverterTypeEntryKindDto.read(from: &buf), 
-                isDirectory: FfiConverterBool.read(from: &buf), 
-                size: FfiConverterOptionUInt64.read(from: &buf), 
-                modifiedAt: FfiConverterOptionString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: DirectoryEntryDto, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.name, into: &buf)
-        FfiConverterString.write(value.path, into: &buf)
-        FfiConverterTypeEntryKindDto.write(value.kind, into: &buf)
-        FfiConverterBool.write(value.isDirectory, into: &buf)
-        FfiConverterOptionUInt64.write(value.size, into: &buf)
-        FfiConverterOptionString.write(value.modifiedAt, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeDirectoryEntryDto_lift(_ buf: RustBuffer) throws -> DirectoryEntryDto {
-    return try FfiConverterTypeDirectoryEntryDto.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeDirectoryEntryDto_lower(_ value: DirectoryEntryDto) -> RustBuffer {
-    return FfiConverterTypeDirectoryEntryDto.lower(value)
-}
-
-
-/**
- * 目录清单，对应 `workspace.listDirectory`。
- */
-public struct DirectoryListingDto: Equatable, Hashable {
-    public var path: String
-    public var entries: [DirectoryEntryDto]
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(path: String, entries: [DirectoryEntryDto]) {
-        self.path = path
-        self.entries = entries
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension DirectoryListingDto: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeDirectoryListingDto: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectoryListingDto {
-        return
-            try DirectoryListingDto(
-                path: FfiConverterString.read(from: &buf), 
-                entries: FfiConverterSequenceTypeDirectoryEntryDto.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: DirectoryListingDto, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.path, into: &buf)
-        FfiConverterSequenceTypeDirectoryEntryDto.write(value.entries, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeDirectoryListingDto_lift(_ buf: RustBuffer) throws -> DirectoryListingDto {
-    return try FfiConverterTypeDirectoryListingDto.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeDirectoryListingDto_lower(_ value: DirectoryListingDto) -> RustBuffer {
-    return FfiConverterTypeDirectoryListingDto.lower(value)
-}
-
-
-/**
- * 打开目录的结果，对应 `workspace.openDirectory`。
- */
-public struct OpenDirectoryDto: Equatable, Hashable {
-    public var state: WorkspaceStateDto
-    public var listing: DirectoryListingDto
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(state: WorkspaceStateDto, listing: DirectoryListingDto) {
-        self.state = state
-        self.listing = listing
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension OpenDirectoryDto: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeOpenDirectoryDto: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OpenDirectoryDto {
-        return
-            try OpenDirectoryDto(
-                state: FfiConverterTypeWorkspaceStateDto.read(from: &buf), 
-                listing: FfiConverterTypeDirectoryListingDto.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: OpenDirectoryDto, into buf: inout [UInt8]) {
-        FfiConverterTypeWorkspaceStateDto.write(value.state, into: &buf)
-        FfiConverterTypeDirectoryListingDto.write(value.listing, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeOpenDirectoryDto_lift(_ buf: RustBuffer) throws -> OpenDirectoryDto {
-    return try FfiConverterTypeOpenDirectoryDto.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeOpenDirectoryDto_lower(_ value: OpenDirectoryDto) -> RustBuffer {
-    return FfiConverterTypeOpenDirectoryDto.lower(value)
-}
 
 
 /**
@@ -2422,90 +1898,6 @@ public func FfiConverterTypeCoreError_lower(_ value: CoreError) -> RustBuffer {
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * 目录条目类型。
- */
-
-public enum EntryKindDto: Equatable, Hashable {
-    
-    case directory
-    case file
-    case symlink
-    case other
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension EntryKindDto: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeEntryKindDto: FfiConverterRustBuffer {
-    typealias SwiftType = EntryKindDto
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EntryKindDto {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .directory
-        
-        case 2: return .file
-        
-        case 3: return .symlink
-        
-        case 4: return .other
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: EntryKindDto, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .directory:
-            writeInt(&buf, Int32(1))
-        
-        
-        case .file:
-            writeInt(&buf, Int32(2))
-        
-        
-        case .symlink:
-            writeInt(&buf, Int32(3))
-        
-        
-        case .other:
-            writeInt(&buf, Int32(4))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeEntryKindDto_lift(_ buf: RustBuffer) throws -> EntryKindDto {
-    return try FfiConverterTypeEntryKindDto.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeEntryKindDto_lower(_ value: EntryKindDto) -> RustBuffer {
-    return FfiConverterTypeEntryKindDto.lower(value)
-}
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum WorkspaceTerminalKindDto: Equatable, Hashable {
     
@@ -2665,30 +2057,6 @@ fileprivate struct FfiConverterOptionInt32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
-    typealias SwiftType = UInt64?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterUInt64.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterUInt64.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -2707,56 +2075,6 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         case 1: return try FfiConverterString.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeConnectionInfoDto: FfiConverterRustBuffer {
-    typealias SwiftType = [ConnectionInfoDto]
-
-    public static func write(_ value: [ConnectionInfoDto], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeConnectionInfoDto.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ConnectionInfoDto] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [ConnectionInfoDto]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeConnectionInfoDto.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeDirectoryEntryDto: FfiConverterRustBuffer {
-    typealias SwiftType = [DirectoryEntryDto]
-
-    public static func write(_ value: [DirectoryEntryDto], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeDirectoryEntryDto.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [DirectoryEntryDto] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [DirectoryEntryDto]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeDirectoryEntryDto.read(from: &buf))
-        }
-        return seq
     }
 }
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
@@ -2847,19 +2165,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_create() != 23373) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_list() != 19818) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_remove() != 31790) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_connection_restore() != 25135) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_connection_terminal() != 39246) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_create_remote_directory() != 18923) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_terminal() != 19440) {
@@ -2868,22 +2177,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_terminal_finder_core_checksum_method_corehandle_create_workspace_terminal() != 57245) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_delete_entry() != 50742) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_download_file() != 2091) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_list_directory() != 7913) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_open_directory() != 40737) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_ping() != 37632) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_rename_entry() != 19592) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_resize_terminal() != 21001) {
@@ -2896,9 +2190,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_update_terminal_working_directory() != 41881) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_terminal_finder_core_checksum_method_corehandle_upload_file() != 9104) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_terminal_finder_core_checksum_method_corehandle_workspace_state() != 9720) {
