@@ -248,26 +248,8 @@ impl CoreHandle {
         &self,
         connection_id: String,
     ) -> Result<(), crate::ffi::error::CoreError> {
-        use crate::connection::ConnectionId;
-        use crate::error::ApiError;
-
-        let id = ConnectionId(connection_id);
-        if self.state.connections().get(&id).is_some() {
-            if let Some(mountpoint) = self.state.mounts().mountpoint(&id) {
-                let runtime = self.state.workspace_runtime();
-                runtime.unmount(&mountpoint).await?;
-                self.state.mounts().release(&id);
-            }
-            self.state.connections().remove(&id);
-            self.state.providers().remove_connection(&id);
-            tracing::info!(method = "connection.remove", "connection removed");
-            Ok(())
-        } else {
-            Err(ApiError::ConnectionNotFound {
-                connection_id: id.0,
-            }
-            .into())
-        }
+        crate::workspace::service::remove_connection(&self.state, &connection_id).await?;
+        Ok(())
     }
 
     /// 打开目录，对应 `workspace.openDirectory`。异步：local 走 spawn_blocking，
@@ -392,37 +374,13 @@ impl CoreHandle {
         remote_path: String,
         local_source: String,
     ) -> Result<(), CoreError> {
-        use crate::error::ApiError;
-
-        let path_buf = std::path::PathBuf::from(&local_source);
-        let read_path = path_buf.clone();
-        let data = tokio::task::spawn_blocking(move || std::fs::read(&read_path))
-            .await
-            .map_err(|e| ApiError::BackgroundTask {
-                operation: "ffi.upload_file",
-                message: e.to_string(),
-            })?
-            .map_err(|source| ApiError::FileSystemRead {
-                path: path_buf,
-                source,
-            })?;
-
-        let (location, provider) = crate::workspace::service::resolve_provider(
+        crate::workspace::service::upload_file(
             &self.state,
             connection_id.as_deref(),
-            std::path::Path::new(&remote_path),
-        )?;
-        let total = data.len() as u64;
-        let conn_label = connection_id.as_deref().unwrap_or("");
-        self.send_progress_event(conn_label, &remote_path, 0, total);
-        provider.write(&location.path, data).await?;
-        self.send_progress_event(conn_label, &remote_path, total, total);
-        tracing::info!(
-            method = "workspace.uploadFile",
-            connection_id = conn_label,
-            bytes = total,
-            "upload complete"
-        );
+            &remote_path,
+            &local_source,
+        )
+        .await?;
         Ok(())
     }
 
@@ -435,12 +393,8 @@ impl CoreHandle {
         connection_id: Option<String>,
         path: String,
     ) -> Result<(), CoreError> {
-        let (location, provider) = crate::workspace::service::resolve_provider(
-            &self.state,
-            connection_id.as_deref(),
-            std::path::Path::new(&path),
-        )?;
-        provider.delete(&location.path).await?;
+        crate::workspace::service::delete_entry(&self.state, connection_id.as_deref(), &path)
+            .await?;
         Ok(())
     }
 
@@ -452,12 +406,12 @@ impl CoreHandle {
         connection_id: Option<String>,
         path: String,
     ) -> Result<(), CoreError> {
-        let (location, provider) = crate::workspace::service::resolve_provider(
+        crate::workspace::service::create_remote_directory(
             &self.state,
             connection_id.as_deref(),
-            std::path::Path::new(&path),
-        )?;
-        provider.create_directory(&location.path).await?;
+            &path,
+        )
+        .await?;
         Ok(())
     }
 
@@ -470,43 +424,9 @@ impl CoreHandle {
         from: String,
         to: String,
     ) -> Result<(), CoreError> {
-        let (location, provider) = crate::workspace::service::resolve_provider(
-            &self.state,
-            connection_id.as_deref(),
-            std::path::Path::new(&from),
-        )?;
-        // `from` 经 resolve 拿到 location.path；`to` 也要经过同一个 provider 的
-        // path 规范（base_prefix 等），所以这里再次调 resolve_provider 取
-        // location 即可。两次 resolve 共享同一个 provider 缓存条目，没有额外开销。
-        let (target_location, _) = crate::workspace::service::resolve_provider(
-            &self.state,
-            connection_id.as_deref(),
-            std::path::Path::new(&to),
-        )?;
-        provider
-            .rename(&location.path, &target_location.path)
+        crate::workspace::service::rename_entry(&self.state, connection_id.as_deref(), &from, &to)
             .await?;
         Ok(())
-    }
-
-    /// Send a `transfer_progress` envelope through the shared broadcast
-    /// channel so Swift `EventClient` subscribers can drive progress bars.
-    /// Best-effort: a closed channel just drops the event (no subscribers).
-    fn send_progress_event(
-        &self,
-        connection_id: &str,
-        path: &str,
-        bytes_transferred: u64,
-        total_bytes: u64,
-    ) {
-        let payload = serde_json::json!({
-            "type": "transfer_progress",
-            "connection_id": connection_id,
-            "path": path,
-            "bytes_transferred": bytes_transferred,
-            "total_bytes": total_bytes,
-        });
-        let _ = self.state.events().send(payload.to_string());
     }
 
     /// 读取 `remote_path`（local 或 S3）后写入 `local_destination`。
@@ -518,28 +438,13 @@ impl CoreHandle {
         remote_path: String,
         local_destination: String,
     ) -> Result<(), CoreError> {
-        use crate::error::ApiError;
-
-        let (location, provider) = crate::workspace::service::resolve_provider(
+        crate::workspace::service::download_file(
             &self.state,
             connection_id.as_deref(),
-            std::path::Path::new(&remote_path),
-        )?;
-        let bytes = provider.read(&location.path).await?;
-        let dst = std::path::PathBuf::from(local_destination);
-        let dst_for_write = dst.clone();
-        tokio::task::spawn_blocking(move || std::fs::write(&dst_for_write, &bytes))
-            .await
-            .map_err(|e| ApiError::BackgroundTask {
-                operation: "ffi.download_file",
-                message: e.to_string(),
-            })?
-            .map_err(|source| ApiError::FileSystemRead { path: dst, source })?;
-        tracing::info!(
-            method = "workspace.downloadFile",
-            connection_id = connection_id.as_deref().unwrap_or(""),
-            "download complete"
-        );
+            &remote_path,
+            &local_destination,
+        )
+        .await?;
         Ok(())
     }
 }

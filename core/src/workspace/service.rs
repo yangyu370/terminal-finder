@@ -118,6 +118,151 @@ pub async fn list_directory(
     Ok(result)
 }
 
+/// 删除 `path` 指向的对象/文件/目录。Local 区分文件 / 目录，目录走
+/// `remove_dir_all`；S3 按 `<key>/` marker 探测递归删除。两边行为对齐。
+pub async fn delete_entry(
+    state: &AppState,
+    connection_id: Option<&str>,
+    path: &str,
+) -> Result<(), ApiError> {
+    let (location, provider) = resolve_provider(state, connection_id, Path::new(path))?;
+    provider.delete(&location.path).await?;
+    Ok(())
+}
+
+/// 在 `path` 上创建目录（Local: `create_dir_all`；S3: 零字节 marker）。
+pub async fn create_remote_directory(
+    state: &AppState,
+    connection_id: Option<&str>,
+    path: &str,
+) -> Result<(), ApiError> {
+    let (location, provider) = resolve_provider(state, connection_id, Path::new(path))?;
+    provider.create_directory(&location.path).await?;
+    Ok(())
+}
+
+/// 重命名/移动 `from` → `to`。S3 是 copy + delete（非原子）。`from` 和 `to`
+/// 必须落在同一个 connection 上；两次 `resolve_provider` 共享同一缓存条目。
+pub async fn rename_entry(
+    state: &AppState,
+    connection_id: Option<&str>,
+    from: &str,
+    to: &str,
+) -> Result<(), ApiError> {
+    let (location, provider) = resolve_provider(state, connection_id, Path::new(from))?;
+    let (target_location, _) = resolve_provider(state, connection_id, Path::new(to))?;
+    provider
+        .rename(&location.path, &target_location.path)
+        .await?;
+    Ok(())
+}
+
+/// 读取 `local_source` 并写到 `remote_path`（local 或 S3）。上传前后各发一次
+/// `transfer_progress` 事件（0 / total）驱动进度条。50 MiB 上限来自
+/// `VfsProvider::write` 的对称约束。
+pub async fn upload_file(
+    state: &AppState,
+    connection_id: Option<&str>,
+    remote_path: &str,
+    local_source: &str,
+) -> Result<(), ApiError> {
+    let path_buf = PathBuf::from(local_source);
+    let read_path = path_buf.clone();
+    let data = tokio::task::spawn_blocking(move || std::fs::read(&read_path))
+        .await
+        .map_err(|e| ApiError::BackgroundTask {
+            operation: "ffi.upload_file",
+            message: e.to_string(),
+        })?
+        .map_err(|source| ApiError::FileSystemRead {
+            path: path_buf,
+            source,
+        })?;
+
+    let (location, provider) = resolve_provider(state, connection_id, Path::new(remote_path))?;
+    let total = data.len() as u64;
+    let conn_label = connection_id.unwrap_or("");
+    send_progress_event(state, conn_label, remote_path, 0, total);
+    provider.write(&location.path, data).await?;
+    send_progress_event(state, conn_label, remote_path, total, total);
+    tracing::info!(
+        method = "workspace.uploadFile",
+        connection_id = conn_label,
+        bytes = total,
+        "upload complete"
+    );
+    Ok(())
+}
+
+/// 读取 `remote_path`（local 或 S3）后写入 `local_destination`。50 MiB 上限由
+/// `VfsProvider::read` 强制；二进制写盘走 `spawn_blocking`，避免阻塞 runtime。
+pub async fn download_file(
+    state: &AppState,
+    connection_id: Option<&str>,
+    remote_path: &str,
+    local_destination: &str,
+) -> Result<(), ApiError> {
+    let (location, provider) = resolve_provider(state, connection_id, Path::new(remote_path))?;
+    let bytes = provider.read(&location.path).await?;
+    let dst = PathBuf::from(local_destination);
+    let dst_for_write = dst.clone();
+    tokio::task::spawn_blocking(move || std::fs::write(&dst_for_write, &bytes))
+        .await
+        .map_err(|e| ApiError::BackgroundTask {
+            operation: "ffi.download_file",
+            message: e.to_string(),
+        })?
+        .map_err(|source| ApiError::FileSystemRead { path: dst, source })?;
+    tracing::info!(
+        method = "workspace.downloadFile",
+        connection_id = connection_id.unwrap_or(""),
+        "download complete"
+    );
+    Ok(())
+}
+
+/// 移除一个 connection 及其内存凭据，并清掉 runtime mount 与缓存的 `S3Provider`，
+/// 使同名 `connection_id` 的后续调用无法复用陈旧资源。未知 id 返回
+/// `ConnectionNotFound`。
+pub async fn remove_connection(state: &AppState, connection_id: &str) -> Result<(), ApiError> {
+    let id = ConnectionId(connection_id.to_string());
+    if state.connections().get(&id).is_some() {
+        if let Some(mountpoint) = state.mounts().mountpoint(&id) {
+            let runtime = state.workspace_runtime();
+            runtime.unmount(&mountpoint).await?;
+            state.mounts().release(&id);
+        }
+        state.connections().remove(&id);
+        state.providers().remove_connection(&id);
+        tracing::info!(method = "connection.remove", "connection removed");
+        Ok(())
+    } else {
+        Err(ApiError::ConnectionNotFound {
+            connection_id: id.0,
+        })
+    }
+}
+
+/// Send a `transfer_progress` envelope through the shared broadcast channel so
+/// Swift `EventClient` subscribers can drive progress bars. Best-effort: a
+/// closed channel just drops the event (no subscribers).
+fn send_progress_event(
+    state: &AppState,
+    connection_id: &str,
+    path: &str,
+    bytes_transferred: u64,
+    total_bytes: u64,
+) {
+    let payload = serde_json::json!({
+        "type": "transfer_progress",
+        "connection_id": connection_id,
+        "path": path,
+        "bytes_transferred": bytes_transferred,
+        "total_bytes": total_bytes,
+    });
+    let _ = state.events().send(payload.to_string());
+}
+
 /// 解析请求落到哪个 provider。
 ///
 /// - `connection_id == None` → Phase 0 LocalFsProvider，不触碰 `ConnectionRegistry`。
@@ -424,6 +569,40 @@ mod tests {
         )
         .await
         .expect_err("removed connection id must not route via stale cache");
+        assert_eq!(err.code(), "connection_not_found");
+    }
+
+    #[tokio::test]
+    async fn delete_entry_removes_a_real_local_file() {
+        // Locks the extracted fs service entry point on the local provider,
+        // independent of the FFI layer.
+        let app_state = AppState::new("test");
+        let file = std::env::temp_dir().join(format!(
+            "tf_svc_delete_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&file, b"bye").expect("write temp file");
+        assert!(file.exists());
+
+        delete_entry(&app_state, None, &file.to_string_lossy())
+            .await
+            .expect("deleting a real local file must succeed");
+
+        assert!(!file.exists(), "delete_entry must remove the file");
+    }
+
+    #[tokio::test]
+    async fn remove_connection_unknown_id_returns_connection_not_found() {
+        let app_state = AppState::new("test");
+
+        let err = remove_connection(&app_state, "nonexistent")
+            .await
+            .expect_err("removing an unknown connection must fail");
+
         assert_eq!(err.code(), "connection_not_found");
     }
 }
