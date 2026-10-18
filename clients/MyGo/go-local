@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export GOPATH="$base/.cache/gopath"
+export GOMODCACHE="$base/.cache/modules"
+export GOCACHE="$base/.cache/go-build"
+export GOTOOLCHAIN=local
+export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
+export GOSUMDB="${GOSUMDB:-sum.golang.org https://goproxy.cn/sumdb/sum.golang.org}"
+export PATH="$base/.tools/go/bin:$PATH"
+export CGO_ENABLED="${CGO_ENABLED:-0}"
+if [ -d /Library/Developer/CommandLineTools ]; then
+    export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+    export CC=/Library/Developer/CommandLineTools/usr/bin/clang
+    export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.5.sdk
+fi
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+exec "$base/.tools/go/bin/go" "$@"

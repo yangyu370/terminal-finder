@@ -1,0 +1,62 @@
+{
+  "sourceSHA256": "d02c1a0bb4f062578f4024c7658c7039601843a00d57e96becefdbbdd36fb1dc",
+  "sourcePixels": [
+    2306,
+    1362
+  ],
+  "windowRectPixels": [
+    112,
+    76,
+    2194,
+    1214
+  ],
+  "devicePixelsPerPoint": 2,
+  "colorSpace": "sRGB (ICC converted if source profile present)",
+  "referenceState": "dark, list selected, back/forward disabled, four view modes enabled",
+  "productionStateDifference": "columns/gallery remain disabled in MVP; primary comparison retains this difference",
+  "regionsRelativeToWindowPixels": {
+    "navigation": [
+      368,
+      16,
+      514,
+      90
+    ],
+    "view-mode": [
+      1272,
+      16,
+      1568,
+      90
+    ],
+    "search": [
+      1990,
+      16,
+      2068,
+      90
+    ],
+    "table-header-name": [
+      436,
+      104,
+      522,
+      156
+    ],
+    "table-stripes": [
+      1000,
+      490,
+      1200,
+      650
+    ],
+    "sidebar-label-desktop": [
+      108,
+      310,
+      250,
+      348
+    ],
+    "sidebar-icon-desktop": [
+      30,
+      310,
+      110,
+      348
+    ]
+  },
+  "scope": "isolated components only, not a full-window equality assertion"
+}

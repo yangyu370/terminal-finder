@@ -120,6 +120,10 @@ Core 负责 workspace state、目录验证、listing、local / S3 provider 路�
 
 可选 axum HTTP/WebSocket server 只用于联调和未来非 macOS 客户端。默认 macOS app 走 UniFFI；FFI facade 与可选 HTTP/RPC 镜像同一套语义。
 
+## 本分支的 MyGo 实验客户端
+
+本实验分支在 `clients/MyGo/` 保存独立的 Go/MyGo 自绘 Finder 风格客户端，复用 Rust 的可选 server 模式；原 macOS 客户端继续默认走进程内 UniFFI。Go 客户端的完整本地终端工作流目前在 macOS 验证，Windows 已交叉编译组件入口，尚需适配 backend/shell 与实机验证。接手说明及 Finder 截图见 [Windows MyGo 交接文档](WINDOWS_MYGO_HANDOFF.md)，构建入口见 [客户端 README](clients/MyGo/README.md)。
+
 ## 开发入口
 
 仓库里最重要的目录：
