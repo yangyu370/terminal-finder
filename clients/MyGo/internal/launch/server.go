@@ -44,6 +44,7 @@ func Start(ctx context.Context, binary, endpoint, directory, logPath string) (*S
 		return nil, err
 	}
 	cmd := exec.Command(binary)
+	configureManagedProcess(cmd)
 	cmd.Dir = directory
 	cmd.Env = append(os.Environ(), "RUST_LOG=warn", "TERM=xterm-256color", "COLORTERM=truecolor")
 	// The existing optional server validates OSC 7 authorities against HOST.
