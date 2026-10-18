@@ -9,6 +9,8 @@ jobs:
   windows-native:
     runs-on: windows-latest
     timeout-minutes: 25
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/clients/MyGo/.cache/rust-target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

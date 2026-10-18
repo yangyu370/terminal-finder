@@ -229,3 +229,32 @@ func TestTableHeaderLabelsShareBaseline(t *testing.T) {
 		}
 	}
 }
+
+func TestLongBreadcrumbPreservesTerminalInput(t *testing.T) {
+	b := NewDemo()
+	m := b.Model.(*DemoModel)
+	for _, dir := range []string{filepath.Join(os.TempDir(), "TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation2193142064", "001", "中文 space ' quote"), filepath.Join(os.TempDir(), "short")} {
+		m.state.Directory = dir
+		b.TerminalOpen = true
+		typed := ""
+		b.Terminal = func(c *ui.Context) {
+			ui.Box(c).Fill().Focusable().TextCaret(ui.Rect{}).Label("Terminal input probe").HandleInput(func(ev ui.InputEvent) bool {
+				if ev.Kind == ui.InputText {
+					typed += ev.Text
+					return true
+				}
+				return false
+			})
+		}
+		tt := ui.NewTester(b.View, 1120, 720)
+		click(t, tt, "Terminal input probe")
+		if !tt.Focused("Terminal input probe") {
+			r, _ := tt.Find("Terminal input probe")
+			t.Fatalf("terminal not focused: path=%s bounds=%+v", dir, r)
+		}
+		tt.Type("user-command")
+		if typed != "user-command" {
+			t.Fatalf("terminal input missing: %q", typed)
+		}
+	}
+}

@@ -140,12 +140,25 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
+		r, _ := tt.Find("Terminal screen")
+		t.Logf("terminal bounds=%+v focused=%v", r, tt.Focused("Terminal screen"))
+		for _, p := range []string{"native-cwd-*"} {
+			files, _ := filepath.Glob(filepath.Join(root, p))
+			for _, f := range files {
+				data, err := os.ReadFile(f)
+				t.Logf("cwd evidence %s: %q %v", f, data, err)
+			}
+		}
 		t.Fatalf("Windows integration timed out: %+v\n%s\n%s", c.Snapshot(), renderer.Text(), trace.diagnostic())
 	}
 	command := func(s string) {
 		t.Helper()
 		if e := tt.Click("Terminal screen"); e != nil {
 			t.Fatal(e)
+		}
+		if !tt.Focused("Terminal screen") {
+			r, _ := tt.Find("Terminal screen")
+			t.Fatalf("terminal click did not focus input; bounds=%+v text=%v", r, tt.Texts())
 		}
 		tt.Type(s)
 		tt.Key(0, ui.KeyEnter)
