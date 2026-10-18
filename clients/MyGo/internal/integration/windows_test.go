@@ -120,7 +120,7 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 	}
 	c.Start(stream)
 	trace := &tracedTerminal{Terminal: stream}
-	renderer, e := terminal.New(terminal.Options{Conn: trace, Theme: terminal.DarkTheme(), Font: terminal.Font{Family: "monospace", Size: 12}})
+	renderer, e := terminal.New(terminal.Options{Conn: trace, OnKey: func(mods ui.Modifiers, key ui.Key) bool { t.Logf("terminal key: %v %v", mods, key); return false }, Theme: terminal.DarkTheme(), Font: terminal.Font{Family: "monospace", Size: 12}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -128,7 +128,11 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 	b := finderui.New(c, root, root)
 	b.Dark = true
 	b.TerminalOpen = true
-	b.Terminal = func(cx *ui.Context) { terminal.View(cx, renderer).Fill().Label("Terminal screen") }
+	exactFocus := false
+	b.Terminal = func(cx *ui.Context) {
+		e := terminal.View(cx, renderer).Fill().Label("Terminal screen")
+		exactFocus = e.Focused()
+	}
 	tt := ui.NewTester(b.View, 1120, 720)
 	pump := func(condition func() bool) {
 		t.Helper()
@@ -160,8 +164,11 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 			r, _ := tt.Find("Terminal screen")
 			t.Fatalf("terminal click did not focus input; bounds=%+v text=%v", r, tt.Texts())
 		}
+		t.Logf("command before type focused=%v exact=%v", tt.Focused("Terminal screen"), exactFocus)
 		tt.Type(s)
+		t.Logf("command after type focused=%v exact=%v", tt.Focused("Terminal screen"), exactFocus)
 		tt.Key(0, ui.KeyEnter)
+		t.Logf("command after enter focused=%v exact=%v", tt.Focused("Terminal screen"), exactFocus)
 	}
 	verifyCwd := func(want string) {
 		t.Helper()
@@ -182,11 +189,10 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 		})
 	}
 	pump(func() bool { return c.Snapshot().Sync == "Synced" })
-	// Separate raw transport readiness from UI key encoding in native CI.
-	if _, e = stream.Write([]byte("Write-Output '__RAW_READY__'\r")); e != nil {
-		t.Fatal(e)
-	}
-	pump(func() bool { return strings.Contains(renderer.Text(), "__RAW_READY__") })
+	// Exercise the renderer queue independently of hit testing.
+	rawReady := filepath.Join(root, "queue-ready")
+	renderer.Send([]byte("[IO.File]::WriteAllText(" + psLiteral(rawReady) + ", 'ready')\r"))
+	pump(func() bool { _, e := os.Stat(rawReady); return e == nil })
 	// Exercise actual UI navigation followed by native process and PS cwd checks.
 	if e = tt.Click(filepath.Base(child)); e != nil {
 		t.Fatal(e)
