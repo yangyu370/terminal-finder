@@ -14,7 +14,11 @@ use uuid::Uuid;
 use crate::terminal::shell_integration::ShellIntegration;
 
 const LOG_TARGET: &str = "terminal";
+#[cfg(not(windows))]
 const DEFAULT_SHELL: &str = "/bin/zsh";
+#[cfg(windows)]
+const DEFAULT_SHELL: &str = "pwsh.exe";
+const DOCKER_SHELL: &str = "/bin/zsh";
 const DEFAULT_TERM: &str = "xterm-256color";
 #[cfg(target_os = "macos")]
 const DEFAULT_UTF8_LOCALE: &str = "en_US.UTF-8";
@@ -139,9 +143,22 @@ fn build_command(launch: &TerminalLaunch) -> CommandBuilder {
     let mut command = match launch {
         TerminalLaunch::LocalShell { cwd, integration } => {
             let mut command = CommandBuilder::new(DEFAULT_SHELL);
-            command.arg("-l");
-            command.arg("-i");
+            #[cfg(not(windows))]
+            command.args(["-l", "-i"]);
+            #[cfg(windows)]
+            command.args(["-NoLogo", "-NoProfile", "-NoExit"]);
+            #[cfg(not(windows))]
             command.cwd(cwd);
+            #[cfg(windows)]
+            {
+                let path = cwd.to_string_lossy();
+                let normalized = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+                    format!(r"\\{unc}")
+                } else {
+                    path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
+                };
+                command.cwd(normalized);
+            }
             if let Some(integration) = integration {
                 configure_shell_integration(&mut command, integration);
             }
@@ -161,7 +178,7 @@ fn build_command(launch: &TerminalLaunch) -> CommandBuilder {
                 "-w",
                 workdir.as_str(),
                 container.as_str(),
-                DEFAULT_SHELL,
+                DOCKER_SHELL,
                 "-l",
             ]);
             // macOS GUI app PATH 默认不含 Docker Desktop 安装位置；portable_pty 的
@@ -181,6 +198,7 @@ fn session_resources(launch: &TerminalLaunch) -> Option<ShellIntegration> {
     }
 }
 
+#[cfg(unix)]
 fn configure_shell_integration(command: &mut CommandBuilder, integration: &ShellIntegration) {
     command.env("ZDOTDIR", integration.dir());
     command.env("TF_CD_REQUEST", integration.request_file());
@@ -189,6 +207,13 @@ fn configure_shell_integration(command: &mut CommandBuilder, integration: &Shell
         .or_else(|| env::var_os("HOME"))
         .unwrap_or_default();
     command.env("TF_USER_ZDOTDIR", user_zdotdir);
+}
+
+#[cfg(windows)]
+fn configure_shell_integration(command: &mut CommandBuilder, integration: &ShellIntegration) {
+    command.args(["-ExecutionPolicy", "Bypass", "-File"]);
+    command.arg(integration.startup_script());
+    command.env("TF_CONTROL_DIRECTORY", integration.dir());
 }
 
 fn configure_terminal_environment(command: &mut CommandBuilder) {
@@ -455,7 +480,7 @@ mod tests {
                 "-w",
                 "/workspace",
                 "terminal-finder-dev",
-                DEFAULT_SHELL,
+                DOCKER_SHELL,
                 "-l",
             ]
         );
@@ -522,6 +547,7 @@ mod tests {
         assert_eq!(argv.first().map(String::as_str), Some(DEFAULT_SHELL));
     }
 
+    #[cfg(unix)]
     #[test]
     fn local_shell_launch_with_integration_sets_zdotdir_and_request_env() {
         let integration = ShellIntegration::create().expect("integration");

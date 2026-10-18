@@ -4,6 +4,7 @@ package finderui
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"terminal-finder-mygo/internal/backend"
@@ -182,7 +183,11 @@ func (m *DemoModel) Forward() {
 }
 func (m *DemoModel) Refresh() { m.state.Error = "" }
 func NewDemo() *Browser {
-	root := filepath.FromSlash("/Users/alex/Projects/terminal-finder")
+	home := filepath.FromSlash("/Users/alex")
+	if runtime.GOOS == "windows" {
+		home = `C:\Users\alex`
+	}
+	root := filepath.Join(home, "Projects", "terminal-finder")
 	names := []string{"clients/", "core/", "docs/", "protocol/", "scripts/", "Cargo.lock", "Cargo.toml", "LICENSE", "README.md", "build.sh", "rust-toolchain.toml", ".gitignore"}
 	m := &DemoModel{folders: map[string][]backend.Entry{}, history: []string{root}}
 	for i, name := range names {
@@ -198,7 +203,6 @@ func NewDemo() *Browser {
 			m.folders[child.Path] = nil
 		}
 	}
-	home := filepath.FromSlash("/Users/alex")
 	for _, p := range []string{home, filepath.Dir(root), filepath.Join(home, "Desktop"), filepath.Join(home, "Documents"), filepath.Join(home, "Downloads")} {
 		m.folders[p] = []backend.Entry{{Name: filepath.Base(root), Path: root, IsDirectory: true}}
 	}

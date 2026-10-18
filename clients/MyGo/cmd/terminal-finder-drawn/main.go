@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -31,10 +32,9 @@ func main() {
 func run() error {
 	home, _ := os.UserHomeDir()
 	exe, _ := os.Executable()
-	resources := filepath.Join(filepath.Dir(exe), "..", "Resources")
 	defaultCore := os.Getenv("TF_CORE_BINARY")
 	if defaultCore == "" {
-		defaultCore = filepath.Join(resources, "terminal-finder-core")
+		defaultCore = launch.DefaultCorePath(exe, runtime.GOOS)
 	}
 	endpoint := flag.String("endpoint", "http://127.0.0.1:3587", "loopback Rust core origin")
 	path := flag.String("workspace", home, "initial local directory")

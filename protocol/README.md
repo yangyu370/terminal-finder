@@ -865,3 +865,11 @@ workspace_start_failed          shared workspace or terminal could not start
 mount_failed                    bucket mount failed
 mount_timeout                   mount did not become ready in time
 ```
+
+### 实验分支：Windows 本地终端
+
+MyGo 实验客户端使用本节的可选 server 模式，默认 macOS 客户端仍为进程内 FFI。Windows 本地会话由 Rust 的 portable-pty/ConPTY 创建，首版要求 PowerShell 7.2+ (`pwsh.exe`) 和 PSReadLine 2.2+。用户profile不被修改；独立的每会话控制文件只传目录数据，PowerShell在提示符/空输入行的OnIdle安全时机应用，不能向前台程序stdin注入 `cd`。
+
+外部 terminal DTO、消息类型与FFI方法签名不变。Windows OSC7 使用本地authority，例如 `file://localhost/C%3A/work/project` 或 `file://localhost//server/share/project`；路径部分转换为Windows原生盘符/UNC后再按现有规则验证、canonicalize。远端shell authority仍拒绝，不因UNC支持而放行任意主机。客户端以core的 `matchesCurrent` 判断路径等价，不能把 `C:\...` 与 `\\?\C:\...` 的字符串不同视为目录不同。
+
+`terminal.changeDirectory` 的queued仍只表示排队；只有后续实际cwd报告才确认同步。PowerShell应用失败会由后续控制请求返回 `terminal_control_failed`，客户端显示阻塞而不是永久等待。独立控制文件随Rust会话回收。Windows原生验证与支持状态见根目录 `WINDOWS_MYGO_HANDOFF.md`。

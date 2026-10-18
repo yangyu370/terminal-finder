@@ -276,7 +276,13 @@ func (c *Controller) observe(o observation) {
 		c.publish(nil)
 		return
 	}
-	if !c.state.Report(r.ReportedDirectory, o.report.Sequence) {
+	// Core has canonicalized both paths. Windows drive casing/verbatim
+	// prefixes can differ even when they name the same directory.
+	reported := r.ReportedDirectory
+	if r.MatchesCurrent {
+		reported = c.state.Directory
+	}
+	if !c.state.Report(reported, o.report.Sequence) {
 		c.publish(nil)
 		return
 	}
@@ -290,6 +296,7 @@ func (c *Controller) observe(o observation) {
 		return
 	}
 	c.state.Directory = result.State.CurrentDirectory
+	c.state.Terminal = result.State.CurrentDirectory
 	c.state.Error = ""
 	c.remember(c.state.Directory)
 	c.publish(&result)

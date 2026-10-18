@@ -1113,7 +1113,9 @@ fn decode_file_url(raw: &str) -> Result<String, CwdDecodeError> {
         return Err(CwdDecodeError::UnsupportedHost);
     }
 
-    percent_decode(path)
+    percent_decode(path).and_then(|decoded| {
+        crate::terminal::cwd_url::native_path(decoded).map_err(CwdDecodeError::Invalid)
+    })
 }
 
 fn host_is_local(host: &str) -> bool {
@@ -1892,4 +1894,22 @@ mod tests {
     }
 
     const DEFAULT_TEST_SHELL: &str = "/bin/zsh";
+}
+
+#[cfg(all(test, windows))]
+mod windows_url_tests {
+    use super::*;
+    #[test]
+    fn windows_local_url_drive_unc_and_remote_authority() {
+        assert_eq!(
+            decode_file_url("file://localhost/C%3A/space%20%E4%B8%AD").unwrap(),
+            "C:\\space 中"
+        );
+        assert_eq!(
+            decode_file_url("file://localhost//server/share/name%23%25").unwrap(),
+            "\\\\server\\share\\name#%"
+        );
+        assert!(decode_file_url("file://definitely-remote.invalid/C:/path").is_err());
+        assert!(decode_file_url("file://localhost/relative").is_err());
+    }
 }

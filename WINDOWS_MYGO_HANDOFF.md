@@ -2,7 +2,24 @@
 
 交接日期：2026-10-17。分支：`codex/mygo-drawn-windows-handoff`。基线：`master` 的 `11fa3289d6e75bb7509c143622b5d3713120e344`。
 
-## 目标与当前状态
+## 2026-10-18 实现更新（优先于下文初始交接记录）
+
+本分支现已加入 Windows 原生终端实现：portable-pty/ConPTY、PowerShell7.2+与PSReadLine2.2+引导、独立不可变JSON目录请求、空提示符OnIdle应用、OSC7盘符/UNC转换、失败回报、Windows资源定位与原生构建/测试脚本。Unix/zsh实现保留在平台模块中；外部DTO/协议形状不变。
+
+使用原生Windows PowerShell7运行：
+
+```powershell
+Set-Location clients\MyGo
+.\build-windows.ps1
+.\dist\terminal-finder-drawn.exe --dark --workspace 'C:\work\project'
+.\test-windows.ps1
+```
+
+`-PreviewOnly` 可只构建不依赖Rust/DLL的组件样板。完整构建自动校验对应MyGo版本的Ghostty DLL并将 `core.exe`、`ghostty-vt.dll` 放到客户端exe旁。PowerShell7必须在PATH；Windows PowerShell5.1不在本首版支持范围内。`test-windows.ps1` 包含真实PTY、MyGo/Ghostty渲染、双向cwd、中文/空格/引号、原生子进程cwd、前台stdin隔离、应用失败、resize及退出检查。
+
+Windows-native CI：`.github/workflows/mygo-windows.yml`。实现验证进行中，不能将下面的历史交叉编译记录当成新实现的实际运行结果；最终状态以CI和提交验证记录为准。物理Windows桌面、输入法、多DPI和UNC真实服务器仍需额外验收。
+
+## 初始交接的目标与状态（2026-10-17）
 
 接手目标是在 Windows 原生桌面上运行 `clients/MyGo/` 的同一套 Finder 风格自绘 UI，连接同仓 Rust core，实现真实终端与文件视图目录双向同步。不要重新写一套 WinForms/WPF UI，也不要把本次工作替换为 WSL-only 方案。
 

@@ -469,7 +469,9 @@ fn decode_file_url(raw: &str) -> Result<String, CwdDecodeError> {
         return Err(CwdDecodeError::UnsupportedHost);
     }
 
-    percent_decode(path)
+    percent_decode(path).and_then(|decoded| {
+        crate::terminal::cwd_url::native_path(decoded).map_err(CwdDecodeError::Invalid)
+    })
 }
 
 fn host_is_local(host: &str) -> bool {
@@ -488,6 +490,7 @@ fn host_is_local(host: &str) -> bool {
 
 /// 本机 hostname，取自 `gethostname(2)`——与 zsh `$HOST` / OSC 7 `file://<host>` 的来源一致。
 /// GUI 进程环境不会导出 `HOST`/`HOSTNAME`，所以不能用环境变量判断本机。
+#[cfg(unix)]
 fn local_hostname() -> Option<String> {
     let mut buffer = vec![0_u8; 256];
     // SAFETY: buffer 可写且容量为 buffer.len()；gethostname 最多写入该长度并以 NUL 结尾。
@@ -504,6 +507,24 @@ fn local_hostname() -> Option<String> {
     String::from_utf8(buffer)
         .ok()
         .filter(|name| !name.is_empty())
+}
+
+#[cfg(windows)]
+fn local_hostname() -> Option<String> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        #[link_name = "GetComputerNameW"]
+        fn get_computer_name(buffer: *mut u16, size: *mut u32) -> i32;
+    }
+    let mut buffer = [0u16; 256];
+    let mut size = buffer.len() as u32;
+    // SAFETY: buffer is writable for size UTF-16 units; size is a valid out pointer.
+    if unsafe { get_computer_name(buffer.as_mut_ptr(), &mut size) } == 0 {
+        return None;
+    }
+    String::from_utf16(&buffer[..size as usize])
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 fn percent_decode(raw: &str) -> Result<String, CwdDecodeError> {
@@ -1092,5 +1113,23 @@ mod tests {
         }
 
         assert!(state.terminals().is_empty());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_url_tests {
+    use super::*;
+    #[test]
+    fn windows_local_url_drive_unc_and_remote_authority() {
+        assert_eq!(
+            decode_file_url("file://localhost/C%3A/space%20%E4%B8%AD").unwrap(),
+            "C:\\space 中"
+        );
+        assert_eq!(
+            decode_file_url("file://localhost//server/share/name%23%25").unwrap(),
+            "\\\\server\\share\\name#%"
+        );
+        assert!(decode_file_url("file://definitely-remote.invalid/C:/path").is_err());
+        assert!(decode_file_url("file://localhost/relative").is_err());
     }
 }
