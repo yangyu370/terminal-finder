@@ -13,3 +13,5 @@ Implementation sequence:
 6. Update handoff/protocol/README with requirements and actual evidence; review and push to the existing experiment branch.
 
 Acceptance: UI→PowerShell cwd and PowerShell→UI; Unicode/spaces/quotes; rapid navigation/old reports; failed navigation keeps listing; busy stdin receives only user input and pending navigation applies after it ends; valid resize, session exit/disconnect cleanup; existing macOS zsh regression passes. No claim of Windows closure from cross-compilation alone.
+
+Verified 2026-10-18: Windows x64 [native CI](https://github.com/yangyu370/terminal-finder/actions/runs/39114335844) passed on c09471f, including C/D drive switching, actual PS/native child cwd, Unicode, Ctrl+C, stdin isolation, shell-side failure/recovery, resize and process exit. Five Windows Rust contract tests and Go vet/all packages passed. macOS Rust209 tests/clippy, refreshed static FFI artifacts (unchanged interface), and MyGo race/real PTY regression passed. Xcode tests remain blocked by the host's unaccepted license. Physical desktop/IME/DPI, real UNC server, and Windows ARM64 remain outside this native x64 CI evidence.

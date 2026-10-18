@@ -41,13 +41,21 @@ DLL 元数据来自 `go list -m -f '{{.Dir}}' github.com/egoist/mygo` 对应模�
 
 ## 自动化证据与剩余验收
 
-Windows-native CI：`.github/workflows/mygo-windows.yml`。当前验证运行中，最终结果以实际 CI 为准；不能用交叉编译或跳过集成测试替代原生运行。脚本保存 `.cache/windows-tests.log` 与 `.cache/windows-terminal.png`，CI 上传为 `windows-terminal-evidence`。截图是自动化渲染结果，不能当成物理桌面截图。
+Windows x64 原生自动化已通过：[完整 CI 记录](https://github.com/yangyu370/terminal-finder/actions/runs/39114335844)，被测源码提交 `c09471f`。Rust Windows 路径、控制文件和 FFI/WS 契约5项通过；Go 的 vet 与全部包测试通过，真实 ConPTY/MyGo/Ghostty 闭环用例耗时5.34秒。日志确认 C→D→C、PowerShell/原生子进程 cwd、shell-only `terminal_control_failed`，以及 PID1760 退出。
 
-原生测试覆盖：UI→shell 和 shell→UI，PowerShell 与原生子进程各自的 cwd，中文/空格/单引号，连续导航，前台 stdin 隔离，shell 端拒绝目录切换，resize、面板隐藏/恢复与 shell 退出。测试机有第二可写盘符时覆盖跨盘符，否则日志明确指出未覆盖。UNC URL 有 FFI/WS 单元测试，真实网络共享仍需单独验收。
+- [下载 Windows x64 MVP 包](https://github.com/yangyu370/terminal-finder/actions/runs/39114335844/artifacts/12131284615)：解压后保留两个 exe 与 DLL 在同一目录，使用 `--dark --workspace 'C:\work\project'` 启动；仍需要 PATH 中的 PowerShell7.2+ 和 PSReadLine2.2+。
+- [下载原生测试日志与截图](https://github.com/yangyu370/terminal-finder/actions/runs/39114335844/artifacts/12131917604)。本地脚本也保存 `.cache/windows-tests.log` 与 `.cache/windows-terminal.png`。
+- CI入口：`.github/workflows/mygo-windows.yml`。后续代码修改必须重跑，不能用交叉编译或跳过真实用例替代。
+
+下图来自上述 Windows runner 的真实 Rust/PowerShell 会话，1120×720px、1x，由 MyGo 软件渲染器导出；它是自动化渲染结果，不是物理桌面截图：
+
+![Windows 原生 ConPTY 与文件视图同步](clients/MyGo/reference/windows-terminal-native.png)
+
+原生测试覆盖：UI→shell 和 shell→UI，PowerShell 与原生子进程各自的 cwd，中文/空格/单引号，Ctrl+C 中断与恢复，连续导航，前台 stdin 隔离，shell 端拒绝目录切换，resize、面板隐藏/恢复与 shell 退出。本次实际覆盖 C/D 盘符切换；未来测试机没有第二可写盘符时，日志会明确指出未覆盖。UNC URL 有 FFI/WS 单元测试，真实网络共享仍需单独验收。
 
 macOS 回归：Rust209项测试、fmt、clippy 和 MyGo `./build-drawn.sh` / `./test.sh`（vet、race、真实PTY与Ghostty渲染）通过。已刷新静态 FFI 库，生成接口无变更。Swift/Xcode 测试受本机未接受 Xcode license 阻止，尚未执行。
 
-继续在 Windows 物理桌面验收：100%/125%/150%/200% DPI、中文输入法、字体 fallback、焦点、快捷键、窗口按钮、默认应用打开文件、真实 UNC 权限/断连、休眠与异常终止。macOS 底层由 MyGo 使用 AppKit/CoreText，Windows 使用自己的平台后端；共享组件不意味着文字像素天然相同。
+继续在 Windows 物理桌面验收：100%/125%/150%/200% DPI、中文输入法、字体 fallback、焦点、快捷键、窗口按钮、默认应用打开文件、真实 UNC 权限/断连、休眠与异常终止；Windows ARM64仍需原生运行验收。macOS 底层由 MyGo 使用 AppKit/CoreText，Windows 使用自己的平台后端；共享组件不意味着文字像素天然相同。
 
 ## Finder 截图与视觉目标
 

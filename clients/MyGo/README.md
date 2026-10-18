@@ -14,7 +14,7 @@
 - Rust 持有 workspace、目录验证与 listing、PTY 会话和目录同步；客户端不绕过 core 读取真实文件系统构造业务状态。
 - 真实终端通过 MyGo terminal/Ghostty VT 展示 Rust PTY；UI 导航与 shell `cd` 双向同步，前台程序运行时排队，不能向其 stdin 注入 `cd`。
 - 分栏/画廊按钮禁用；没有 S3 客户端、文件写操作、递归搜索、索引、git awareness 等新增功能。
-- macOS 完整客户端已验证。Windows 已加入 ConPTY / PowerShell7.2+ 实现和原生 CI；最新验证结果见交接文档。物理桌面、输入法/DPI仍需验收。
+- macOS 与 Windows x64 的真实本地终端闭环已通过自动化验证。Windows使用 ConPTY / PowerShell7.2+；CI、下载包与实际渲染截图见交接文档。物理桌面、输入法/DPI仍需验收。
 - 深浅两套配色；当前 Finder 参考只有深色静止画面。字体、动态材质、图标边缘尚未像素一致，见 [像素审计](FINDER_PIXEL_AUDIT.md)。
 
 本实验明确使用 Rust 的**可选 HTTP/WebSocket server 模式**，开发端口 `127.0.0.1:3587`，接口与 `protocol/README.md` 对齐。仓库原 `clients/MacOS/` 的默认进程内 UniFFI 路径保持原状；不要把本实验的端口和进程模型套用到原客户端。

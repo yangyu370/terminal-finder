@@ -92,7 +92,7 @@ Terminal Finder 仍处在开发阶段，不建议按可分发产品理解。
 - 可选 HTTP server 目前没有完整 token 鉴权、Origin / Host 校验和握手保护。
 - file watcher、search / indexing、git awareness、plugins、AI features 尚未实现。
 - 文件预览面板尚未完整实现；目前已有缩略图、分栏预览和画廊视图。
-- Web、Windows、Linux 独立客户端尚未实现。
+- Web、Linux 独立客户端尚未实现；本分支的 Windows MyGo 实验见下文。
 - macOS app 名称、图标、签名、打包和自动更新还没有产品化。
 
 ## 技术架构
@@ -122,7 +122,7 @@ Core 负责 workspace state、目录验证、listing、local / S3 provider 路�
 
 ## 本分支的 MyGo 实验客户端
 
-本实验分支在 `clients/MyGo/` 保存独立的 Go/MyGo 自绘 Finder 风格客户端，复用 Rust 的可选 server 模式；原 macOS 客户端继续默认走进程内 UniFFI。Go 客户端已加入 Windows ConPTY / PowerShell7.2+ 原生终端及双向目录同步，使用独立控制通道避免向前台 stdin 注入导航。macOS 回归已通过；Windows 原生 CI 与剩余桌面验收状态记录在交接文档。接手说明及 Finder 截图见 [Windows MyGo 交接文档](WINDOWS_MYGO_HANDOFF.md)，构建入口见 [客户端 README](clients/MyGo/README.md)。
+本实验分支在 `clients/MyGo/` 保存独立的 Go/MyGo 自绘 Finder 风格客户端，复用 Rust 的可选 server 模式；原 macOS 客户端继续默认走进程内 UniFFI。Go 客户端已加入 Windows ConPTY / PowerShell7.2+ 原生终端及双向目录同步，使用独立控制通道避免向前台 stdin 注入导航。macOS 回归和 [Windows x64 原生终端 CI](https://github.com/yangyu370/terminal-finder/actions/runs/39114335844) 均已通过；剩余桌面验收状态记录在交接文档。接手说明及 Finder 截图见 [Windows MyGo 交接文档](WINDOWS_MYGO_HANDOFF.md)，构建入口见 [客户端 README](clients/MyGo/README.md)。
 
 ## 开发入口
 
