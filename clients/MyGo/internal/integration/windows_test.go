@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
@@ -41,12 +42,30 @@ func TestMain(m *testing.M) {
 }
 func psLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 func sameDirectory(a, b string) bool {
-	x, e := filepath.EvalSymlinks(a)
+	x, e := os.Stat(a)
 	if e != nil {
 		return false
 	}
-	y, e := filepath.EvalSymlinks(b)
-	return e == nil && strings.EqualFold(x, y)
+	y, e := os.Stat(b)
+	return e == nil && os.SameFile(x, y)
+}
+func TestWindowsDirectoryIdentityIncludesVerbatimAndShortAliases(t *testing.T) {
+	dir := t.TempDir()
+	if !sameDirectory(dir, `\\?\`+dir) {
+		t.Fatal("verbatim path should name same directory")
+	}
+	p, err := syscall.UTF16PtrFromString(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]uint16, 32768)
+	n, _, err := syscall.NewLazyDLL("kernel32.dll").NewProc("GetLongPathNameW").Call(uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if n == 0 || n >= uintptr(len(buf)) {
+		t.Fatal("long path normalization failed", err)
+	}
+	if !sameDirectory(dir, syscall.UTF16ToString(buf[:n])) {
+		t.Fatal("short and long Windows aliases should match")
+	}
 }
 
 // Trace both sides of the renderer/PTY boundary when native CI fails.
@@ -128,11 +147,7 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 	b := finderui.New(c, root, root)
 	b.Dark = true
 	b.TerminalOpen = true
-	exactFocus := false
-	b.Terminal = func(cx *ui.Context) {
-		e := terminal.View(cx, renderer).Fill().Label("Terminal screen")
-		exactFocus = e.Focused()
-	}
+	b.Terminal = func(cx *ui.Context) { terminal.View(cx, renderer).Fill().Label("Terminal screen") }
 	tt := ui.NewTester(b.View, 1120, 720)
 	pump := func(condition func() bool) {
 		t.Helper()
@@ -164,11 +179,8 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 			r, _ := tt.Find("Terminal screen")
 			t.Fatalf("terminal click did not focus input; bounds=%+v text=%v", r, tt.Texts())
 		}
-		t.Logf("command before type focused=%v exact=%v", tt.Focused("Terminal screen"), exactFocus)
 		tt.Type(s)
-		t.Logf("command after type focused=%v exact=%v", tt.Focused("Terminal screen"), exactFocus)
 		tt.Key(0, ui.KeyEnter)
-		t.Logf("command after enter focused=%v exact=%v", tt.Focused("Terminal screen"), exactFocus)
 	}
 	verifyCwd := func(want string) {
 		t.Helper()
@@ -200,6 +212,7 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 	tt.Key(0, ui.KeyEnter)
 	pump(func() bool { return c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, child) })
 	verifyCwd(child)
+	t.Log("UI navigation confirmed by PowerShell and native child cwd")
 	command("Write-Output ('__UTF8__' + [char]0x4f60 + [char]0x597d); Write-Output ('__PS_PID__' + $PID)")
 	pump(func() bool {
 		return strings.Contains(renderer.Text(), "__UTF8__你好") && regexp.MustCompile(`__PS_PID__([0-9]+)`).MatchString(renderer.Text())
@@ -215,6 +228,13 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 		t.Fatal("cannot observe shell lifecycle", err)
 	}
 	defer closeHandle.Call(handle)
+	interruptReady := filepath.Join(root, "interrupt-ready")
+	interrupted := filepath.Join(root, "interrupted")
+	command("[IO.File]::WriteAllText(" + psLiteral(interruptReady) + ", 'ready'); try { while($true) { Start-Sleep -Milliseconds 100 } } finally { [IO.File]::WriteAllText(" + psLiteral(interrupted) + ", 'stopped') }")
+	pump(func() bool { _, e := os.Stat(interruptReady); return e == nil })
+	tt.Key(ui.Ctrl, ui.KeyC)
+	pump(func() bool { _, e := os.Stat(interrupted); return e == nil })
+	verifyCwd(child)
 	command("Set-Location -LiteralPath " + psLiteral(shellDir))
 	pump(func() bool { return c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, shellDir) })
 	verifyCwd(shellDir)
@@ -239,6 +259,7 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 			return !c.Snapshot().Loading && c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, shellDir)
 		})
 		verifyCwd(shellDir)
+		t.Logf("Cross-drive PowerShell and native child cwd verified: %s", filepath.VolumeName(other))
 		crossDrive = true
 		break
 	}
