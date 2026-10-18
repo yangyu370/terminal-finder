@@ -139,7 +139,7 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 	}
 	c.Start(stream)
 	trace := &tracedTerminal{Terminal: stream}
-	renderer, e := terminal.New(terminal.Options{Conn: trace, OnKey: func(mods ui.Modifiers, key ui.Key) bool { t.Logf("terminal key: %v %v", mods, key); return false }, Theme: terminal.DarkTheme(), Font: terminal.Font{Family: "monospace", Size: 12}})
+	renderer, e := terminal.New(terminal.Options{Conn: trace, Theme: terminal.DarkTheme(), Font: terminal.Font{Family: "monospace", Size: 12}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -306,12 +306,20 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 	}
 	// Keep the path valid to core: only PowerShell rejects it, so the error
 	// must travel through completion.json rather than filesystem validation.
-	command("$global:tfRejectedTarget=" + psLiteral(doomed) + "; function global:Set-Location { [CmdletBinding()] param([string]$LiteralPath); if ($LiteralPath -eq $global:tfRejectedTarget) { throw 'injected shell location failure' }; Microsoft.PowerShell.Management\\Set-Location -LiteralPath $LiteralPath }")
+	command("$global:tfRejectedLeaf=" + psLiteral(filepath.Base(doomed)) + "; function global:Set-Location { [CmdletBinding()] param([string]$LiteralPath); if ([IO.Path]::GetFileName($LiteralPath) -eq $global:tfRejectedLeaf) { throw 'injected shell location failure' }; Microsoft.PowerShell.Management\\Set-Location -LiteralPath $LiteralPath }")
+	injectionCheck := filepath.Join(root, "injection-check")
+	command("try { Set-Location -LiteralPath " + psLiteral(doomed) + "; [IO.File]::WriteAllText(" + psLiteral(injectionCheck) + ", 'missed') } catch { [IO.File]::WriteAllText(" + psLiteral(injectionCheck) + ", 'rejected') }")
+	pump(func() bool { _, e := os.Stat(injectionCheck); return e == nil })
+	check, e := os.ReadFile(injectionCheck)
+	if e != nil || string(check) != "rejected" {
+		t.Fatalf("shell failure injection not active: %q %v", check, e)
+	}
 	verifyCwd(busyTarget)
 	c.Navigate(doomed)
 	pump(func() bool { return strings.Contains(c.Snapshot().Error, "terminal_control_failed") })
 	verifyCwd(busyTarget)
-	command("Remove-Item Function:\\Set-Location; Remove-Variable tfRejectedTarget -Scope Global")
+	t.Log("Shell-only directory failure returned terminal_control_failed; actual cwd preserved")
+	command("Remove-Item Function:\\Set-Location; Remove-Variable tfRejectedLeaf -Scope Global")
 	c.Navigate(root)
 	pump(func() bool { return c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, root) })
 	tt.Key(ui.Cmd, ui.KeyJ)

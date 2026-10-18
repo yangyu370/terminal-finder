@@ -34,3 +34,11 @@ jobs:
             clients/MyGo/.cache/windows-tests.log
             clients/MyGo/.cache/windows-terminal.png
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: windows-x64-mvp
+          path: |
+            clients/MyGo/dist/terminal-finder-drawn.exe
+            clients/MyGo/dist/core.exe
+            clients/MyGo/dist/ghostty-vt.dll
