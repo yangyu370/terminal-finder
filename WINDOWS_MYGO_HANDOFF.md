@@ -1,40 +1,53 @@
 # Windows agent 交接：MyGo 自绘 Terminal Finder
 
-交接日期：2026-10-17。分支：`codex/mygo-drawn-windows-handoff`。基线：`master` 的 `11fa3289d6e75bb7509c143622b5d3713120e344`。
+更新日期：2026-10-18。分支：`codex/mygo-drawn-windows-handoff`。主分支基线：`11fa3289d6e75bb7509c143622b5d3713120e344`。
 
-## 2026-10-18 实现更新（优先于下文初始交接记录）
+本分支保留原仓库历史，在 `clients/MyGo/` 提供共享 Go/MyGo 自绘 UI，Rust core 仍拥有目录事实和终端会话。Windows 已加入原生 ConPTY / PowerShell 实现，macOS zsh/FIFO 实现保持独立。默认 Swift/AppKit 客户端继续使用进程内 UniFFI；只有这个 Go 实验客户端使用可选 HTTP/WebSocket sidecar。
 
-本分支现已加入 Windows 原生终端实现：portable-pty/ConPTY、PowerShell7.2+与PSReadLine2.2+引导、独立不可变JSON目录请求、空提示符OnIdle应用、OSC7盘符/UNC转换、失败回报、Windows资源定位与原生构建/测试脚本。Unix/zsh实现保留在平台模块中；外部DTO/协议形状不变。
+## 原生 Windows 构建与运行
 
-使用原生Windows PowerShell7运行：
+需要原生 Git、Go1.27.1+（CI使用1.27.2）、Rust MSVC 工具链，以及 PATH 中的 PowerShell7.2+ `pwsh.exe`。shell 使用 PSReadLine2.2+；不支持 Windows PowerShell5.1，不修改用户 profile。MyGo 固定0.5.5。
 
 ```powershell
-Set-Location clients\MyGo
+git clone --branch codex/mygo-drawn-windows-handoff https://github.com/yangyu370/terminal-finder.git
+Set-Location terminal-finder\clients\MyGo
 .\build-windows.ps1
 .\dist\terminal-finder-drawn.exe --dark --workspace 'C:\work\project'
 .\test-windows.ps1
 ```
 
-`-PreviewOnly` 可只构建不依赖Rust/DLL的组件样板。完整构建自动校验对应MyGo版本的Ghostty DLL并将 `core.exe`、`ghostty-vt.dll` 放到客户端exe旁。PowerShell7必须在PATH；Windows PowerShell5.1不在本首版支持范围内。`test-windows.ps1` 包含真实PTY、MyGo/Ghostty渲染、双向cwd、中文/空格/引号、原生子进程cwd、前台stdin隔离、应用失败、resize及退出检查。
+完整构建编译同仓 Rust server，按 MyGo 锁定元数据下载并校验对应架构的 Ghostty VT DLL；`core.exe`、`ghostty-vt.dll` 与客户端 exe 放在同一目录。使用 `-PreviewOnly` 可只构建 UI，再以 `--demo --dark` 启动固定样例；demo 不证明后端或 shell 可用。故障诊断时可去掉构建命令的 `-H=windowsgui` 保留控制台。
 
-Windows-native CI：`.github/workflows/mygo-windows.yml`。实现验证进行中，不能将下面的历史交叉编译记录当成新实现的实际运行结果；最终状态以CI和提交验证记录为准。物理Windows桌面、输入法、多DPI和UNC真实服务器仍需额外验收。
+真实模式的固定开发地址为 `127.0.0.1:3587`。托管启动持有 core stdin，关闭时回收自己创建的 core；若端口占用，报告错误或显式 `--connect`，不能杀已有进程。连接共享 core 时客户端退出不关闭它。
 
-## 初始交接的目标与状态（2026-10-17）
+## 同步设计与代码入口
 
-接手目标是在 Windows 原生桌面上运行 `clients/MyGo/` 的同一套 Finder 风格自绘 UI，连接同仓 Rust core，实现真实终端与文件视图目录双向同步。不要重新写一套 WinForms/WPF UI，也不要把本次工作替换为 WSL-only 方案。
+UI 导航先由 core 验证/列目录，再通过独立的不可变 JSON 请求排队。PowerShell 在提示符或 PSReadLine 空输入缓冲区的 OnIdle 时应用最新请求；前台程序持有 stdin 时不执行导航。请求始终是数据，不能拼入 shell 命令。成功后发出真实 cwd 的 OSC7；core 校验后 Go 才显示 Synced。失败通过 completion 回到已有 `terminal_control_failed` 错误；queued 本身不代表切换完成。
 
-本分支新增实验客户端与参考文档，不修改 Rust 业务代码或 `clients/MacOS/`。保留原仓库历史；不是一个没有 core 的独立 Go 仓库。旧的 Go/AppKit 原生控件试验版未带入本目录。
+| 位置 | 责任 |
+|---|---|
+| `clients/MyGo/cmd/terminal-finder-drawn/main.go` | 共享窗口、终端和资源装配 |
+| `clients/MyGo/internal/launch/` | exe 相邻资源、core 托管与清理 |
+| `clients/MyGo/internal/workspace/` | 最新导航、过期报告、规范化路径确认、历史与错误状态 |
+| `clients/MyGo/internal/backend/` | 现有 RPC/WS、PTY 原始字节，不能另开客户端 shell |
+| `core/src/terminal/session.rs` | 本地平台 shell、ConPTY/PTY、进程生命周期 |
+| `core/src/terminal/shell_integration/` | Unix zsh 与 Windows PowerShell hook |
+| `core/src/terminal/windows_control.rs` | 每会话独立的有序原子控制请求 |
+| `core/src/terminal/cwd_url.rs` | Windows 盘符/UNC URL 路径转换 |
+| `core/src/ffi/terminal.rs`、`core/src/terminal/websocket.rs` | 相同 cwd 校验、authority 限制与协议语义 |
+| `clients/MyGo/internal/integration/windows_test.go` | 真 core、真 PowerShell/ConPTY、Ghostty/MyGo 渲染与原生子进程验证 |
 
-| 能力 | 已验证 | Windows 待做 |
-|---|---|---|
-| Go 自绘 UI | macOS 渲染/交互；Windows amd64 交叉编译 | 实机启动、DPI、中文输入法、窗口按钮避让、键盘与文件打开 |
-| 目录浏览 | macOS 通过真实 Rust listing | Windows core 编译、盘符/UNC/权限/路径语义 |
-| 终端渲染 | macOS MyGo terminal + Ghostty VT | 对应架构 `ghostty-vt.dll` 的打包与加载 |
-| PTY 与 shell | macOS Rust PTY + zsh | ConPTY、PowerShell 启动、退出/resize/编码 |
-| UI ↔ shell cwd | macOS 真实双向同步、前台程序不被注入 | Windows shell hook、受控切目录、确认屏障和路径 URL |
-| Finder 像素一致 | 尚未达到；有严格差分与残差 | 保留外观方向，实测 Windows 字体/DPI 差异 |
+DLL 元数据来自 `go list -m -f '{{.Dir}}' github.com/egoist/mygo` 对应模块中的 `plugins/terminal/mygo-plugin.json`。支持 `MYGO_GHOSTTY_VT` 显式路径。不要提交 `.tools/`、`.cache/`、`dist/` 或原生库二进制。
 
-当前 Windows exe 只证明能编译；`--demo` 不含真实 backend 或 shell。不要把交叉编译、固定数据演示或跳过集成测试报告成完整 Windows 版已完成。
+## 自动化证据与剩余验收
+
+Windows-native CI：`.github/workflows/mygo-windows.yml`。当前验证运行中，最终结果以实际 CI 为准；不能用交叉编译或跳过集成测试替代原生运行。脚本保存 `.cache/windows-tests.log` 与 `.cache/windows-terminal.png`，CI 上传为 `windows-terminal-evidence`。截图是自动化渲染结果，不能当成物理桌面截图。
+
+原生测试覆盖：UI→shell 和 shell→UI，PowerShell 与原生子进程各自的 cwd，中文/空格/单引号，连续导航，前台 stdin 隔离，shell 端拒绝目录切换，resize、面板隐藏/恢复与 shell 退出。测试机有第二可写盘符时覆盖跨盘符，否则日志明确指出未覆盖。UNC URL 有 FFI/WS 单元测试，真实网络共享仍需单独验收。
+
+macOS 回归：Rust209项测试、fmt、clippy 和 MyGo `./build-drawn.sh` / `./test.sh`（vet、race、真实PTY与Ghostty渲染）通过。已刷新静态 FFI 库，生成接口无变更。Swift/Xcode 测试受本机未接受 Xcode license 阻止，尚未执行。
+
+继续在 Windows 物理桌面验收：100%/125%/150%/200% DPI、中文输入法、字体 fallback、焦点、快捷键、窗口按钮、默认应用打开文件、真实 UNC 权限/断连、休眠与异常终止。macOS 底层由 MyGo 使用 AppKit/CoreText，Windows 使用自己的平台后端；共享组件不意味着文字像素天然相同。
 
 ## Finder 截图与视觉目标
 
@@ -54,91 +67,6 @@ Windows-native CI：`.github/workflows/mygo-windows.yml`。实现验证进行中
 
 目前只有交替行**内部取样**完全相同，不代表整行/整窗一致。材质、文字抗锯齿、文件类型图标和部分矢量边缘仍有差异；不要用原生截图作整窗纹理，也不要放宽像素门禁来宣称通过。浅色/hover/pressed/inactive 尚无同状态原生基准。
 
-## Windows 第一轮：只启动共享 UI
-
-用 Windows 原生 Git、Go，Go版本至少满足 `go.mod` 的1.27.1；本次macOS实测为1.27.2，MyGo锁定0.5.5。以下是 PowerShell 命令，**不要在 Windows 直接执行本目录的 macOS `.sh` 脚本**。
-
-```powershell
-git clone --branch codex/mygo-drawn-windows-handoff https://github.com/yangyu370/terminal-finder.git
-Set-Location terminal-finder\clients\MyGo
-go version
-go env GOOS GOARCH
-$env:CGO_ENABLED = '0'
-go mod download
-New-Item -ItemType Directory -Force .\dist | Out-Null
-go build -trimpath -ldflags '-H=windowsgui' -o .\dist\terminal-finder-drawn.exe ./cmd/terminal-finder-drawn
-if ($LASTEXITCODE -ne 0) { throw 'Go build failed' }
-& .\dist\terminal-finder-drawn.exe --demo --dark
-```
-
-故障诊断时可去掉 `-ldflags '-H=windowsgui'` 重新构建，以便查看控制台启动错误。
-
-该模式不需要 Rust 或 Ghostty DLL。确认列表/图标切换、搜索展开与Esc、路径对话框、终端面板开关、侧栏与布局拖动、窗口最小化/最大化/关闭。演示模型中仍有macOS风格固定路径，Windows 上需检查路径拆分和演示导航，不要把这些路径当作 Windows 磁盘数据。
-
-先运行不依赖真实shell的测试：
-
-```powershell
-go test -count=1 ./internal/backend ./internal/workspace ./internal/osc ./internal/visualdiff ./internal/finderui
-```
-
-这组测试尚未在 Windows 实机执行；记录实际失败，不要直接标成通过。其中 `internal/workspace/controller_test.go` 仍使用 `/new`、`/slow`、`/missing` 等Unix绝对路径字面量，Windows `filepath.IsAbs/Join` 会产生不同结果，需先把这些fixture改成 `t.TempDir()` / 本机绝对路径并保持断言语义；这属于已知测试适配项，不等于后端已适配。`internal/launch/server_test.go` 当前使用 `#!/bin/sh` 测试进程；完整 `go test ./...` 的该用例需要改成跨平台测试子进程。`internal/integration/` 也仍使用 zsh/Unix 命令，不能直接当作 PowerShell 验收。
-
-## 架构与代码入口
-
-```text
-clients/MyGo/cmd/terminal-finder-drawn/main.go
-  → MyGo window + finderui.Browser + terminal.View
-  → workspace.Controller
-  → backend.Client / backend.Terminal（HTTP / WebSocket）
-  → core/ 可选 axum server → workspace / filesystem / Rust PTY
-```
-
-| 位置 | 责任/接手重点 |
-|---|---|
-| `clients/MyGo/cmd/terminal-finder-drawn/main.go` | demo/真实模式、资源路径、窗口与终端装配；默认资源路径仍为macOS `.app/Contents/Resources`，Windows需调整 |
-| `clients/MyGo/internal/finderui/` | 自绘布局、SVG、选择态、名称过滤、样例模型；保持共享UI，业务事实从core获取 |
-| `clients/MyGo/internal/workspace/controller.go` / `state.go` | 旧报告忽略、最新导航优先、确认屏障、失败保留listing、等待前台程序退出；不要移除这些保护 |
-| `clients/MyGo/internal/backend/` | 现有RPC DTO、WS请求关联、原始PTY字节、生命周期；不启动第二个客户端shell |
-| `clients/MyGo/internal/launch/server.go` | 托管core进程、HOST/TERM、健康检查、stdin EOF关闭与kill兜底；只关闭自己创建的进程，不杀端口占用者 |
-| `clients/MyGo/internal/osc/parser.go` | OSC7流式解析（分包/BEL/ST/异常输入）；Windows URL语义交给core验证 |
-| `core/src/terminal/session.rs` | 当前默认 `/bin/zsh`，使用 `portable-pty`；接入/验证Windows ConPTY与shell选择 |
-| `core/src/terminal/shell_integration.rs` | **当前编译阻塞**：无条件 `std::os::unix`、`libc::mkfifo`、Unix文件标志、zsh启动脚本与FIFO唤醒；需平台实现分离 |
-| `core/src/terminal/websocket.rs` | workspace-bound终端及cwd URL校验；Windows盘符、UNC和URL规范化 |
-| `core/src/ffi/`、`protocol/README.md` | 与公共语义/DTO相关改动必须保持一致；默认Swift客户端仍用进程内FFI |
-| `clients/MyGo/internal/integration/` | 真实Rust PTY与实际MyGo/Ghostty渲染闭环测试；补Windows版本，不用mock替代全部验收 |
-
-本Go实验明确走 **core 的可选 server 模式**，固定开发地址 `http://127.0.0.1:3587`。`core/src/bin/server.rs` 目前硬编码该端口，stdin EOF会触发退出；手工启动时必须让stdin保持打开。Go托管启动会持有stdin管道，退出时关闭。若端口占用，报错或显式 `--connect`，禁止自动杀已有进程。
-
-Go使用的现有方法包括 `workspace.openDirectory`、`terminal.createWorkspace`、`terminal.changeDirectory`、`terminal.updateWorkingDirectory`。PTY输出里的OSC7先经core验证再影响浏览状态；changeDirectory确认queued不等于shell已经切换成功。
-
-## 建议按这个顺序适配
-
-1. **确认UI独立运行。** 用上述demo命令；检查100%/125%/150%/200% DPI、中文输入法、字体fallback、焦点、窗口控件避让、Ctrl快捷键。macOS底层仍通过MyGo依赖AppKit/NSFont/CoreText；Windows使用其Win32/DirectWrite适配层，不需要AppKit。不能据此承诺两平台文字像素相同。
-2. **拿到Windows core的真实编译错误。** 在本机Rust MSVC工具链下执行下面的cargo命令；先拆Unix-only模块，再补Windows实现，保持macOS原有行为。不要先修改协议来绕开后端。
-3. **打通PTY和shell。** 初始支持PowerShell（明确选择pwsh或Windows PowerShell及fallback策略），验证ConPTY、初始cwd、UTF-8/中文、resize、Ctrl+C、正常/异常退出。core继续持有会话生命周期；不让Go terminal插件另起本地shell。
-4. **实现Windows目录同步。** PowerShell hook上报真实cwd；UI→shell走受控请求与安全时机应用。使用named pipe或等价的独立控制通道，不能把 `cd ...` 塞进前台程序stdin。覆盖空格、中文、单引号、盘符切换、UNC、路径大小写/规范化、旧报告和快速连续导航。
-5. **资源定位与打包。** 用exe相邻资源目录等Windows布局，打包 `core.exe`、对应架构 `ghostty-vt.dll`；新增PowerShell构建/测试脚本。保留当前macOS脚本可用；不要提交 `.tools/`、`.cache/`、`dist/` 或原生库二进制。
-6. **跑完整验收与记录。** 验收用临时目录与临时shell配置，不修改用户PowerShell profile。提交Windows命令、测试结果、实际截图和未解决项；保留macOS回归。
-
-在 `clients/MyGo/` 下运行core编译检查（当前预期会暴露Unix相关编译问题）：
-
-```powershell
-cargo check --locked --manifest-path ..\..\core\Cargo.toml --features server --bin core
-# 修复编译问题后再build；不是当前已可运行的承诺。
-cargo build --locked --manifest-path ..\..\core\Cargo.toml --features server --bin core
-```
-
-Ghostty VT的Windows DLL元数据已随固定版本MyGo提供。`go list -m -f '{{.Dir}}' github.com/egoist/mygo` 找到模块目录后，读取 `plugins/terminal/mygo-plugin.json` 的 `libraries[].files.windows-amd64`（arm64用对应项）。当前amd64文件名 `ghostty-vt.dll`，SHA-256为 `53e8e2dd979702e8f2c48107af19be5a76efc2e88eb7cf1097218e899665da41`；下载必须匹配版本、架构及校验值。
-
-DLL可用 `MYGO_GHOSTTY_VT` 指向完整路径，或按MyGo规则放到exe旁；不要把macOS `.dylib` 改名成 `.dll`。UI demo不加载终端库；完整模式需要它。core编译与同步适配完成后，可先用显式路径绕开尚未修改的默认资源布局：
-
-```powershell
-$env:MYGO_GHOSTTY_VT = (Resolve-Path .\dist\ghostty-vt.dll).Path
-& .\dist\terminal-finder-drawn.exe --dark --core (Resolve-Path ..\..\core\target\debug\core.exe).Path --workspace 'C:\work\test-project'
-```
-
-以上为适配完成后的目标启动方式，当前分支没有可运行的Windows core成品。
-
 ## 必须保留的契约与验收
 
 - core拥有目录事实、workspace state与进程生命周期；Go只持有选择、焦点、布局等客户端状态。真实文件列表不能偷偷改成Go `os.ReadDir`。
@@ -150,9 +78,6 @@ $env:MYGO_GHOSTTY_VT = (Resolve-Path .\dist\ghostty-vt.dll).Path
 - core路径比较覆盖 `C:\...`、`D:\...`、UNC、中文、空格、引号、拒绝控制字符；别只在WSL `/mnt/c`上验收。
 - backend语义/FFI DTO若变更，同步Rust测试、FFI facade、Swift绑定/客户端与协议。仅内部core改动也需刷新macOS静态库验证；沿用根 README 的构建与FFI刷新流程。
 
-## 交付基线与验证记录
+## 视觉门禁
 
-- 本次已通过迁入目录后的 `./build-drawn.sh`、`./test.sh`（vet/race/格式检查、真实Rust PTY与MyGo/Ghostty双向同步）、Python参考提取2项测试、Windows amd64交叉编译，以及文档链接/原图哈希检查。验证主机为macOS arm64，Go1.27.2；Windows实机测试尚未执行。
-- `./test.sh` 会启动真实core占用3587端口，必须先关闭托管客户端；它包含 `go vet`、race测试、格式检查、真实Rust PTY与MyGo/Ghostty双向同步测试。
-- `./verify-pixels.sh` 当前返回2，表示仍有真实像素差异；与功能测试通过分开记录。固定裁剪、原图哈希和sRGB转换说明在 `internal/finderui/testdata/finder26-dark/provenance.json`。
-- Windows原生运行、PowerShell/ConPTY完整闭环、Windows Rust编译和Windows视觉校验仍待接手者完成。仓库根默认macOS客户端的FFI架构没有被本实验替换。
+`./verify-pixels.sh` 当前返回2，保留真实残差；不能因功能测试通过而宣称像素一致。参考原图哈希与sRGB转换说明见 `clients/MyGo/internal/finderui/testdata/finder26-dark/provenance.json`。后续适配不能放宽阈值掩盖平台字体/材质差异。

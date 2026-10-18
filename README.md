@@ -122,7 +122,7 @@ Core 负责 workspace state、目录验证、listing、local / S3 provider 路�
 
 ## 本分支的 MyGo 实验客户端
 
-本实验分支在 `clients/MyGo/` 保存独立的 Go/MyGo 自绘 Finder 风格客户端，复用 Rust 的可选 server 模式；原 macOS 客户端继续默认走进程内 UniFFI。Go 客户端的完整本地终端工作流目前在 macOS 验证，Windows 已交叉编译组件入口，尚需适配 backend/shell 与实机验证。接手说明及 Finder 截图见 [Windows MyGo 交接文档](WINDOWS_MYGO_HANDOFF.md)，构建入口见 [客户端 README](clients/MyGo/README.md)。
+本实验分支在 `clients/MyGo/` 保存独立的 Go/MyGo 自绘 Finder 风格客户端，复用 Rust 的可选 server 模式；原 macOS 客户端继续默认走进程内 UniFFI。Go 客户端已加入 Windows ConPTY / PowerShell7.2+ 原生终端及双向目录同步，使用独立控制通道避免向前台 stdin 注入导航。macOS 回归已通过；Windows 原生 CI 与剩余桌面验收状态记录在交接文档。接手说明及 Finder 截图见 [Windows MyGo 交接文档](WINDOWS_MYGO_HANDOFF.md)，构建入口见 [客户端 README](clients/MyGo/README.md)。
 
 ## 开发入口
 

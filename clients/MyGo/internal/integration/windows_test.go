@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -46,6 +47,35 @@ func sameDirectory(a, b string) bool {
 	}
 	y, e := filepath.EvalSymlinks(b)
 	return e == nil && strings.EqualFold(x, y)
+}
+
+// Trace both sides of the renderer/PTY boundary when native CI fails.
+type tracedTerminal struct {
+	*backend.Terminal
+	mu             sync.Mutex
+	sent, received []byte
+}
+
+func (x *tracedTerminal) Write(p []byte) (int, error) {
+	x.mu.Lock()
+	x.sent = append(x.sent, p...)
+	x.mu.Unlock()
+	return x.Terminal.Write(p)
+}
+func (x *tracedTerminal) Read(p []byte) (int, error) {
+	n, e := x.Terminal.Read(p)
+	x.mu.Lock()
+	x.received = append(x.received, p[:n]...)
+	if len(x.received) > 8192 {
+		x.received = x.received[len(x.received)-8192:]
+	}
+	x.mu.Unlock()
+	return n, e
+}
+func (x *tracedTerminal) diagnostic() string {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return fmt.Sprintf("renderer sent=%q\nPTY output tail=%q", x.sent, x.received)
 }
 func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing.T) {
 	binary := os.Getenv("TF_CORE_BINARY")
@@ -89,7 +119,8 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 		t.Fatal(e)
 	}
 	c.Start(stream)
-	renderer, e := terminal.New(terminal.Options{Conn: stream, Theme: terminal.DarkTheme(), Font: terminal.Font{Family: "monospace", Size: 12}})
+	trace := &tracedTerminal{Terminal: stream}
+	renderer, e := terminal.New(terminal.Options{Conn: trace, Theme: terminal.DarkTheme(), Font: terminal.Font{Family: "monospace", Size: 12}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -109,7 +140,7 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		t.Fatalf("Windows integration timed out: %+v\n%s", c.Snapshot(), renderer.Text())
+		t.Fatalf("Windows integration timed out: %+v\n%s\n%s", c.Snapshot(), renderer.Text(), trace.diagnostic())
 	}
 	command := func(s string) {
 		t.Helper()
@@ -138,6 +169,11 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 		})
 	}
 	pump(func() bool { return c.Snapshot().Sync == "Synced" })
+	// Separate raw transport readiness from UI key encoding in native CI.
+	if _, e = stream.Write([]byte("Write-Output '__RAW_READY__'\r")); e != nil {
+		t.Fatal(e)
+	}
+	pump(func() bool { return strings.Contains(renderer.Text(), "__RAW_READY__") })
 	// Exercise actual UI navigation followed by native process and PS cwd checks.
 	if e = tt.Click(filepath.Base(child)); e != nil {
 		t.Fatal(e)
@@ -163,10 +199,40 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 	command("Set-Location -LiteralPath " + psLiteral(shellDir))
 	pump(func() bool { return c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, shellDir) })
 	verifyCwd(shellDir)
+	// Check native child cwd across drives when the host has another writable volume.
+	crossDrive := false
+	for _, base := range []string{os.Getenv("USERPROFILE"), os.Getenv("RUNNER_TEMP")} {
+		if base == "" || strings.EqualFold(filepath.VolumeName(base), filepath.VolumeName(root)) {
+			continue
+		}
+		other, err := os.MkdirTemp(base, "tf-cross-drive-")
+		if err != nil {
+			continue
+		}
+		t.Cleanup(func() { os.RemoveAll(other) })
+		c.Navigate(other)
+		pump(func() bool {
+			return !c.Snapshot().Loading && c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, other)
+		})
+		verifyCwd(other)
+		c.Navigate(shellDir)
+		pump(func() bool {
+			return !c.Snapshot().Loading && c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, shellDir)
+		})
+		verifyCwd(shellDir)
+		crossDrive = true
+		break
+	}
+	if !crossDrive {
+		t.Log("Cross-drive runtime case unavailable: no second writable volume")
+	}
 	// Rapid navigation must settle on the latest path and actual shell cwd.
-	c.Navigate(child)
 	c.Navigate(shellDir)
-	pump(func() bool { return c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, shellDir) })
+	c.Navigate(child)
+	pump(func() bool {
+		return !c.Snapshot().Loading && c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, child)
+	})
+	verifyCwd(child)
 	ready := filepath.Join(root, "stdin-ready")
 	captured := filepath.Join(root, "stdin-captured")
 	command("[IO.File]::WriteAllText(" + psLiteral(ready) + ", 'ready'); $tfLine=[Console]::ReadLine(); [IO.File]::WriteAllText(" + psLiteral(captured) + ", $tfLine)")
@@ -198,18 +264,14 @@ func TestWindowsRenderedConPTYBidirectionalDirectoryAndStdinIsolation(t *testing
 	if e = os.Mkdir(doomed, 0700); e != nil {
 		t.Fatal(e)
 	}
-	ready2 := filepath.Join(root, "busy2")
-	command("[IO.File]::WriteAllText(" + psLiteral(ready2) + ", 'ready'); $null=[Console]::ReadLine()")
-	pump(func() bool { _, e := os.Stat(ready2); return e == nil })
+	// Keep the path valid to core: only PowerShell rejects it, so the error
+	// must travel through completion.json rather than filesystem validation.
+	command("$global:tfRejectedTarget=" + psLiteral(doomed) + "; function global:Set-Location { [CmdletBinding()] param([string]$LiteralPath); if ($LiteralPath -eq $global:tfRejectedTarget) { throw 'injected shell location failure' }; Microsoft.PowerShell.Management\\Set-Location -LiteralPath $LiteralPath }")
+	verifyCwd(busyTarget)
 	c.Navigate(doomed)
-	pump(func() bool {
-		return c.Snapshot().Sync == "Waiting for terminal" && sameDirectory(c.Snapshot().Directory, doomed)
-	})
-	if e = os.Remove(doomed); e != nil {
-		t.Fatal(e)
-	}
-	stream.Write([]byte("finish\r"))
-	pump(func() bool { return c.Snapshot().Sync == "Sync blocked" })
+	pump(func() bool { return strings.Contains(c.Snapshot().Error, "terminal_control_failed") })
+	verifyCwd(busyTarget)
+	command("Remove-Item Function:\\Set-Location; Remove-Variable tfRejectedTarget -Scope Global")
 	c.Navigate(root)
 	pump(func() bool { return c.Snapshot().Sync == "Synced" && sameDirectory(c.Snapshot().Directory, root) })
 	tt.Key(ui.Cmd, ui.KeyJ)
